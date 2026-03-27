@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Roof Viewer</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #f0f0f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      color: #888;
+      font-size: 0.9rem;
+      margin-bottom: 36px;
+    }
+
+    .search-row {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      max-width: 600px;
+      margin-bottom: 32px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 14px 18px;
+      border-radius: 10px;
+      border: 1px solid #2e2e2e;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus {
+      border-color: #4a90e2;
+    }
+
+    input[type="text"]::placeholder {
+      color: #555;
+    }
+
+    button {
+      padding: 14px 24px;
+      border-radius: 10px;
+      border: none;
+      background: #4a90e2;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      background: #357abd;
+    }
+
+    button:disabled {
+      background: #2a2a2a;
+      color: #555;
+      cursor: not-allowed;
+    }
+
+    .result {
+      width: 100%;
+      max-width: 600px;
+    }
+
+    .address-label {
+      font-size: 0.85rem;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .address-label span {
+      color: #ccc;
+      font-weight: 500;
+    }
+
+    .image-wrapper {
+      position: relative;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #2e2e2e;
+      background: #1a1a1a;
+    }
+
+    .image-wrapper img {
+      width: 100%;
+      display: block;
+    }
+
+    .zoom-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      justify-content: flex-end;
+    }
+
+    .zoom-controls button {
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      border-radius: 8px;
+      background: #1e1e1e;
+      border: 1px solid #2e2e2e;
+      color: #ccc;
+    }
+
+    .zoom-controls button:hover {
+      background: #2a2a2a;
+      color: #fff;
+    }
+
+    .zoom-controls button.active {
+      background: #4a90e2;
+      border-color: #4a90e2;
+      color: #fff;
+    }
+
+    .error {
+      color: #e57373;
+      font-size: 0.9rem;
+      margin-top: 12px;
+    }
+
+    .loading {
+      color: #888;
+      font-size: 0.9rem;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Roof Viewer</h1>
+  <p class="subtitle">Enter an address to see a satellite view of the roof</p>
+
+  <div class="search-row">
+    <input
+      type="text"
+      id="addressInput"
+      placeholder="123 Main St, Springfield, IL"
+      autocomplete="off"
+    />
+    <button id="searchBtn" onclick="search()">View Roof</button>
+  </div>
+
+  <div class="result" id="result" style="display:none">
+    <p class="address-label">Showing: <span id="resolvedAddress"></span></p>
+    <div class="image-wrapper">
+      <img id="satelliteImg" src="" alt="Satellite view" />
+    </div>
+    <div class="zoom-controls">
+      <button onclick="setZoom(18)" id="z18">Street</button>
+      <button onclick="setZoom(19)" id="z19" class="active">Roof</button>
+      <button onclick="setZoom(20)" id="z20">Close-up</button>
+    </div>
+  </div>
+
+  <p class="error" id="errorMsg"></p>
+  <p class="loading" id="loadingMsg"></p>
+
+  <script>
+    const API_KEY = "AIzaSyBXOLB3MkNpsAIroy1kfko8tN6lndF4mlk";
+    let currentLat = null;
+    let currentLng = null;
+    let currentZoom = 19;
+
+    document.getElementById("addressInput").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") search();
+    });
+
+    async function search() {
+      const address = document.getElementById("addressInput").value.trim();
+      if (!address) return;
+
+      setError("");
+      setLoading("Looking up address...");
+      document.getElementById("result").style.display = "none";
+      document.getElementById("searchBtn").disabled = true;
+
+      try {
+        const geoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${API_KEY}`;
+        const response = await fetch(geoUrl);
+        const data = await response.json();
+
+        if (data.status !== "OK" || !data.results.length) {
+          throw new Error("Address not found. Try including city and state.");
+        }
+
+        const result = data.results[0];
+        currentLat = result.geometry.location.lat;
+        currentLng = result.geometry.location.lng;
+        currentZoom = 19;
+
+        document.getElementById("resolvedAddress").textContent = result.formatted_address;
+        setLoading("");
+        showImage();
+      } catch (err) {
+        setLoading("");
+        setError(err.message || "Something went wrong.");
+      } finally {
+        document.getElementById("searchBtn").disabled = false;
+      }
+    }
+
+    function showImage() {
+      const size = "600x500";
+      const imgUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${currentLat},${currentLng}&zoom=${currentZoom}&size=${size}&scale=2&maptype=satellite&key=${API_KEY}`;
+      document.getElementById("satelliteImg").src = imgUrl;
+      document.getElementById("result").style.display = "block";
+      updateZoomButtons();
+    }
+
+    function setZoom(level) {
+      currentZoom = level;
+      showImage();
+    }
+
+    function updateZoomButtons() {
+      [18, 19, 20].forEach(z => {
+        const btn = document.getElementById("z" + z);
+        btn.classList.toggle("active", z === currentZoom);
+      });
+    }
+
+    function setError(msg) {
+      document.getElementById("errorMsg").textContent = msg;
+    }
+
+    function setLoading(msg) {
+      document.getElementById("loadingMsg").textContent = msg;
+    }
+  </script>
+
+</body>
+</html>

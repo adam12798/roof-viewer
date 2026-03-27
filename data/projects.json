@@ -1,0 +1,16 @@
+[
+  {
+    "id": "mn9805q0ddm",
+    "createdAt": "2026-03-27T18:14:03.768Z",
+    "projectName": "",
+    "propertyType": "residential",
+    "address": "20 Meadow Dr, Lowell, MA 01854, USA",
+    "lat": 42.64627489999999,
+    "lng": -71.3545337,
+    "customer": {
+      "name": "",
+      "email": "",
+      "phone": ""
+    }
+  }
+]
