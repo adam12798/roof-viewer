@@ -115,11 +115,16 @@
       display: block;
     }
 
+    .bottom-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 12px;
+    }
+
     .zoom-controls {
       display: flex;
       gap: 8px;
-      margin-top: 12px;
-      justify-content: flex-end;
     }
 
     .zoom-controls button {
@@ -140,6 +145,22 @@
       background: #4a90e2;
       border-color: #4a90e2;
       color: #fff;
+    }
+
+    .confirm-btn {
+      padding: 10px 22px;
+      font-size: 0.95rem;
+      border-radius: 10px;
+      background: #27ae60;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+
+    .confirm-btn:hover {
+      background: #1e8449;
     }
 
     .error {
@@ -175,10 +196,13 @@
     <div class="image-wrapper">
       <img id="satelliteImg" src="" alt="Satellite view" />
     </div>
-    <div class="zoom-controls">
-      <button onclick="setZoom(19)" id="z19">Wide</button>
-      <button onclick="setZoom(20)" id="z20" class="active">Roof</button>
-      <button onclick="setZoom(21)" id="z21">Max</button>
+    <div class="bottom-controls">
+      <div class="zoom-controls">
+        <button onclick="setZoom(19)" id="z19">Wide</button>
+        <button onclick="setZoom(20)" id="z20" class="active">Roof</button>
+        <button onclick="setZoom(21)" id="z21">Max</button>
+      </div>
+      <button class="confirm-btn" id="confirmBtn" onclick="confirmHouse()">Confirm House →</button>
     </div>
   </div>
 
@@ -241,6 +265,11 @@
         const btn = document.getElementById("z" + z);
         btn.classList.toggle("active", z === currentZoom);
       });
+    }
+
+    function confirmHouse() {
+      const address = document.getElementById("resolvedAddress").textContent;
+      window.location.href = `/design?lat=${currentLat}&lng=${currentLng}&address=${encodeURIComponent(address)}`;
     }
 
     function setError(msg) {
