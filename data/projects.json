@@ -11,6 +11,31 @@
       "name": "",
       "email": "",
       "phone": ""
-    }
+    },
+    "designs": [
+      {
+        "id": "mn9jvu8y3fu",
+        "name": "Design 1",
+        "createdAt": "2026-03-27T23:46:37.666Z",
+        "segments": [],
+        "stats": {
+          "cost": 0,
+          "offset": 0,
+          "kw": 0
+        }
+      },
+      {
+        "id": "mn9kvvxht9w",
+        "name": "Design 2",
+        "createdAt": "2026-03-28T00:14:39.461Z",
+        "segments": [],
+        "stats": {
+          "cost": 0,
+          "offset": 0,
+          "kw": 0
+        }
+      }
+    ],
+    "activeDesignId": "mn9kvvxht9w"
   }
 ]

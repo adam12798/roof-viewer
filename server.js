@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.GOOGLE_API_KEY;
 
 app.use(express.json());
@@ -23,6 +23,125 @@ function saveProjects(projects) {
   fs.writeFileSync(path.join(__dirname, "data/projects.json"), JSON.stringify(projects, null, 2));
 }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+
+// ── User helpers ──────────────────────────────────────────────────────────────
+function loadUsers() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/users.json"), "utf8")); }
+  catch { return []; }
+}
+function saveUsers(users) {
+  fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, "data/users.json"), JSON.stringify(users, null, 2));
+}
+
+// Persistent session store (survives restarts)
+const SESSION_FILE = path.join(__dirname, "data/sessions.json");
+function loadSessions() {
+  try { return JSON.parse(fs.readFileSync(SESSION_FILE, "utf8")); }
+  catch { return {}; }
+}
+function saveSessions(s) {
+  fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(s, null, 2));
+}
+function createSession(userId) {
+  const token = Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const sessions = loadSessions();
+  sessions[token] = { userId, createdAt: Date.now() };
+  saveSessions(sessions);
+  return token;
+}
+function getSession(req) {
+  const cookie = req.headers.cookie || "";
+  const match = cookie.match(/session=([^;]+)/);
+  if (!match) return null;
+  const sessions = loadSessions();
+  const s = sessions[match[1]];
+  if (!s) return null;
+  const users = loadUsers();
+  return users.find(u => u.id === s.userId) || null;
+}
+function requireAuth(req, res, next) {
+  const user = getSession(req);
+  if (!user) return res.redirect("/login");
+  req.user = user;
+  next();
+}
+
+// ── Login page ────────────────────────────────────────────────────────────────
+app.get("/login", (req, res) => {
+  const error = req.query.error ? '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:12px;">Invalid username or password</div>' : '';
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Login — Solar CRM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#1a0828;display:flex;align-items:center;justify-content:center;min-height:100vh;color:#fff}
+  .login-card{background:#fff;border-radius:16px;padding:40px 36px;width:380px;color:#111;box-shadow:0 20px 60px rgba(0,0,0,0.3)}
+  .login-logo{width:48px;height:48px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px}
+  h1{text-align:center;font-size:1.4rem;font-weight:700;margin-bottom:6px}
+  .subtitle{text-align:center;font-size:0.85rem;color:#6b7280;margin-bottom:28px}
+  label{display:block;font-size:0.78rem;font-weight:600;color:#374151;margin-bottom:4px}
+  input{width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:0.9rem;outline:none;transition:border-color 0.15s;margin-bottom:16px}
+  input:focus{border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,0.1)}
+  button{width:100%;padding:11px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:0.9rem;font-weight:600;cursor:pointer;transition:background 0.15s}
+  button:hover{background:#6d28d9}
+</style>
+</head><body>
+<div class="login-card">
+  <div class="login-logo">
+    <svg width="24" height="24" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+    </svg>
+  </div>
+  <h1>Solar CRM</h1>
+  <div class="subtitle">Sign in to your account</div>
+  ${error}
+  <form method="POST" action="/login">
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="username" autofocus required/>
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password" required/>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body></html>`);
+});
+
+app.post("/login", express.urlencoded({ extended: false }), (req, res) => {
+  const { username, password } = req.body;
+  const users = loadUsers();
+  const user = users.find(u => u.username === username && u.password === password && u.active);
+  if (!user) return res.redirect("/login?error=1");
+  const token = createSession(user.id);
+  res.setHeader("Set-Cookie", "session=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000");
+  res.redirect("/");
+});
+
+app.get("/logout", (req, res) => {
+  const cookie = req.headers.cookie || "";
+  const match = cookie.match(/session=([^;]+)/);
+  if (match) {
+    const sessions = loadSessions();
+    delete sessions[match[1]];
+    saveSessions(sessions);
+  }
+  res.setHeader("Set-Cookie", "session=; Path=/; HttpOnly; Max-Age=0");
+  res.redirect("/login");
+});
+
+// Protect all routes except login and static assets
+app.use((req, res, next) => {
+  if (req.path === "/login" || req.path === "/logout" || req.path === "/favicon.ico") return next();
+  const user = getSession(req);
+  if (!user) {
+    if (req.path.startsWith("/api/")) return res.status(401).json({ error: "Not authenticated" });
+    return res.redirect("/login");
+  }
+  req.user = user;
+  next();
+});
 
 // ── Shared CSS fragments ───────────────────────────────────────────────────────
 const BASE_RESET = `
@@ -67,7 +186,12 @@ app.get("/", (req, res) => {
     const typeIcon = isRes
       ? `<svg width="16" height="16" fill="#16a34a" viewBox="0 0 24 24"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><polyline points="9 21 9 12 15 12 15 21" fill="white" stroke="none"/></svg>`
       : `<svg width="16" height="16" fill="#6b7280" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="1"/></svg>`;
-    return `<tr class="data-row" data-id="${p.id}" data-name="${name.toLowerCase()}" data-customer="${customerName.toLowerCase()}" data-address="${address.toLowerCase()}" data-type="${(p.propertyType||'residential').toLowerCase()}">
+    const pStatus = (p.status || "Remote Assessment Completed").toLowerCase();
+    const pTeam = (p.team || "Team Sunshine").toLowerCase();
+    const pOrg = (p.organization || "Internal").toLowerCase();
+    const pAssignee = (p.assignee || p.customer?.name || "").toLowerCase();
+    const createdISO = p.createdAt || "";
+    return `<tr class="data-row" data-id="${p.id}" data-name="${name.toLowerCase()}" data-customer="${customerName.toLowerCase()}" data-address="${address.toLowerCase()}" data-type="${(p.propertyType||'residential').toLowerCase()}" data-status="${pStatus}" data-team="${pTeam}" data-org="${pOrg}" data-assignee="${pAssignee}" data-created="${createdISO}">
       <td class="td-check"><input type="checkbox" class="row-check" onchange="updateSelection()"/></td>
       <td class="td-name" onclick="nav('${p.id}')">${name}</td>
       <td class="td-muted" onclick="nav('${p.id}')">—</td>
@@ -453,7 +577,7 @@ app.get("/", (req, res) => {
     .bulk-action:hover { background: #f9fafb; }
 
     /* ── Table ── */
-    .table-wrap { border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+    .table-wrap { border: 1px solid #e5e7eb; border-radius: 10px; overflow: visible; }
     table { width: 100%; border-collapse: collapse; }
     thead th {
       text-align: left;
@@ -467,6 +591,10 @@ app.get("/", (req, res) => {
       border-bottom: 1px solid #e5e7eb;
       white-space: nowrap;
     }
+    thead th:first-child { border-top-left-radius: 10px; }
+    thead th:last-child { border-top-right-radius: 10px; }
+    tbody tr:last-child td:first-child { border-bottom-left-radius: 10px; }
+    tbody tr:last-child td:last-child { border-bottom-right-radius: 10px; }
     th.th-check, td.td-check {
       width: 40px;
       padding: 10px 8px 10px 16px;
@@ -479,10 +607,10 @@ app.get("/", (req, res) => {
     tbody tr.data-row:last-child { border-bottom: none; }
     tbody tr.data-row:hover { background: #fafafa; }
     tbody tr.data-row.selected { background: #f5f3ff; }
-    tbody td { padding: 12px 14px; vertical-align: middle; font-size: 0.85rem; }
+    tbody td { padding: 18px 14px; vertical-align: middle; font-size: 0.85rem; }
     .td-name { font-weight: 600; color: #111; min-width: 160px; }
     .td-muted { color: #9ca3af; }
-    .td-addr { color: #6b7280; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .td-addr { color: #6b7280; max-width: 200px; white-space: normal; word-wrap: break-word; }
 
     input[type="checkbox"] {
       width: 15px; height: 15px; cursor: pointer;
@@ -514,6 +642,24 @@ app.get("/", (req, res) => {
     .menu-item:hover { background: #f9fafb; }
     .menu-item.danger { color: #dc2626; }
     .menu-item.danger:hover { background: #fef2f2; }
+
+    /* Rename modal */
+    .rename-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999; align-items:center; justify-content:center; }
+    .rename-overlay.open { display:flex; }
+    .rename-modal { background:#fff; border-radius:14px; padding:28px 32px; width:460px; box-shadow:0 20px 60px rgba(0,0,0,0.18); position:relative; }
+    .rename-modal-close { position:absolute; top:16px; right:18px; background:none; border:none; font-size:1.3rem; color:#6b7280; cursor:pointer; padding:4px; line-height:1; }
+    .rename-modal-close:hover { color:#111; }
+    .rename-modal h2 { font-size:1.1rem; font-weight:700; color:#111; margin-bottom:20px; }
+    .rename-modal label { display:block; font-size:0.82rem; font-weight:600; color:#111; margin-bottom:6px; }
+    .rename-modal input { width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:0.9rem; background:#f9fafb; outline:none; transition:border-color 0.15s; }
+    .rename-modal input:focus { border-color:#7c3aed; background:#fff; }
+    .rename-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
+    .rename-modal-actions button { padding:8px 22px; border-radius:8px; font-size:0.88rem; font-weight:600; cursor:pointer; border:none; transition:background 0.15s; }
+    .rename-btn-cancel { background:none; color:#374151; }
+    .rename-btn-cancel:hover { background:#f3f4f6; }
+    .rename-btn-save { background:#e5e7eb; color:#9ca3af; }
+    .rename-btn-save.active { background:#7c3aed; color:#fff; }
+    .rename-btn-save.active:hover { background:#6d28d9; }
     .menu-divider { border-top: 1px solid #e5e7eb; margin: 4px 0; }
   </style>
 </head>
@@ -556,8 +702,8 @@ app.get("/", (req, res) => {
         <div class="nav-drawer-avatar">AB</div>
         Adam Bahou
       </div>
-      <a class="nav-drawer-foot-link" href="#">My profile</a>
-      <a class="nav-drawer-foot-link" href="#">Logout</a>
+      <a class="nav-drawer-foot-link" href="/settings">My profile</a>
+      <a class="nav-drawer-foot-link" href="/logout">Logout</a>
     </div>
   </div>
 
@@ -672,7 +818,7 @@ app.get("/", (req, res) => {
             ${projects.length ? tableRows : emptyRow}
           </tbody>
         </table>
-        <div class="no-results" id="noResults">No projects match your search.</div>
+        <div class="no-results" id="noResults">No projects match your search or filters.</div>
       </div>
     </div>
   </div>
@@ -692,14 +838,52 @@ app.get("/", (req, res) => {
     function filterRows() {
       var q = document.getElementById('searchInput').value.toLowerCase().trim();
       var rows = document.querySelectorAll('.data-row');
+      var total = rows.length;
       var visible = 0;
+
+      var types = (activeFilters['type'] || []).map(function(v) { return v.toLowerCase(); });
+      var statuses = (activeFilters['status'] || []).map(function(v) { return v.toLowerCase(); });
+      var teams = (activeFilters['teams'] || []).map(function(v) { return v.toLowerCase(); });
+      var orgs = (activeFilters['orgs'] || []).map(function(v) { return v.toLowerCase(); });
+      var general = activeFilters['general'] || [];
+
+      var now = new Date();
+      var weekAgo = new Date(now.getTime() - 7 * 86400000);
+      var monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+
       rows.forEach(function(row) {
         var text = (row.dataset.name + ' ' + row.dataset.customer + ' ' + row.dataset.address).toLowerCase();
-        var show = !q || text.includes(q);
+        var searchMatch = !q || text.includes(q);
+
+        var typeMatch = types.length === 0 || types.indexOf(row.dataset.type) !== -1;
+        var statusMatch = statuses.length === 0 || statuses.some(function(s) { return (row.dataset.status || '').includes(s); });
+        var teamMatch = teams.length === 0 || teams.some(function(t) { return (row.dataset.team || '').includes(t); });
+        var orgMatch = orgs.length === 0 || orgs.some(function(o) { return (row.dataset.org || '').includes(o); });
+
+        var generalMatch = true;
+        if (general.length > 0) {
+          var hasAssignee = !!(row.dataset.assignee && row.dataset.assignee.trim());
+          var created = row.dataset.created ? new Date(row.dataset.created) : null;
+          generalMatch = general.every(function(g) {
+            if (g === 'Has assignee') return hasAssignee;
+            if (g === 'No assignee') return !hasAssignee;
+            if (g === 'Created this week') return created && created >= weekAgo;
+            if (g === 'Created this month') return created && created >= monthAgo;
+            return true;
+          });
+        }
+
+        var show = searchMatch && typeMatch && statusMatch && teamMatch && orgMatch && generalMatch;
         row.style.display = show ? '' : 'none';
         if (show) visible++;
       });
-      document.getElementById('noResults').style.display = (visible === 0 && q) ? 'block' : 'none';
+
+      document.getElementById('noResults').style.display = (visible === 0 && (q || hasAnyFilter())) ? 'block' : 'none';
+      document.getElementById('filterCount').textContent = 'Showing ' + visible + ' of ' + total;
+    }
+
+    function hasAnyFilter() {
+      return Object.keys(activeFilters).some(function(k) { return (activeFilters[k] || []).length > 0; });
     }
 
     function toggleAll(cb) {
@@ -778,24 +962,18 @@ app.get("/", (req, res) => {
     }
 
     function applyFilter() {
-      var types = activeFilters['type'] || [];
-      document.querySelectorAll('.data-row').forEach(function(row) {
-        var rowType = row.getAttribute('data-type') || '';
-        var typeMatch = types.length === 0 || types.some(function(t) { return rowType.toLowerCase().includes(t.toLowerCase()); });
-        row.style.display = typeMatch ? '' : 'none';
-      });
       document.getElementById('filterPanel').classList.remove('open');
       document.getElementById('filterBtn').classList.remove('active');
+      filterRows();
       var btn = document.getElementById('filterBtn');
-      var hasActive = Object.values(activeFilters).some(function(a) { return a.length > 0; });
-      btn.style.borderColor = hasActive ? '#7c3aed' : '';
-      btn.style.color = hasActive ? '#7c3aed' : '';
+      btn.style.borderColor = hasAnyFilter() ? '#7c3aed' : '';
+      btn.style.color = hasAnyFilter() ? '#7c3aed' : '';
     }
 
     function clearFilter() {
       activeFilters = { type: [], status: [], teams: [], orgs: [], general: [] };
       renderFilterOptions();
-      document.querySelectorAll('.data-row').forEach(function(row) { row.style.display = ''; });
+      filterRows();
       var btn = document.getElementById('filterBtn');
       btn.style.borderColor = '';
       btn.style.color = '';
@@ -823,18 +1001,38 @@ app.get("/", (req, res) => {
       document.querySelectorAll('.row-menu.open').forEach(function(m) { m.classList.remove('open'); });
     });
 
+    /* ── Rename modal logic ── */
+    var renameTargetId = null;
+    var renameOriginal = '';
     function renameProject(id) {
       var row = document.querySelector('[data-id="' + id + '"]');
       var nameCell = row ? row.querySelector('.td-name') : null;
-      var current = nameCell ? nameCell.textContent.trim() : '';
-      var newName = prompt('Rename project:', current);
-      if (newName && newName.trim() && newName.trim() !== current) {
-        fetch('/api/projects/' + id + '/rename', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newName.trim() })
-        }).then(function(r) { if (r.ok) location.reload(); });
-      }
+      renameOriginal = nameCell ? nameCell.textContent.trim() : '';
+      renameTargetId = id;
+      var input = document.getElementById('renameInput');
+      input.value = renameOriginal;
+      updateRenameSave();
+      document.getElementById('renameOverlay').classList.add('open');
+      setTimeout(function(){ input.focus(); input.select(); }, 50);
+    }
+    function closeRenameModal() {
+      document.getElementById('renameOverlay').classList.remove('open');
+      renameTargetId = null;
+    }
+    function updateRenameSave() {
+      var btn = document.getElementById('renameSaveBtn');
+      var val = document.getElementById('renameInput').value.trim();
+      if (val && val !== renameOriginal) { btn.classList.add('active'); }
+      else { btn.classList.remove('active'); }
+    }
+    function submitRename() {
+      var val = document.getElementById('renameInput').value.trim();
+      if (!val || val === renameOriginal || !renameTargetId) return;
+      fetch('/api/projects/' + renameTargetId + '/rename', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: val })
+      }).then(function(r) { if (r.ok) location.reload(); });
     }
 
     function reassignProject(id) {
@@ -855,6 +1053,20 @@ app.get("/", (req, res) => {
       }
     }
   </script>
+
+  <!-- Rename modal -->
+  <div class="rename-overlay" id="renameOverlay" onclick="if(event.target===this)closeRenameModal()">
+    <div class="rename-modal">
+      <button class="rename-modal-close" onclick="closeRenameModal()">&times;</button>
+      <h2>Edit name</h2>
+      <label>Project name</label>
+      <input type="text" id="renameInput" oninput="updateRenameSave()" onkeydown="if(event.key==='Enter')submitRename();if(event.key==='Escape')closeRenameModal();"/>
+      <div class="rename-modal-actions">
+        <button class="rename-btn-cancel" onclick="closeRenameModal()">Cancel</button>
+        <button class="rename-btn-save" id="renameSaveBtn" onclick="submitRename()">Save</button>
+      </div>
+    </div>
+  </div>
 
 </body>
 </html>`);
@@ -1347,6 +1559,7 @@ app.post("/api/projects", (req, res) => {
   if (!address) return res.status(400).json({ error: "Address is required" });
 
   const projects = loadProjects();
+  const designId = newId();
   const project = {
     id: newId(),
     createdAt: new Date().toISOString(),
@@ -1359,7 +1572,11 @@ app.post("/api/projects", (req, res) => {
       name: customer?.name || "",
       email: customer?.email || "",
       phone: customer?.phone || ""
-    }
+    },
+    designs: [
+      { id: designId, name: "Design 1", createdAt: new Date().toISOString(), segments: [], stats: { cost: 0, offset: 0, kw: 0 } }
+    ],
+    activeDesignId: designId
   };
   projects.push(project);
   saveProjects(projects);
@@ -1385,6 +1602,369 @@ app.patch("/api/projects/:id/rename", (req, res) => {
   res.json({ ok: true });
 });
 
+app.patch("/api/projects/:id/reassign", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  project.assignee = req.body.assignee || project.assignee;
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+app.patch("/api/projects/:id/archive", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  project.status = "Archived";
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+app.patch("/api/projects/:id/energy", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  project.energyUsage = req.body.energyUsage || [];
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+app.get("/api/projects/:id/energy", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  res.json({ energyUsage: project.energyUsage || [] });
+});
+
+app.patch("/api/projects/:id/notes", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  project.notes = req.body.notes || "";
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// ── Design CRUD API ──────────────────────────────────────────────────────────
+// Ensure project has designs array (migration for old projects)
+function ensureDesigns(project) {
+  if (!project.designs) {
+    const did = newId();
+    project.designs = [{ id: did, name: "Design 1", createdAt: new Date().toISOString(), segments: [], stats: { cost: 0, offset: 0, kw: 0 } }];
+    project.activeDesignId = did;
+  }
+  return project;
+}
+
+// Get all designs for a project
+app.get("/api/projects/:id/designs", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  saveProjects(projects);
+  res.json({ designs: project.designs, activeDesignId: project.activeDesignId });
+});
+
+// Save a design (segments + stats)
+app.put("/api/projects/:id/designs/:designId", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  const design = project.designs.find(d => d.id === req.params.designId);
+  if (!design) return res.status(404).json({ error: "Design not found" });
+  if (req.body.segments !== undefined) design.segments = req.body.segments;
+  if (req.body.stats) design.stats = req.body.stats;
+  if (req.body.name) design.name = req.body.name;
+  design.updatedAt = new Date().toISOString();
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// Create a new design
+app.post("/api/projects/:id/designs", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  const num = project.designs.length + 1;
+  const design = {
+    id: newId(),
+    name: req.body.name || ("Design " + num),
+    createdAt: new Date().toISOString(),
+    segments: [],
+    stats: { cost: 0, offset: 0, kw: 0 }
+  };
+  project.designs.push(design);
+  project.activeDesignId = design.id;
+  saveProjects(projects);
+  res.json(design);
+});
+
+// Switch active design
+app.patch("/api/projects/:id/designs/active", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  const design = project.designs.find(d => d.id === req.body.designId);
+  if (!design) return res.status(404).json({ error: "Design not found" });
+  project.activeDesignId = req.body.designId;
+  saveProjects(projects);
+  res.json({ ok: true, design });
+});
+
+// ── Google Solar API ──────────────────────────────────────────────────────────
+app.get("/api/solar/building-insights", async (req, res) => {
+  const { lat, lng } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
+  try {
+    const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=HIGH&key=${API_KEY}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.error?.message || "Solar API error" });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/solar/data-layers", async (req, res) => {
+  const { lat, lng, radius } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
+  try {
+    const r = radius || 50;
+    const url = `https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${lat}&location.longitude=${lng}&radiusMeters=${r}&view=FULL_LAYERS&requiredQuality=HIGH&pixelSizeMeters=0.5&key=${API_KEY}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.error?.message || "Solar API error" });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/solar/geotiff", async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: "url required" });
+  try {
+    const separator = url.includes("?") ? "&" : "?";
+    const fullUrl = `${url}${separator}key=${API_KEY}`;
+    const resp = await fetch(fullUrl);
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "Unknown error");
+      return res.status(resp.status).json({ error: "GeoTIFF fetch failed: " + resp.status + " " + errText.slice(0, 200) });
+    }
+    const contentType = resp.headers.get("content-type") || "";
+    if (contentType.includes("json") || contentType.includes("html")) {
+      const body = await resp.text();
+      return res.status(400).json({ error: "Expected TIFF but got: " + contentType + " — " + body.slice(0, 200) });
+    }
+    res.set("Content-Type", "image/tiff");
+    resp.body.pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DSM elevation JSON (server-side GeoTIFF parse) ───────────────────────────
+app.get("/api/solar/dsm-elevation", async (req, res) => {
+  const { lat, lng, radius } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
+  try {
+    const r = radius || 75;
+    const layersUrl = `https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${lat}&location.longitude=${lng}&radiusMeters=${r}&view=FULL_LAYERS&requiredQuality=HIGH&pixelSizeMeters=0.5&key=${API_KEY}`;
+    const layersResp = await fetch(layersUrl);
+    if (!layersResp.ok) {
+      const err = await layersResp.json().catch(() => ({}));
+      return res.status(layersResp.status).json({ error: err.error?.message || "Solar API error" });
+    }
+    const layers = await layersResp.json();
+    const dsmUrl = layers.dsmUrl;
+    if (!dsmUrl) return res.json({ error: "No DSM data available for this location" });
+
+    // Fetch DSM and RGB satellite image in parallel
+    const dsmSep = dsmUrl.includes("?") ? "&" : "?";
+    const rgbUrl = layers.rgbUrl;
+    const fetches = [fetch(`${dsmUrl}${dsmSep}key=${API_KEY}`)];
+    if (rgbUrl) {
+      const rgbSep = rgbUrl.includes("?") ? "&" : "?";
+      fetches.push(fetch(`${rgbUrl}${rgbSep}key=${API_KEY}`));
+    }
+    const [tiffResp, rgbResp] = await Promise.all(fetches);
+
+    if (!tiffResp.ok) return res.status(tiffResp.status).json({ error: "GeoTIFF fetch failed: " + tiffResp.status });
+
+    const GeoTIFF = require("geotiff");
+
+    // Parse DSM elevation
+    const buf = await tiffResp.arrayBuffer();
+    const tiff = await GeoTIFF.fromArrayBuffer(buf);
+    const image = await tiff.getImage();
+    const rasters = await image.readRasters();
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const elevData = Array.from(rasters[0]);
+
+    // Compute geographic bbox from known API parameters
+    // GeoTIFF getBoundingBox() returns projected coords (UTM), not lat/lng
+    // So we derive the bbox from center + dimensions + pixel size
+    const latF = parseFloat(lat);
+    const lngF = parseFloat(lng);
+    const pixelSizeM = 0.5; // matches API request
+    const halfWidthM = (width * pixelSizeM) / 2;
+    const halfHeightM = (height * pixelSizeM) / 2;
+    const dLat = halfHeightM / 111320;
+    const dLng = halfWidthM / (111320 * Math.cos(latF * Math.PI / 180));
+    const bbox = [lngF - dLng, latF - dLat, lngF + dLng, latF + dLat]; // [minLng, minLat, maxLng, maxLat]
+
+    // Parse RGB satellite image if available
+    let satelliteDataUrl = null;
+    if (rgbResp && rgbResp.ok) {
+      try {
+        const { PNG } = require("pngjs");
+        const rgbBuf = await rgbResp.arrayBuffer();
+        const rgbTiff = await GeoTIFF.fromArrayBuffer(rgbBuf);
+        const rgbImage = await rgbTiff.getImage();
+        const rgbRasters = await rgbImage.readRasters();
+        const rgbW = rgbImage.getWidth();
+        const rgbH = rgbImage.getHeight();
+        const rBand = rgbRasters[0], gBand = rgbRasters[1], bBand = rgbRasters[2];
+
+        const png = new PNG({ width: rgbW, height: rgbH });
+        for (let i = 0; i < rgbW * rgbH; i++) {
+          png.data[i * 4]     = rBand[i];
+          png.data[i * 4 + 1] = gBand[i];
+          png.data[i * 4 + 2] = bBand[i];
+          png.data[i * 4 + 3] = 255;
+        }
+        const pngBuffer = PNG.sync.write(png);
+        satelliteDataUrl = "data:image/png;base64," + pngBuffer.toString("base64");
+      } catch (rgbErr) {
+        console.error("RGB satellite parse error:", rgbErr.message);
+      }
+    }
+
+    res.json({ error: null, width, height, elevData, satelliteDataUrl, bbox });
+  } catch (e) {
+    res.status(500).json({ error: "DSM parse failed: " + e.message });
+  }
+});
+
+// ── USGS 3DEP LiDAR API ──────────────────────────────────────────────────────
+app.get("/api/lidar/points", async (req, res) => {
+  const { lat, lng, radius } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
+  const r = parseFloat(radius) || 15; // meters (~50ft — just the target property)
+  const latF = parseFloat(lat);
+  const lngF = parseFloat(lng);
+
+  // Convert radius to approximate degree offset
+  const dLat = r / 111320;
+  const dLng = r / (111320 * Math.cos(latF * Math.PI / 180));
+  const minX = lngF - dLng;
+  const maxX = lngF + dLng;
+  const minY = latF - dLat;
+  const maxY = latF + dLat;
+
+  try {
+    // Step 1: Search USGS Entwine index for LiDAR datasets at this location
+    const searchUrl = `https://usgs.entwine.io/boundaries/`;
+    let boundaries = [];
+    try {
+      const searchResp = await fetch(searchUrl);
+      if (searchResp.ok) {
+        const allBoundaries = await searchResp.json();
+        // Filter boundaries that contain our point
+        boundaries = allBoundaries.filter(b => {
+          if (!b.bounds) return false;
+          const [bMinX, bMinY, , bMaxX, bMaxY] = b.bounds;
+          return lngF >= bMinX && lngF <= bMaxX && latF >= bMinY && latF <= bMaxY;
+        });
+      }
+    } catch(e) { /* entwine search failed, try fallback */ }
+
+    if (boundaries.length > 0) {
+      // Found matching LiDAR dataset — try to read points
+      const boundary = boundaries[0];
+      const eptRoot = boundary.url;
+
+      if (eptRoot) {
+        // Read points from EPT endpoint
+        const readUrl = `https://usgs.entwine.io/data/read?url=${encodeURIComponent(eptRoot)}&bounds=[${minX},${minY},${maxX},${maxY}]&depthEnd=14`;
+        const readResp = await fetch(readUrl);
+
+        if (readResp.ok) {
+          const pointData = await readResp.json();
+          let points = [];
+          if (Array.isArray(pointData)) {
+            const raw = pointData.map(p => [
+              p.X ?? p.x ?? p[0] ?? 0,
+              p.Y ?? p.y ?? p[1] ?? 0,
+              p.Z ?? p.z ?? p[2] ?? 0,
+              p.Classification ?? p.classification ?? p[3] ?? 0
+            ]);
+            // Spatial thinning: keep highest point per 0.3m grid cell (outer surface only)
+            const cellSize = 0.000003; // ~0.3m in degrees
+            const grid = new Map();
+            for (const pt of raw) {
+              const key = Math.floor(pt[0] / cellSize) + ',' + Math.floor(pt[1] / cellSize);
+              const existing = grid.get(key);
+              if (!existing || pt[2] > existing[2]) grid.set(key, pt);
+            }
+            points = Array.from(grid.values()).slice(0, 50000);
+          }
+          return res.json({
+            error: null,
+            points,
+            bounds: { minX, maxX, minY, maxY },
+            dataset: boundary.name || "USGS 3DEP",
+            count: points.length
+          });
+        }
+      }
+
+      // EPT root found but point read failed
+      return res.json({
+        error: null,
+        available: true,
+        dataset: boundary.name || "USGS 3DEP",
+        points: [],
+        message: "LiDAR dataset found (" + (boundary.name || "USGS 3DEP") + ") but point streaming unavailable."
+      });
+    }
+
+    // Step 2: Fallback — check The National Map for available LiDAR products
+    const tnmUrl = `https://tnmaccess.nationalmap.gov/api/v1/products?datasets=Lidar%20Point%20Cloud%20(LPC)&bbox=${minX},${minY},${maxX},${maxY}&max=3&outputFormat=JSON`;
+    const tnmResp = await fetch(tnmUrl);
+    if (tnmResp.ok) {
+      const tnmData = await tnmResp.json();
+      if (tnmData.items && tnmData.items.length > 0) {
+        return res.json({
+          error: null,
+          available: true,
+          dataset: tnmData.items[0].title,
+          downloadUrl: tnmData.items[0].downloadURL,
+          points: [],
+          message: "LiDAR data available: " + tnmData.items[0].title + ". Full point cloud requires LAZ processing."
+        });
+      }
+    }
+
+    return res.json({ error: "No LiDAR coverage found for this location. USGS 3DEP covers ~80% of the US.", points: [] });
+
+  } catch (e) {
+    res.status(500).json({ error: "LiDAR query failed: " + e.message, points: [] });
+  }
+});
+
 // ── Project detail page ────────────────────────────────────────────────────────
 app.get("/project/:id", (req, res) => {
   const projects = loadProjects();
@@ -1392,7 +1972,10 @@ app.get("/project/:id", (req, res) => {
   if (!project) return res.status(404).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>Project not found</h2><p><a href="/">← Back</a></p></body></html>`);
 
   const tab = req.query.tab || "dashboard";
-  const designUrl = `/design?lat=${project.lat}&lng=${project.lng}&address=${encodeURIComponent(project.address)}`;
+  ensureDesigns(project);
+  saveProjects(projects);
+  const designUrl = `/design?lat=${project.lat}&lng=${project.lng}&address=${encodeURIComponent(project.address)}&projectId=${project.id}`;
+  const salesUrl = `/sales?projectId=${project.id}`;
   const customerName = esc(project.customer?.name || project.projectName || "Untitled");
   const shortAddr = esc((project.address || "").split(",").slice(0,2).join(","));
   const typeLabel = project.propertyType === "commercial" ? "Commercial" : "Residential";
@@ -1728,6 +2311,15 @@ app.get("/project/:id", (req, res) => {
           <div class="estat-label">Avg. monthly</div>
           <div class="estat-val" id="estatVal2">—</div>
         </div>
+      </div>
+
+      <!-- Bar chart -->
+      <div class="energy-chart-section" id="energyChartSection" style="display:none">
+        <canvas id="energyBarChart" width="900" height="320"></canvas>
+        <div class="echart-legend">
+          <span class="echart-legend-item"><span class="echart-swatch" style="background:#e8743b"></span> Energy (kWh)</span>
+          <span class="echart-legend-item"><span class="echart-swatch echart-swatch-est"></span> Energy estimate (kWh)</span>
+        </div>
       </div>`;
   }
 
@@ -1811,7 +2403,7 @@ app.get("/project/:id", (req, res) => {
         <div class="db-section-head">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           Designs
-          <button class="db-new-btn">
+          <button class="db-new-btn" onclick="createNewDesignFromDashboard()">
             <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             New design
           </button>
@@ -1824,22 +2416,24 @@ app.get("/project/:id", (req, res) => {
             </tr>
           </thead>
           <tbody>
-            <tr class="db-design-row" onclick="location.href='${designUrl}'">
-              <td class="db-td-name">Design 1</td>
+            ${project.designs.map(d => `
+            <tr class="db-design-row" onclick="location.href='${designUrl}&designId=${d.id}'">
+              <td class="db-td-name">${esc(d.name)}</td>
               <td>—</td>
               <td>—</td>
-              <td>$0.00</td>
-              <td>0%</td>
-              <td>0 kW</td>
-              <td>${timeAgo(project.createdAt)}</td>
+              <td>$${(d.stats?.cost || 0).toLocaleString()}</td>
+              <td>${d.stats?.offset || 0}%</td>
+              <td>${d.stats?.kw || 0} kW</td>
+              <td>${timeAgo(d.updatedAt || d.createdAt)}</td>
               <td class="db-td-actions">
-                <span class="db-sales-btn">
+                <span class="db-sales-btn" onclick="event.stopPropagation(); location.href='${salesUrl}'" style="cursor:pointer">
                   <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                   Sales Mode
                 </span>
                 <button class="db-more-btn" onclick="event.stopPropagation()">···</button>
               </td>
             </tr>
+            `).join('')}
           </tbody>
         </table>
       </div>
@@ -1925,7 +2519,7 @@ app.get("/project/:id", (req, res) => {
     const firstName = esc(nameParts[0]||"");
     const lastName = esc(nameParts.slice(1).join(" ")||"");
     const mapSrc = project.lat && project.lng
-      ? `https://maps.googleapis.com/maps/api/staticmap?center=${project.lat},${project.lng}&zoom=16&size=640x520&maptype=satellite&markers=color:red%7C${project.lat},${project.lng}&key=${process.env.GOOGLE_MAPS_KEY||""}`
+      ? `https://maps.googleapis.com/maps/api/staticmap?center=${project.lat},${project.lng}&zoom=19&size=640x640&scale=2&maptype=satellite&key=${process.env.GOOGLE_MAPS_KEY||""}`
       : "";
     tabContent = `
       <div class="cp-layout">
@@ -1997,7 +2591,7 @@ app.get("/project/:id", (req, res) => {
         <!-- Right: satellite map -->
         <div class="cp-map">
           ${mapSrc
-            ? `<img src="${mapSrc}" alt="Property satellite view" style="width:100%;height:100%;object-fit:cover;"/>`
+            ? `<img src="${mapSrc}" alt="Property satellite view"/>`
             : `<div style="width:100%;height:100%;background:#e5e7eb;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:0.85rem;">No location data</div>`
           }
         </div>
@@ -2078,6 +2672,49 @@ app.get("/project/:id", (req, res) => {
             <svg width="30" height="30" fill="none" stroke="#c0c0c0" stroke-width="1.4" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M9 11l-3 9h12l-3-9"/><line x1="12" y1="16" x2="12" y2="20" stroke-width="2"/></svg>
             <div class="doc-card-empty-text">Your completed plan sets and stamps will be available to download here.</div>
           </div>
+        </div>
+      </div>`;
+  }
+
+  else if (tab === "notes") {
+    const savedNotes = esc(project.notes || "");
+    tabContent = `
+      <div class="notes-layout">
+        <div class="notes-col">
+          <h2 class="notes-heading">Notes</h2>
+          <div class="notes-editor-wrap">
+            <div class="notes-editor" id="notesEditor" contenteditable="true">${savedNotes || ""}</div>
+            <div class="notes-toolbar">
+              <button type="button" class="nt-btn" title="Bold" onclick="document.execCommand('bold')"><b>B</b></button>
+              <button type="button" class="nt-btn" title="Italic" onclick="document.execCommand('italic')"><i>I</i></button>
+              <button type="button" class="nt-btn" title="Underline" onclick="document.execCommand('underline')"><u>U</u></button>
+              <button type="button" class="nt-btn" title="Strikethrough" onclick="document.execCommand('strikeThrough')"><s>S</s></button>
+              <button type="button" class="nt-btn" title="Bullet list" onclick="document.execCommand('insertUnorderedList')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
+              </button>
+              <button type="button" class="nt-btn" title="Numbered list" onclick="document.execCommand('insertOrderedList')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="10" y1="6" x2="20" y2="6"/><line x1="10" y1="12" x2="20" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/><text x="2" y="8" font-size="8" fill="currentColor" stroke="none" font-family="sans-serif">1</text><text x="2" y="14" font-size="8" fill="currentColor" stroke="none" font-family="sans-serif">2</text><text x="2" y="20" font-size="8" fill="currentColor" stroke="none" font-family="sans-serif">3</text></svg>
+              </button>
+              <button type="button" class="nt-btn" title="Insert link" onclick="insertNoteLink()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+              </button>
+            </div>
+            <div class="notes-save-status" id="notesSaveStatus"></div>
+          </div>
+        </div>
+        <div class="attach-col">
+          <h2 class="notes-heading">Attachments</h2>
+          <div class="attach-dropzone" id="attachDropzone"
+               onclick="document.getElementById('attachFileInput').click()"
+               ondragover="event.preventDefault();this.classList.add('drag-over')"
+               ondragleave="this.classList.remove('drag-over')"
+               ondrop="event.preventDefault();this.classList.remove('drag-over');handleAttachDrop(event)">
+            <svg width="24" height="24" fill="none" stroke="#9ca3af" stroke-width="2" viewBox="0 0 24 24"><path d="M12 19V5m0 0l-5 5m5-5l5 5"/></svg>
+            <span class="attach-title">Upload attachments</span>
+            <span class="attach-sub">Drag and drop or <span class="attach-browse">browse files</span> on your device</span>
+          </div>
+          <input type="file" id="attachFileInput" multiple hidden onchange="handleAttachPick(this)"/>
+          <div class="attach-list" id="attachList"></div>
         </div>
       </div>`;
   }
@@ -2233,6 +2870,24 @@ app.get("/project/:id", (req, res) => {
     .sidebar-more-menu .menu-item:hover { background: #f9fafb; }
     .sidebar-more-menu .menu-item.danger { color: #dc2626; }
     .sidebar-more-menu .menu-divider { height: 1px; background: #f3f4f6; margin: 4px 0; }
+
+    /* Rename modal */
+    .rename-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999; align-items:center; justify-content:center; }
+    .rename-overlay.open { display:flex; }
+    .rename-modal { background:#fff; border-radius:14px; padding:28px 32px; width:460px; box-shadow:0 20px 60px rgba(0,0,0,0.18); position:relative; }
+    .rename-modal-close { position:absolute; top:16px; right:18px; background:none; border:none; font-size:1.3rem; color:#6b7280; cursor:pointer; padding:4px; line-height:1; }
+    .rename-modal-close:hover { color:#111; }
+    .rename-modal h2 { font-size:1.1rem; font-weight:700; color:#111; margin-bottom:20px; }
+    .rename-modal label { display:block; font-size:0.82rem; font-weight:600; color:#111; margin-bottom:6px; }
+    .rename-modal input { width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:0.9rem; background:#f9fafb; outline:none; transition:border-color 0.15s; }
+    .rename-modal input:focus { border-color:#7c3aed; background:#fff; }
+    .rename-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
+    .rename-modal-actions button { padding:8px 22px; border-radius:8px; font-size:0.88rem; font-weight:600; cursor:pointer; border:none; transition:background 0.15s; }
+    .rename-btn-cancel { background:none; color:#374151; }
+    .rename-btn-cancel:hover { background:#f3f4f6; }
+    .rename-btn-save { background:#e5e7eb; color:#9ca3af; }
+    .rename-btn-save.active { background:#7c3aed; color:#fff; }
+    .rename-btn-save.active:hover { background:#6d28d9; }
 
     .nav-item {
       display: flex; align-items: center; gap: 10px;
@@ -2460,6 +3115,14 @@ app.get("/project/:id", (req, res) => {
     .estat-val { font-size: 2rem; font-weight: 700; color: #111; }
     .estat-unit { font-size: 0.9rem; font-weight: 400; color: #6b7280; }
 
+    /* ── Energy bar chart ── */
+    .energy-chart-section { margin-top: 8px; }
+    .energy-chart-section canvas { width: 100%; height: auto; }
+    .echart-legend { display: flex; gap: 24px; justify-content: center; margin-top: 12px; font-size: 0.8rem; color: #6b7280; }
+    .echart-legend-item { display: flex; align-items: center; gap: 6px; }
+    .echart-swatch { width: 14px; height: 14px; border-radius: 2px; display: inline-block; }
+    .echart-swatch-est { background: repeating-linear-gradient(-45deg, #e8743b, #e8743b 2px, #f4a87a 2px, #f4a87a 4px); }
+
     /* ── Dashboard tab ── */
     .db-top-row { display: flex; gap: 16px; margin-bottom: 16px; }
     .db-card {
@@ -2565,9 +3228,9 @@ app.get("/project/:id", (req, res) => {
       overflow-y: auto; flex-shrink: 0;
     }
     .cp-map {
-      flex: 1; background: #e5e7eb; overflow: hidden;
+      flex: 1; background: #e5e7eb; overflow: hidden; min-height: 100%;
     }
-    .cp-map img { display: block; }
+    .cp-map img { display: block; width: 100%; height: 100%; object-fit: cover; }
     .cp-title {
       display: flex; align-items: center; gap: 10px;
       font-size: 1.25rem; font-weight: 700; color: #111;
@@ -2664,6 +3327,60 @@ app.get("/project/:id", (req, res) => {
       gap: 12px;
     }
     .doc-card-empty-text { font-size: 0.78rem; color: #9ca3af; line-height: 1.5; }
+
+    /* ── Notes tab ── */
+    .notes-layout { display: flex; gap: 48px; padding: 32px 40px; }
+    .notes-col { flex: 1.2; min-width: 0; }
+    .attach-col { flex: 0.8; min-width: 0; }
+    .notes-heading { font-size: 1.35rem; font-weight: 600; color: #111; margin-bottom: 18px; }
+    .notes-editor-wrap { background: #f5f5f5; border-radius: 10px; overflow: hidden; }
+    .notes-editor {
+      min-height: 180px; padding: 18px 20px; font-size: 0.9rem; color: #111;
+      outline: none; line-height: 1.65; word-wrap: break-word;
+    }
+    .notes-editor:empty::before {
+      content: "Start typing..."; color: #bbb; pointer-events: none;
+    }
+    .notes-toolbar {
+      display: flex; align-items: center; gap: 2px; padding: 8px 12px;
+      border-top: 1px solid #e5e5e5; background: #f5f5f5;
+    }
+    .nt-btn {
+      width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+      background: none; border: none; border-radius: 5px; cursor: pointer;
+      color: #555; font-size: 0.88rem; transition: background 0.15s;
+    }
+    .nt-btn:hover { background: #e8e8e8; color: #111; }
+    .notes-save-status {
+      padding: 6px 14px; font-size: 0.78rem; color: #9ca3af;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .notes-save-status.saved::before { content: "\\2713"; color: #22c55e; }
+
+    .attach-dropzone {
+      border: 2px dashed #d1d5db; border-radius: 12px; padding: 48px 32px;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      text-align: center;
+    }
+    .attach-dropzone:hover { background: #f9fafb; }
+    .attach-dropzone.drag-over { background: #f0f4ff; border-color: #6b7280; }
+    .attach-title { font-size: 1.05rem; font-weight: 600; color: #111; display: flex; align-items: center; gap: 8px; }
+    .attach-sub { font-size: 0.82rem; color: #9ca3af; }
+    .attach-browse { color: #3b82f6; cursor: pointer; }
+    .attach-browse:hover { text-decoration: underline; }
+    .attach-list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .attach-file {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;
+      padding: 10px 14px; font-size: 0.82rem; color: #333;
+    }
+    .attach-file-name { display: flex; align-items: center; gap: 8px; }
+    .attach-remove {
+      background: none; border: none; color: #9ca3af; cursor: pointer;
+      font-size: 1rem; padding: 0 4px; transition: color 0.15s;
+    }
+    .attach-remove:hover { color: #ef4444; }
   </style>
 </head>
 <body>
@@ -2715,7 +3432,7 @@ app.get("/project/:id", (req, res) => {
           <button class="dm-create-btn">+ Create new design</button>
         </div>
       </div>
-      <button class="mode-btn mode-btn-outline">
+      <button class="mode-btn mode-btn-outline" onclick="location.href='${salesUrl}'">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         Sales mode
         <svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
@@ -2735,11 +3452,11 @@ app.get("/project/:id", (req, res) => {
         <div class="sidebar-more-wrap" onclick="event.stopPropagation()">
           <button class="sidebar-more" onclick="toggleSidebarMenu()">···</button>
           <div class="sidebar-more-menu" id="sidebarMoreMenu">
-            <button class="menu-item">Rename</button>
-            <button class="menu-item">Assign to team</button>
+            <button class="menu-item" onclick="sidebarRename()">Rename</button>
+            <button class="menu-item" onclick="sidebarAssign()">Assign to team</button>
             <div class="menu-divider"></div>
-            <button class="menu-item danger">Delete</button>
-            <button class="menu-item">Archive</button>
+            <button class="menu-item danger" onclick="sidebarDelete()">Delete</button>
+            <button class="menu-item" onclick="sidebarArchive()">Archive</button>
           </div>
         </div>
       </div>
@@ -2760,6 +3477,173 @@ app.get("/project/:id", (req, res) => {
   </div>
 
   <script>
+    var PROJECT_ID = "${project.id}";
+
+    /* ── Create new design from dashboard ── */
+    function createNewDesignFromDashboard() {
+      fetch('/api/projects/' + PROJECT_ID + '/designs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }).then(function(r) { return r.json(); }).then(function(design) {
+        var designUrl = '/design?lat=${project.lat}&lng=${project.lng}&address=${encodeURIComponent(project.address)}&projectId=${project.id}&designId=' + design.id;
+        location.href = designUrl;
+      });
+    }
+
+    /* ── Energy usage save/load ── */
+    function getMonthlyValues() {
+      var inputs = document.querySelectorAll('.month-input');
+      var vals = [];
+      inputs.forEach(function(inp) { vals.push(parseFloat(inp.value) || 0); });
+      return vals;
+    }
+
+    function saveEnergyUsage() {
+      var vals = getMonthlyValues();
+      var annual = vals.reduce(function(a,b){ return a+b; }, 0);
+      var avg = annual / 12;
+      var v1 = document.getElementById('estatVal1');
+      var v2 = document.getElementById('estatVal2');
+      if (v1) v1.innerHTML = annual > 0 ? annual.toLocaleString() + ' <span class="estat-unit">kWh</span>' : '\\u2014';
+      if (v2) v2.innerHTML = avg > 0 ? Math.round(avg).toLocaleString() + ' <span class="estat-unit">kWh</span>' : '\\u2014';
+
+      drawEnergyBar(vals);
+
+      fetch('/api/projects/' + PROJECT_ID + '/energy', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ energyUsage: vals })
+      });
+    }
+
+    /* ── Energy bar chart ── */
+    function drawEnergyBar(vals) {
+      var section = document.getElementById('energyChartSection');
+      var canvas = document.getElementById('energyBarChart');
+      if (!section || !canvas) return;
+      var hasData = vals.some(function(v) { return v > 0; });
+      section.style.display = hasData ? '' : 'none';
+      if (!hasData) return;
+
+      var ctx = canvas.getContext('2d');
+      var dpr = window.devicePixelRatio || 1;
+      var W = 900, H = 320;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, W, H);
+
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      var maxVal = Math.max.apply(null, vals);
+      // Round up to nice grid
+      var gridStep = maxVal <= 500 ? 100 : maxVal <= 2000 ? 200 : maxVal <= 5000 ? 500 : 1000;
+      var gridMax = Math.ceil(maxVal * 1.1 / gridStep) * gridStep;
+      if (gridMax === 0) gridMax = 100;
+      var gridLines = Math.round(gridMax / gridStep);
+
+      var pad = { top: 16, right: 20, bottom: 36, left: 70 };
+      var chartW = W - pad.left - pad.right;
+      var chartH = H - pad.top - pad.bottom;
+
+      // Grid lines + y-axis labels
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      for (var g = 0; g <= gridLines; g++) {
+        var val = gridStep * g;
+        var y = pad.top + chartH - (val / gridMax) * chartH;
+        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#9ca3af'; ctx.font = '11px -apple-system, sans-serif';
+        ctx.fillText(val.toLocaleString() + ' kWh', pad.left - 8, y);
+      }
+
+      // Bars
+      var barGroupW = chartW / 12;
+      var barW = barGroupW * 0.5;
+      var entered = vals.filter(function(v) { return v > 0; }).length;
+      var isEstimate = entered > 0 && entered < 12;
+
+      for (var i = 0; i < 12; i++) {
+        var cx = pad.left + barGroupW * i + barGroupW / 2;
+        var v = vals[i];
+        if (v <= 0) continue;
+        var bh = (v / gridMax) * chartH;
+        var bx = cx - barW / 2;
+        var by = pad.top + chartH - bh;
+
+        // Solid bar
+        ctx.fillStyle = '#e8743b';
+        ctx.beginPath();
+        barRect(ctx, bx, by, barW, bh, 3);
+        ctx.fill();
+
+        // Diagonal hatch overlay for estimated months
+        if (isEstimate) {
+          ctx.save();
+          ctx.beginPath();
+          barRect(ctx, bx, by, barW, bh, 3);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth = 1.5;
+          for (var d = -bh - barW; d < barW + bh; d += 6) {
+            ctx.beginPath();
+            ctx.moveTo(bx + d, by + bh);
+            ctx.lineTo(bx + d + bh, by);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        // Month label
+        ctx.fillStyle = '#6b7280'; ctx.font = '12px -apple-system, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(months[i], cx, H - pad.bottom + 18);
+      }
+    }
+
+    function barRect(ctx, x, y, w, h, r) {
+      if (h < r * 2) r = h / 2;
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    /* ── Annual estimate → distribute evenly and update ── */
+    var annualInput = document.querySelector('.annual-input');
+    if (annualInput) {
+      annualInput.addEventListener('input', function() {
+        var total = parseFloat(this.value) || 0;
+        // Distribute with seasonal variation (winter higher, summer lower)
+        var weights = [1.27,1.09,1.09,0.99,0.92,0.80,0.94,0.93,0.85,0.95,0.99,1.18];
+        var wSum = weights.reduce(function(a,b){return a+b;},0);
+        var inputs = document.querySelectorAll('.month-input');
+        inputs.forEach(function(inp, i) {
+          inp.value = Math.round(total * weights[i] / wSum);
+        });
+        saveEnergyUsage();
+      });
+    }
+
+    function loadEnergyUsage() {
+      fetch('/api/projects/' + PROJECT_ID + '/energy')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.energyUsage && data.energyUsage.length) {
+            var inputs = document.querySelectorAll('.month-input');
+            data.energyUsage.forEach(function(val, i) {
+              if (inputs[i] && val > 0) inputs[i].value = val;
+            });
+            saveEnergyUsage();
+          }
+        });
+    }
+
+    document.querySelectorAll('.month-input').forEach(function(inp) {
+      inp.addEventListener('input', saveEnergyUsage);
+    });
+    loadEnergyUsage();
+
     function handleBillFile(input) {
       if (input.files && input.files[0]) {
         document.getElementById('uploadTitle').textContent = input.files[0].name;
@@ -2881,6 +3765,55 @@ app.get("/project/:id", (req, res) => {
     function toggleSidebarMenu() {
       document.getElementById('sidebarMoreMenu').classList.toggle('open');
     }
+    var sidebarRenameOriginal = '';
+    function sidebarRename() {
+      sidebarRenameOriginal = document.querySelector('.sidebar-customer-name').textContent.trim();
+      var input = document.getElementById('renameInput');
+      input.value = sidebarRenameOriginal;
+      updateRenameSave();
+      document.getElementById('renameOverlay').classList.add('open');
+      setTimeout(function(){ input.focus(); input.select(); }, 50);
+    }
+    function closeRenameModal() {
+      document.getElementById('renameOverlay').classList.remove('open');
+    }
+    function updateRenameSave() {
+      var btn = document.getElementById('renameSaveBtn');
+      var val = document.getElementById('renameInput').value.trim();
+      if (val && val !== sidebarRenameOriginal) { btn.classList.add('active'); }
+      else { btn.classList.remove('active'); }
+    }
+    function submitRename() {
+      var val = document.getElementById('renameInput').value.trim();
+      if (!val || val === sidebarRenameOriginal) return;
+      fetch('/api/projects/${project.id}/rename', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: val })
+      }).then(function(r) { if (r.ok) location.reload(); });
+    }
+    function sidebarAssign() {
+      var team = prompt('Assign to team member:');
+      if (team && team.trim()) {
+        fetch('/api/projects/${project.id}/reassign', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assignee: team.trim() })
+        }).then(function(r) { if (r.ok) location.reload(); });
+      }
+    }
+    function sidebarDelete() {
+      if (confirm('Are you sure you want to delete this project? This cannot be undone.')) {
+        fetch('/api/projects/${project.id}', {
+          method: 'DELETE'
+        }).then(function(r) { if (r.ok) window.location.href = '/crm'; });
+      }
+    }
+    function sidebarArchive() {
+      fetch('/api/projects/${project.id}/archive', {
+        method: 'PATCH'
+      }).then(function(r) { if (r.ok) window.location.href = '/crm'; });
+    }
     document.addEventListener('click', function(e) {
       var dmWrap = document.getElementById('dmWrap');
       if (dmWrap && !dmWrap.contains(e.target)) {
@@ -2891,7 +3824,94 @@ app.get("/project/:id", (req, res) => {
         smMenu.classList.remove('open');
       }
     });
+
+    /* ── Notes auto-save ── */
+    (function() {
+      var editor = document.getElementById('notesEditor');
+      var status = document.getElementById('notesSaveStatus');
+      if (!editor || !status) return;
+      var saveTimer = null;
+      var projectId = '${project.id}';
+
+      function saveNotes() {
+        var html = editor.innerHTML;
+        status.className = 'notes-save-status';
+        status.textContent = 'Saving...';
+        fetch('/api/projects/' + projectId + '/notes', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notes: html })
+        }).then(function(r) { return r.json(); }).then(function() {
+          status.className = 'notes-save-status saved';
+          status.textContent = ' Saved';
+        }).catch(function() {
+          status.className = 'notes-save-status';
+          status.textContent = 'Save failed';
+          status.style.color = '#ef4444';
+        });
+      }
+
+      editor.addEventListener('input', function() {
+        clearTimeout(saveTimer);
+        status.className = 'notes-save-status';
+        status.textContent = '';
+        saveTimer = setTimeout(saveNotes, 800);
+      });
+
+      // show Saved on load if content exists
+      if (editor.textContent.trim()) {
+        status.className = 'notes-save-status saved';
+        status.textContent = ' Saved';
+      }
+    })();
+
+    /* ── Insert link in notes ── */
+    function insertNoteLink() {
+      var url = prompt('Enter URL:');
+      if (url) document.execCommand('createLink', false, url);
+    }
+
+    /* ── Attachments (visual) ── */
+    var attachFiles = [];
+    function renderAttachList() {
+      var list = document.getElementById('attachList');
+      if (!list) return;
+      list.innerHTML = attachFiles.map(function(f, i) {
+        return '<div class="attach-file"><span class="attach-file-name"><svg width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' + f + '</span><button class="attach-remove" onclick="removeAttach(' + i + ')">&times;</button></div>';
+      }).join('');
+    }
+    function addAttachFiles(fileList) {
+      for (var i = 0; i < fileList.length; i++) {
+        attachFiles.push(fileList[i].name);
+      }
+      renderAttachList();
+    }
+    function removeAttach(idx) {
+      attachFiles.splice(idx, 1);
+      renderAttachList();
+    }
+    function handleAttachDrop(e) {
+      if (e.dataTransfer && e.dataTransfer.files) addAttachFiles(e.dataTransfer.files);
+    }
+    function handleAttachPick(input) {
+      if (input.files) addAttachFiles(input.files);
+      input.value = '';
+    }
   </script>
+
+  <!-- Rename modal -->
+  <div class="rename-overlay" id="renameOverlay" onclick="if(event.target===this)closeRenameModal()">
+    <div class="rename-modal">
+      <button class="rename-modal-close" onclick="closeRenameModal()">&times;</button>
+      <h2>Edit name</h2>
+      <label>Project name</label>
+      <input type="text" id="renameInput" oninput="updateRenameSave()" onkeydown="if(event.key==='Enter')submitRename();if(event.key==='Escape')closeRenameModal();"/>
+      <div class="rename-modal-actions">
+        <button class="rename-btn-cancel" onclick="closeRenameModal()">Cancel</button>
+        <button class="rename-btn-save" id="renameSaveBtn" onclick="submitRename()">Save</button>
+      </div>
+    </div>
+  </div>
 
 </body>
 </html>`);
@@ -2899,9 +3919,33 @@ app.get("/project/:id", (req, res) => {
 
 // ── Design / Pin screen ────────────────────────────────────────────────────────
 app.get("/design", (req, res) => {
-  const { lat, lng, address, customer } = req.query;
+  const { lat, lng, address, customer, projectId } = req.query;
   if (!lat || !lng) return res.redirect("/");
   const safeAddress = (address || "Selected Location").replace(/`/g, "'").replace(/</g, "&lt;");
+  // Load energy usage and designs from project if available
+  let energyUsage = [];
+  let designs = [];
+  let activeDesignId = "";
+  let designIdx = 0;
+  if (projectId) {
+    const projects = loadProjects();
+    const proj = projects.find(p => p.id === projectId);
+    if (proj) {
+      if (proj.energyUsage) energyUsage = proj.energyUsage;
+      ensureDesigns(proj);
+      designs = proj.designs;
+      activeDesignId = req.query.designId || proj.activeDesignId;
+      designIdx = designs.findIndex(d => d.id === activeDesignId);
+      if (designIdx < 0) designIdx = 0;
+      activeDesignId = designs[designIdx].id;
+      saveProjects(projects);
+    }
+  }
+  const hasUsageData = energyUsage.length > 0 && energyUsage.some(v => v > 0);
+  const annualUsage = energyUsage.reduce((a, b) => a + b, 0);
+  const production = [220,280,870,1010,1060,1200,1250,1220,880,490,220,120];
+  const annualProduction = production.reduce((a, b) => a + b, 0);
+  const energyOffset = hasUsageData ? Math.round((annualProduction / annualUsage) * 100) : 0;
   const safeCustomer = (customer || safeAddress).replace(/`/g, "'").replace(/</g, "&lt;");
   const now = new Date();
   const saveTime = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) + " " +
@@ -2927,7 +3971,7 @@ app.get("/design", (req, res) => {
 
     /* ── TOP BAR ── */
     .topbar {
-      height: 48px;
+      height: 42px;
       background: #fff;
       border-bottom: 1px solid #ddd;
       display: flex;
@@ -2982,6 +4026,28 @@ app.get("/design", (req, res) => {
       transition: background 0.15s, border-color 0.15s;
     }
     .tb-design-name:hover { background: #f5f5f5; border-color: #b0b7c3; }
+    .tb-design-wrap { position: relative; }
+    .tb-design-dropdown {
+      display: none; position: absolute; top: calc(100% + 6px); left: 0; min-width: 260px;
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12); z-index: 999; padding: 6px 0;
+    }
+    .tb-design-dropdown.open { display: block; }
+    .tb-dd-item {
+      display: flex; flex-wrap: wrap; align-items: center; padding: 10px 16px; cursor: pointer;
+      position: relative; transition: background 0.12s;
+    }
+    .tb-dd-item:hover { background: #f5f5f5; }
+    .tb-dd-item.active { background: #faf5ff; }
+    .tb-dd-name { font-size: 0.85rem; font-weight: 600; color: #111; width: 100%; }
+    .tb-dd-meta { font-size: 0.75rem; color: #888; margin-top: 2px; }
+    .tb-dd-check { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
+    .tb-dd-divider { height: 1px; background: #e5e7eb; margin: 4px 0; }
+    .tb-dd-create {
+      display: block; width: 100%; text-align: left; padding: 10px 16px; border: none; background: none;
+      font-size: 0.84rem; font-weight: 500; color: #333; cursor: pointer;
+    }
+    .tb-dd-create:hover { background: #f5f5f5; }
     .topbar-center {
       flex: 1;
       display: flex;
@@ -3245,8 +4311,26 @@ app.get("/design", (req, res) => {
       flex: 1;
       position: relative;
       min-width: 0;
+      overflow: hidden;
+    }
+    .map-3d-scene {
+      position: absolute;
+      inset: 0;
+      perspective: 1200px;
+      overflow: visible;
+      z-index: 0;
+    }
+    .map-3d-plane {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      transform-origin: center center;
+      transition: transform 0.25s ease;
     }
     #map { width: 100%; height: 100%; }
+    /* Ensure overlays sit above the 3D scene */
+    .draw-toolbar, .map-bottom, .lp-toggle-float { z-index: 10; }
 
     /* bottom map bar */
     .map-bottom {
@@ -3294,6 +4378,17 @@ app.get("/design", (req, res) => {
       color: #ccc;
     }
     .map-source-icon:hover { background: rgba(255,255,255,0.2); }
+    .map-controls-bl {
+      position: absolute;
+      bottom: 50px;
+      left: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      pointer-events: all;
+      z-index: 10;
+    }
     .map-controls-br {
       display: flex;
       flex-direction: column;
@@ -3317,29 +4412,122 @@ app.get("/design", (req, res) => {
       box-shadow: 0 1px 4px rgba(0,0,0,0.15);
     }
     .map-ctrl-btn:hover { background: #f5f5f5; }
-    .compass {
-      width: 52px;
-      height: 52px;
-      background: #fff;
-      border: 1px solid #ccc;
+    /* ── ViewCube ── */
+    .viewcube-wrap {
+      position: relative;
+      width: 90px;
+      height: 90px;
+      perspective: 300px;
+      cursor: grab;
+      user-select: none;
+    }
+    .viewcube-wrap:active { cursor: grabbing; }
+    .viewcube-ring {
+      position: absolute;
+      inset: 0;
       border-radius: 50%;
+      border: 2px solid rgba(180,180,180,0.5);
+      pointer-events: none;
+    }
+    .viewcube-compass {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .viewcube-compass span {
+      position: absolute;
+      font-size: 0.55rem;
+      font-weight: 700;
+      color: #888;
+    }
+    .vc-n { top: 2px; left: 50%; transform: translateX(-50%); }
+    .vc-s { bottom: 2px; left: 50%; transform: translateX(-50%); }
+    .vc-e { right: 4px; top: 50%; transform: translateY(-50%); }
+    .vc-w { left: 4px; top: 50%; transform: translateY(-50%); }
+    .viewcube-scene {
+      width: 50px;
+      height: 50px;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      perspective: 200px;
+    }
+    .viewcube {
+      width: 50px;
+      height: 50px;
+      position: relative;
+      transform-style: preserve-3d;
+    }
+    .vc-face {
+      position: absolute;
+      width: 50px;
+      height: 50px;
+      background: rgba(255,255,255,0.92);
+      border: 1.5px solid #ccc;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.15);
-      cursor: pointer;
-      position: relative;
+      font-size: 0.6rem;
+      font-weight: 700;
+      color: #555;
+      backface-visibility: visible;
     }
-    .compass-needle {
+    .vc-face:hover { background: rgba(180,180,180,0.85); cursor: pointer; }
+    .vc-face.vc-top { transform: rotateX(90deg) translateZ(25px); background: rgba(245,245,245,0.95); }
+    .vc-face.vc-bottom { transform: rotateX(-90deg) translateZ(25px); }
+    .vc-face.vc-front { transform: translateZ(25px); }
+    .vc-face.vc-back { transform: rotateY(180deg) translateZ(25px); }
+    .vc-face.vc-left { transform: rotateY(-90deg) translateZ(25px); }
+    .vc-face.vc-right { transform: rotateY(90deg) translateZ(25px); }
+    .vc-north-arrow {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
       width: 0;
       height: 0;
       border-left: 5px solid transparent;
       border-right: 5px solid transparent;
-      border-bottom: 18px solid #e53935;
-      margin-bottom: 2px;
+      border-bottom: 10px solid #e53935;
+      pointer-events: none;
+      z-index: 2;
     }
-    .compass-label { font-size: 0.62rem; font-weight: 700; color: #555; letter-spacing: 0.5px; }
+    .tilt-slider-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .tilt-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 80px;
+      height: 4px;
+      background: #ddd;
+      border-radius: 2px;
+      outline: none;
+      transform: rotate(-90deg);
+      transform-origin: center;
+      margin: 30px 0;
+    }
+    .tilt-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border: 2px solid #aaa;
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .tilt-label {
+      font-size: 0.6rem;
+      color: #888;
+      font-weight: 600;
+    }
     .zoom-btns {
       display: flex;
       flex-direction: column;
@@ -3391,19 +4579,19 @@ app.get("/design", (req, res) => {
     /* ── PRODUCTION BOTTOM DRAWER ── */
     .prod-drawer {
       position: absolute;
-      left: 0; right: 0; bottom: 0;
-      height: 440px;
+      top: 0; right: 0; bottom: 0;
+      width: 380px;
       background: #fff;
-      border-radius: 14px 14px 0 0;
-      box-shadow: 0 -4px 24px rgba(0,0,0,0.13);
+      border-radius: 0;
+      box-shadow: -4px 0 24px rgba(0,0,0,0.13);
       display: flex;
       flex-direction: column;
       z-index: 40;
-      transform: translateY(100%);
+      transform: translateX(100%);
       transition: transform 0.25s ease;
       overflow: hidden;
     }
-    .prod-drawer.open { transform: translateY(0); }
+    .prod-drawer.open { transform: translateX(0); }
     .prod-drawer-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 18px 0;
@@ -3617,9 +4805,82 @@ app.get("/design", (req, res) => {
     .draw-btn.active { background: rgba(255,255,255,0.18); color: #fff; }
     .draw-btn svg { flex-shrink: 0; }
 
+    /* ── SHADE PANEL ── */
+    .shade-panel {
+      position: absolute;
+      top: 60px;
+      left: 12px;
+      width: 300px;
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+      z-index: 30;
+      color: #111;
+      overflow: hidden;
+    }
+    .shade-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #f9fafb;
+    }
+    .shade-panel-close {
+      background: none; border: none; cursor: pointer; font-size: 1.2rem;
+      color: #999; padding: 2px 6px; border-radius: 4px;
+    }
+    .shade-panel-close:hover { background: #eee; color: #333; }
+    .shade-panel-body { padding: 14px; max-height: 500px; overflow-y: auto; }
+    .shade-stat-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+      margin-bottom: 14px;
+    }
+    .shade-stat {
+      background: #f3f4f6; border-radius: 8px; padding: 10px;
+      text-align: center;
+    }
+    .shade-stat-value { font-size: 1.1rem; font-weight: 700; color: #111; }
+    .shade-stat-label { font-size: 0.68rem; color: #888; margin-top: 2px; }
+    .shade-section-label {
+      font-size: 0.72rem; font-weight: 600; color: #999;
+      text-transform: uppercase; letter-spacing: 0.4px;
+      margin: 12px 0 6px;
+    }
+    .shade-overlay-btns { display: flex; gap: 4px; margin-bottom: 8px; }
+    .shade-overlay-btn {
+      flex: 1; padding: 6px 4px; font-size: 0.75rem; font-weight: 600;
+      border: 1px solid #e5e7eb; border-radius: 6px;
+      background: #fff; color: #555; cursor: pointer;
+    }
+    .shade-overlay-btn:hover { background: #f3f4f6; }
+    .shade-overlay-btn.active { background: #111; color: #fff; border-color: #111; }
+    .shade-month-chart {
+      display: flex; align-items: flex-end; gap: 3px;
+      height: 60px; margin-bottom: 8px;
+    }
+    .shade-month-bar {
+      flex: 1; border-radius: 3px 3px 0 0;
+      position: relative; cursor: default;
+    }
+    .shade-month-bar-label {
+      position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%);
+      font-size: 0.55rem; color: #999;
+    }
+    .shade-seg-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px;
+      margin-bottom: 4px; font-size: 0.8rem; cursor: pointer;
+    }
+    .shade-seg-item:hover { background: #f9fafb; }
+    .shade-seg-pitch { color: #888; font-size: 0.75rem; }
+    .shade-seg-flux { font-weight: 600; }
+
+    /* ── LiDAR OVERLAY ── */
+
     /* ── TOOLBAR 2 ── */
     .toolbar2 {
-      height: 40px;
+      height: 34px;
       background: #fff;
       border-bottom: 1px solid #e5e7eb;
       display: flex;
@@ -3824,11 +5085,24 @@ app.get("/design", (req, res) => {
         <span>${safeCustomer}</span>
       </a>
       <div class="tb-divider"></div>
-      <button class="tb-design-name">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        Design 1
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
+      <div class="tb-design-wrap" id="tbDesignWrap">
+        <button class="tb-design-name" id="tbDesignBtn" onclick="toggleDesignDropdown(event)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          <span id="tbDesignLabel">${designs.length ? designs[designIdx].name : 'Design 1'}</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="tb-design-dropdown" id="tbDesignDropdown">
+          ${designs.map((d, i) => `
+            <div class="tb-dd-item ${d.id === activeDesignId ? 'active' : ''}" data-design-id="${d.id}" onclick="switchDesign('${d.id}')">
+              <div class="tb-dd-name">${d.name}</div>
+              <div class="tb-dd-meta">\$${(d.stats?.cost || 0).toLocaleString()} · ${d.stats?.offset || 0}% · ${d.stats?.kw || 0} kW</div>
+              ${d.id === activeDesignId ? '<svg class="tb-dd-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+            </div>
+          `).join('')}
+          <div class="tb-dd-divider"></div>
+          <button class="tb-dd-create" onclick="createNewDesign()">+ Create new design</button>
+        </div>
+      </div>
     </div>
 
     <div class="topbar-center">
@@ -3860,7 +5134,7 @@ app.get("/design", (req, res) => {
         </div>
         <div class="tb-stat">
           <div class="tb-stat-label">Savings</div>
-          <div class="tb-stat-val dim" id="statSavings">—%</div>
+          <div class="tb-stat-val${hasUsageData ? '' : ' dim'}" id="statSavings">${hasUsageData ? energyOffset + '%' : '—%'}</div>
         </div>
         <svg class="tb-stats-expand" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
       </div>
@@ -3872,11 +5146,11 @@ app.get("/design", (req, res) => {
 
       <!-- Monitor / Sales Mode dropdown -->
       <div class="tb-icon-wrap" id="salesModeWrap">
-        <button class="tb-icon-btn" title="Sales Mode" onclick="toggleSalesDropdown(event)">
+        <button class="tb-icon-btn" title="Sales Mode" onclick="location.href='/sales?projectId=${projectId}'">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </button>
         <div class="tb-dropdown" id="salesDropdown">
-          <div class="tb-dropdown-item">
+          <div class="tb-dropdown-item" onclick="location.href='/sales?projectId=${projectId}'" style="cursor:pointer">
             <span>Go to Sales Mode</span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           </div>
@@ -3911,6 +5185,11 @@ app.get("/design", (req, res) => {
         </div>
       </div>
 
+      <!-- Settings toggle -->
+      <button class="tb-icon-btn" id="toggleRightPanel" title="Settings">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      </button>
+
       <!-- User avatar + chevron -->
       <div class="tb-icon-wrap" id="profileWrap">
         <button class="tb-avatar-btn" title="Account" onclick="toggleDropdown('profileWrap', event)">
@@ -3918,8 +5197,8 @@ app.get("/design", (req, res) => {
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         <div class="profile-dropdown">
-          <a class="profile-dropdown-item" href="#">My profile</a>
-          <a class="profile-dropdown-item" href="#">Logout</a>
+          <a class="profile-dropdown-item" href="/settings">My profile</a>
+          <a class="profile-dropdown-item" href="/logout">Logout</a>
         </div>
       </div>
     </div>
@@ -4003,17 +5282,101 @@ app.get("/design", (req, res) => {
     <div class="left-panel" id="leftPanel">
       <div class="lp-top">
         <div class="lp-grid-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
         </div>
         <button class="lp-collapse-btn" id="collapseLeft" title="Collapse panel">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 19l-7-7 7-7"/><path d="M19 19l-7-7 7-7"/></svg>
         </button>
       </div>
       <div class="lp-tabs">
-        <button class="lp-tab" id="tabSite">Site</button>
-        <button class="lp-tab active" id="tabSystem">System</button>
+        <button class="lp-tab active" id="tabSite">Site</button>
+        <button class="lp-tab" id="tabSystem">System</button>
       </div>
-      <div class="lp-menu" id="lpMenu">
+
+      <!-- SITE TAB MENU -->
+      <div class="lp-menu" id="lpMenuSite">
+        <div class="lp-item-wrap" id="wrapRoof">
+          <div class="lp-item" id="menuRoof">
+            <div class="lp-item-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
+              Roof
+            </div>
+            <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+          </div>
+          <div class="lp-submenu" id="roofSubmenu">
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
+              Smart roof</div><span class="lp-subitem-key">R</span>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+              Manual roof face</div>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+              Flat roof</div>
+            </div>
+          </div>
+        </div>
+        <div class="lp-item-wrap" id="wrapObstructions">
+          <div class="lp-item" id="menuObstructions">
+            <div class="lp-item-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><line x1="10" y1="6.5" x2="14" y2="6.5"/><line x1="6.5" y1="10" x2="6.5" y2="14"/></svg>
+              Obstructions
+            </div>
+            <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+          </div>
+          <div class="lp-submenu" id="obstructionsSubmenu">
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>
+              Rectangle</div><span class="lp-subitem-key">O</span>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+              Circle</div>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 22 2 22"/></svg>
+              Polygon</div>
+            </div>
+          </div>
+        </div>
+        <div class="lp-item-wrap" id="wrapTrees">
+          <div class="lp-item" id="menuTrees">
+            <div class="lp-item-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
+              Trees
+            </div>
+            <span class="lp-subitem-key" style="margin-left:auto;">T</span>
+          </div>
+        </div>
+        <div class="lp-item-wrap" id="wrapSiteComponents">
+          <div class="lp-item" id="menuSiteComponents">
+            <div class="lp-item-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
+              Components
+            </div>
+            <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+          </div>
+          <div class="lp-submenu" id="siteComponentsSubmenu">
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="7"/></svg>
+              Meter</div>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
+              Load center</div>
+            </div>
+            <div class="lp-subitem"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+              Main service panel</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SYSTEM TAB MENU -->
+      <div class="lp-menu" id="lpMenu" style="display:none;">
         <div class="lp-item-wrap" id="wrapFire">
           <div class="lp-item" id="menuFire">
             <div class="lp-item-left">
@@ -4160,7 +5523,27 @@ app.get("/design", (req, res) => {
 
     <!-- MAP -->
     <div class="map-wrap" style="position:relative;">
-      <div id="map"></div>
+      <div class="map-3d-scene" id="map3dScene">
+        <div class="map-3d-plane" id="map3dPlane">
+          <div id="map"></div>
+        </div>
+      </div>
+      <!-- LiDAR 3D viewer — sits on top of map, hidden until toggled -->
+      <div id="viewer3d" style="display:none;position:absolute;inset:0;z-index:10;">
+        <canvas id="canvas3d" style="width:100%;height:100%;display:block;"></canvas>
+        <!-- Legend -->
+        <div id="lidarLegend" style="position:absolute;bottom:12px;right:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:10px 14px;color:#fff;font-size:0.7rem;z-index:20;">
+          <div style="font-weight:600;margin-bottom:6px;">LiDAR Legend</div>
+          <div style="display:flex;gap:12px;">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#888;margin-right:4px;"></span>Ground</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#4a90e2;margin-right:4px;"></span>Building</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#22c55e;margin-right:4px;"></span>Vegetation</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#f59e0b;margin-right:4px;"></span>High point</span>
+          </div>
+        </div>
+        <!-- Status -->
+        <div id="lidarStatus" style="position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.85rem;font-weight:600;z-index:20;"></div>
+      </div>
 
       <!-- Floating re-open button (shown when panel is collapsed) -->
       <button class="lp-toggle-float" id="lpToggleFloat" title="Show panel">
@@ -4185,6 +5568,88 @@ app.get("/design", (req, res) => {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
           Delete
         </button>
+        <div style="width:1px;height:24px;background:#555;margin:0 4px;"></div>
+        <button class="draw-btn" id="btnShade" title="Shade Analysis">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          Shade
+        </button>
+        <button class="draw-btn" id="btn3dView" title="LiDAR 3D View">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
+          LiDAR
+        </button>
+      </div>
+
+      <!-- Shade analysis floating panel -->
+      <div class="shade-panel" id="shadePanel" style="display:none;">
+        <div class="shade-panel-header">
+          <span style="font-weight:600;font-size:0.85rem;">Shade Analysis</span>
+          <button class="shade-panel-close" id="shadePanelClose">&times;</button>
+        </div>
+        <div class="shade-panel-body">
+          <div id="shadeLoading" style="text-align:center;padding:20px;color:#999;font-size:0.82rem;">
+            Loading solar data...
+          </div>
+          <div id="shadeContent" style="display:none;">
+            <div class="shade-stat-grid">
+              <div class="shade-stat">
+                <div class="shade-stat-value" id="shadeSunHours">—</div>
+                <div class="shade-stat-label">Sun hours/yr</div>
+              </div>
+              <div class="shade-stat">
+                <div class="shade-stat-value" id="shadeMaxFlux">—</div>
+                <div class="shade-stat-label">Peak kWh/m²/yr</div>
+              </div>
+              <div class="shade-stat">
+                <div class="shade-stat-value" id="shadeRoofArea">—</div>
+                <div class="shade-stat-label">Roof area (ft²)</div>
+              </div>
+              <div class="shade-stat">
+                <div class="shade-stat-value" id="shadeSegments">—</div>
+                <div class="shade-stat-label">Roof segments</div>
+              </div>
+            </div>
+
+            <div class="shade-section-label">Overlay</div>
+            <div class="shade-overlay-btns">
+              <button class="shade-overlay-btn active" id="btnOverlayNone" onclick="setShadeOverlay('none')">None</button>
+              <button class="shade-overlay-btn" id="btnOverlayFlux" onclick="setShadeOverlay('flux')">Annual flux</button>
+              <button class="shade-overlay-btn" id="btnOverlayShade" onclick="setShadeOverlay('shade')">Shade map</button>
+            </div>
+
+            <div class="shade-section-label">Monthly sun hours</div>
+            <div class="shade-month-chart" id="shadeMonthChart"></div>
+
+            <div class="shade-section-label">Roof segments</div>
+            <div id="shadeSegmentList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ViewCube — bottom left -->
+      <div class="map-controls-bl">
+        <div class="viewcube-wrap" id="viewcubeWrap">
+          <div class="viewcube-ring"></div>
+          <div class="vc-north-arrow" id="vcNorthArrow"></div>
+          <div class="viewcube-compass" id="vcCompass">
+            <span class="vc-n">N</span>
+            <span class="vc-s">S</span>
+            <span class="vc-e">E</span>
+            <span class="vc-w">W</span>
+          </div>
+          <div class="viewcube-scene">
+            <div class="viewcube" id="viewcube">
+              <div class="vc-face vc-top" data-view="top">TOP</div>
+              <div class="vc-face vc-bottom" data-view="bottom">BTM</div>
+              <div class="vc-face vc-front" data-view="front">N</div>
+              <div class="vc-face vc-back" data-view="back">S</div>
+              <div class="vc-face vc-left" data-view="left">E</div>
+              <div class="vc-face vc-right" data-view="right">W</div>
+            </div>
+          </div>
+        </div>
+        <div class="tilt-slider-wrap">
+          <input type="range" class="tilt-slider" id="tiltSlider" min="0" max="45" value="0" title="Tilt"/>
+        </div>
       </div>
 
       <!-- Bottom map bar -->
@@ -4204,20 +5669,17 @@ app.get("/design", (req, res) => {
           </div>
         </div>
         <div class="map-controls-br">
-          <div class="compass" title="Reset North">
-            <div class="compass-needle"></div>
-            <div class="compass-label">3D</div>
-          </div>
           <div class="zoom-btns">
             <button id="zoomIn" title="Zoom in">+</button>
             <button id="zoomOut" title="Zoom out">−</button>
           </div>
+          <div id="zoomLabel" style="display:none;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 7px;border-radius:5px;margin-top:4px;text-align:center;font-weight:600;"></div>
         </div>
       </div>
     </div>
 
     <!-- RIGHT PANEL -->
-    <div class="right-panel" id="rightPanel">
+    <div class="right-panel hidden" id="rightPanel">
       <div class="rp-header">
         <div style="display:flex;align-items:center;gap:8px;">
           <button class="rp-close" id="closeRightPanel" style="margin-right:4px;">
@@ -4510,7 +5972,7 @@ app.get("/design", (req, res) => {
         </div>
         <div class="prod-stat-item">
           <div class="prod-stat-label">Energy offset</div>
-          <div class="prod-stat-val">—<span>%</span></div>
+          <div class="prod-stat-val">${hasUsageData ? energyOffset : '—'}<span>%</span></div>
         </div>
       </div>
       <div class="prod-chart-header">
@@ -4518,7 +5980,7 @@ app.get("/design", (req, res) => {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
           Monthly production (kWh)
         </div>
-        <button class="prod-chart-copy" title="Copy">&#10697;</button>
+
       </div>
       <div class="prod-chart-wrap">
         <canvas id="prodChart"></canvas>
@@ -4539,6 +6001,18 @@ app.get("/design", (req, res) => {
       <hr class="prod-divider"/>
       <div class="prod-energy-section">
         <div class="prod-energy-title">Energy usage</div>
+        ${hasUsageData ? `
+        <div style="display:flex;gap:28px;margin-bottom:12px;">
+          <div>
+            <div class="prod-stat-label">Annual usage</div>
+            <div class="prod-stat-val">${annualUsage.toLocaleString()}<span>kWh</span></div>
+          </div>
+          <div>
+            <div class="prod-stat-label">Avg. monthly</div>
+            <div class="prod-stat-val">${Math.round(annualUsage / 12).toLocaleString()}<span>kWh</span></div>
+          </div>
+        </div>
+        ` : `
         <div class="prod-no-data">
           <div class="prod-no-data-left">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -4546,11 +6020,14 @@ app.get("/design", (req, res) => {
           </div>
           <button class="prod-add-btn">Add energy usage</button>
         </div>
+        `}
       </div>
     </div>
   </div>
 
   <script>
+    var designLat = ${parseFloat(lat)};
+    var designLng = ${parseFloat(lng)};
     var map, marker, drawingManager;
     var segments = [];
     var selectedSegment = null;
@@ -4570,7 +6047,9 @@ app.get("/design", (req, res) => {
       if (prodExpand) prodExpand.classList.remove('open');
     }
 
-    document.querySelector('.tb-stats').addEventListener('click', openProdDrawer);
+    document.querySelector('.tb-stats').addEventListener('click', function() {
+      if (prodDrawer.classList.contains('open')) { closeProdDrawer(); } else { openProdDrawer(); }
+    });
     document.getElementById('closeProdDrawer').addEventListener('click', closeProdDrawer);
 
     document.getElementById('drawerTabProduction').addEventListener('click', function() {
@@ -4594,8 +6073,11 @@ app.get("/design", (req, res) => {
 
       var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       var production = [220,280,870,1010,1060,1200,1250,1220,880,490,220,120];
-      var usage =      [180,210,600, 800, 900,1100,1150,1100,750,420,190,100];
-      var maxVal = 1400;
+      var usage = ${hasUsageData ? JSON.stringify(energyUsage) : '[0,0,0,0,0,0,0,0,0,0,0,0]'};
+      var allVals = production.concat(usage);
+      var maxVal = Math.max.apply(null, allVals);
+      maxVal = Math.ceil(maxVal / 200) * 200;
+      if (maxVal < 200) maxVal = 200;
       var padL = 60, padR = 10, padT = 10, padB = 36;
       var chartW = W - padL - padR;
       var chartH = H - padT - padB;
@@ -4603,7 +6085,8 @@ app.get("/design", (req, res) => {
       var barW = barGroup * 0.35;
 
       // gridlines
-      var gridLines = [0,200,400,600,800,1000,1200,1400];
+      var gridLines = [];
+      for (var g = 0; g <= maxVal; g += 200) gridLines.push(g);
       ctx.font = '9px sans-serif'; ctx.fillStyle = '#aaa'; ctx.textAlign = 'right';
       gridLines.forEach(function(v) {
         var y = padT + chartH - (v / maxVal) * chartH;
@@ -4633,7 +6116,7 @@ app.get("/design", (req, res) => {
     var leftPanel = document.getElementById('leftPanel');
     var rightPanel = document.getElementById('rightPanel');
     var leftCollapsed = false;
-    var rightHidden = false;
+    var rightHidden = true;
 
     var toggleFloat = document.getElementById('lpToggleFloat');
     document.getElementById('collapseLeft').addEventListener('click', function() {
@@ -4672,21 +6155,20 @@ app.get("/design", (req, res) => {
         }
       });
     }
-    setupFlyout('menuPanels', 'menuPanelsWrap');
-    setupFlyout('menuString', 'menuStringWrap');
-    document.addEventListener('click', function() {
-      document.querySelectorAll('.lp-item-wrap.open').forEach(function(el) { el.classList.remove('open'); });
-      document.querySelectorAll('.lp-item.active').forEach(function(el) { el.classList.remove('active'); });
-    });
+    /* setupFlyout calls removed — handled by submenus array below */
 
     /* ── Left panel tab switching ── */
     document.getElementById('tabSite').addEventListener('click', function() {
       this.classList.add('active');
       document.getElementById('tabSystem').classList.remove('active');
+      document.getElementById('lpMenuSite').style.display = '';
+      document.getElementById('lpMenu').style.display = 'none';
     });
     document.getElementById('tabSystem').addEventListener('click', function() {
       this.classList.add('active');
       document.getElementById('tabSite').classList.remove('active');
+      document.getElementById('lpMenu').style.display = '';
+      document.getElementById('lpMenuSite').style.display = 'none';
     });
 
     /* ── Right panel tab switching ── */
@@ -4702,16 +6184,20 @@ app.get("/design", (req, res) => {
 
     /* ── Submenu flyout toggle ── */
     var submenus = [
-      { wrap: 'wrapFire',       item: 'menuFire' },
-      { wrap: 'menuPanelsWrap', item: 'menuPanels' },
-      { wrap: 'wrapComponents', item: 'menuComponents' },
-      { wrap: 'menuStringWrap', item: 'menuString' }
+      { wrap: 'wrapRoof',           item: 'menuRoof' },
+      { wrap: 'wrapObstructions',   item: 'menuObstructions' },
+      { wrap: 'wrapSiteComponents', item: 'menuSiteComponents' },
+      { wrap: 'wrapFire',           item: 'menuFire' },
+      { wrap: 'menuPanelsWrap',     item: 'menuPanels' },
+      { wrap: 'wrapComponents',     item: 'menuComponents' },
+      { wrap: 'menuStringWrap',     item: 'menuString' }
     ];
     submenus.forEach(function(s) {
       var wrap = document.getElementById(s.wrap);
       var item = document.getElementById(s.item);
       if (!wrap || !item) return;
       item.addEventListener('click', function(e) {
+        e.stopPropagation();
         var isOpen = wrap.classList.contains('open');
         // close all
         submenus.forEach(function(x) {
@@ -4777,12 +6263,17 @@ app.get("/design", (req, res) => {
       var pos = { lat: ${parseFloat(lat)}, lng: ${parseFloat(lng)} };
       map = new google.maps.Map(document.getElementById('map'), {
         center: pos,
-        zoom: 21,
-        maxZoom: 23,
+        zoom: 20,
+        maxZoom: 22,
+        minZoom: 18,
         mapTypeId: 'satellite',
         tilt: 0,
         disableDefaultUI: true,
         gestureHandling: 'greedy',
+        draggable: false,
+        scrollwheel: true,
+        disableDoubleClickZoom: true,
+        keyboardShortcuts: false,
       });
 
       /* Drawing manager for roof segments */
@@ -4817,12 +6308,263 @@ app.get("/design", (req, res) => {
         updateStats();
       });
 
-      /* Zoom buttons */
+      /* Zoom: Google tiles 18-21, then CSS deep zoom beyond */
+      var extraZoom = 0;
+      var maxExtraZoom = 20;
+      var maxTileZoom = 22;
+
+      function applyExtraZoom() {
+        var scale = Math.pow(2, extraZoom);
+        var mapEl = document.getElementById('map');
+        mapEl.style.transform = extraZoom > 0 ? 'scale(' + scale + ')' : '';
+        mapEl.style.transformOrigin = 'center center';
+      }
+
+      function updateZoomLabel() {
+        var el = document.getElementById('zoomLabel');
+        if (el) {
+          if (extraZoom > 0) {
+            el.textContent = maxTileZoom + '+' + extraZoom + 'x';
+            el.style.display = '';
+          } else {
+            el.style.display = 'none';
+          }
+        }
+      }
+
       document.getElementById('zoomIn').addEventListener('click', function() {
-        map.setZoom(map.getZoom() + 1);
+        if (extraZoom > 0 || map.getZoom() >= maxTileZoom) {
+          if (extraZoom < maxExtraZoom) {
+            extraZoom++;
+            applyExtraZoom();
+          }
+        } else {
+          map.setZoom(map.getZoom() + 1);
+        }
+        updateZoomLabel();
       });
       document.getElementById('zoomOut').addEventListener('click', function() {
-        map.setZoom(map.getZoom() - 1);
+        if (extraZoom > 0) {
+          extraZoom--;
+          applyExtraZoom();
+        } else {
+          if (map.getZoom() > 18) map.setZoom(map.getZoom() - 1);
+        }
+        updateZoomLabel();
+      });
+
+      /* ── Scroll/pinch zoom with static image deep zoom ── */
+      var wheelAccum = 0;
+      var wheelThreshold = 80;
+      document.getElementById('map').parentNode.addEventListener('wheel', function(e) {
+        /* Zooming in past tile max → switch to static image zoom */
+        if ((map.getZoom() >= maxTileZoom || extraZoom > 0) && e.deltaY < 0) {
+          e.stopPropagation();
+          e.preventDefault();
+          wheelAccum += Math.abs(e.deltaY);
+          if (wheelAccum >= wheelThreshold) {
+            wheelAccum = 0;
+            if (extraZoom < maxExtraZoom) {
+              extraZoom++;
+              applyExtraZoom();
+              updateZoomLabel();
+            }
+          }
+        } else if (extraZoom > 0 && e.deltaY > 0) {
+          e.stopPropagation();
+          e.preventDefault();
+          wheelAccum += Math.abs(e.deltaY);
+          if (wheelAccum >= wheelThreshold) {
+            wheelAccum = 0;
+            extraZoom--;
+            applyExtraZoom();
+            updateZoomLabel();
+          }
+        }
+      }, { passive: false, capture: true });
+
+      /* ── Scroll zoom on tilted map ── */
+      document.getElementById('map3dScene').addEventListener('wheel', function(e) {
+        if (vcRotX > 0 || vcRotZ !== 0) {
+          e.preventDefault();
+          if (e.deltaY < 0) {
+            if (map.getZoom() < maxTileZoom) {
+              map.setZoom(map.getZoom() + 1);
+            } else if (extraZoom < maxExtraZoom) {
+              extraZoom++;
+              applyExtraZoom();
+            }
+          } else {
+            if (extraZoom > 0) {
+              extraZoom--;
+              applyExtraZoom();
+            } else {
+              map.setZoom(Math.max(map.getZoom() - 1, 18));
+            }
+          }
+          updateZoomLabel();
+        }
+      }, { passive: false });
+
+      /* ── ViewCube — 3D CAD orbit ── */
+      var vcRotX = 0;   // tilt: 0 = top-down, 90 = eye-level
+      var vcRotZ = 0;   // heading/spin around vertical axis
+      var vcCube = document.getElementById('viewcube');
+      var vcWrap = document.getElementById('viewcubeWrap');
+      var vcNorth = document.getElementById('vcNorthArrow');
+      var vcCompassEl = document.getElementById('vcCompass');
+      var tiltSlider = document.getElementById('tiltSlider');
+      var map3dPlane = document.getElementById('map3dPlane');
+      var map3dScene = document.getElementById('map3dScene');
+      var vcDragging = false;
+      var vcStartX = 0, vcStartY = 0;
+      var vcStartRotX = 0, vcStartRotZ = 0;
+      var vcPanX = 0, vcPanY = 0;
+
+      function updateViewCube() {
+        // Clamp tilt: 0 = flat top-down, 80 = near eye-level
+        vcRotX = Math.max(0, Math.min(80, vcRotX));
+        // Normalize heading
+        vcRotZ = ((vcRotZ % 360) + 360) % 360;
+
+        // Update the cube to mirror the camera angle
+        vcCube.style.transform = 'rotateX(' + vcRotX + 'deg) rotateZ(' + vcRotZ + 'deg)';
+        vcNorth.style.transform = 'translateX(-50%) rotate(' + vcRotZ + 'deg)';
+        vcCompassEl.style.transform = 'rotate(' + vcRotZ + 'deg)';
+
+        // Apply 3D transform to the map plane (the "flat paper")
+        var perspVal = 1200 - (vcRotX * 6);
+        if (perspVal < 400) perspVal = 400;
+        map3dScene.style.perspective = perspVal + 'px';
+        map3dPlane.style.transform = 'translate(' + vcPanX + 'px, ' + vcPanY + 'px) rotateX(' + vcRotX + 'deg) rotateZ(' + vcRotZ + 'deg)';
+
+        tiltSlider.value = vcRotX;
+      }
+
+      /* ── Spacebar + drag to pan the 3D view ── */
+      var spaceHeld = false;
+      var spacePanning = false;
+      var spStartX = 0, spStartY = 0;
+      var spStartPanX = 0, spStartPanY = 0;
+
+      document.addEventListener('keydown', function(e) {
+        if (e.code === 'Space' && !e.repeat && !e.target.matches('input,textarea,select')) {
+          e.preventDefault();
+          spaceHeld = true;
+          map3dScene.style.cursor = 'grab';
+        }
+      });
+      document.addEventListener('keyup', function(e) {
+        if (e.code === 'Space') {
+          spaceHeld = false;
+          spacePanning = false;
+          map3dScene.style.cursor = '';
+        }
+      });
+
+      map3dScene.addEventListener('mousedown', function(e) {
+        if (spaceHeld) {
+          spacePanning = true;
+          spStartX = e.clientX;
+          spStartY = e.clientY;
+          spStartPanX = vcPanX;
+          spStartPanY = vcPanY;
+          map3dScene.style.cursor = 'grabbing';
+          map3dPlane.style.transition = 'none';
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (spacePanning) {
+          vcPanX = spStartPanX + (e.clientX - spStartX);
+          vcPanY = spStartPanY + (e.clientY - spStartY);
+          updateViewCube();
+        }
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (spacePanning) {
+          spacePanning = false;
+          map3dScene.style.cursor = spaceHeld ? 'grab' : '';
+          map3dPlane.style.transition = 'transform 0.25s ease';
+        }
+      });
+
+      // Drag to orbit — works from anywhere on the cube
+      var vcDidDrag = false;
+      vcWrap.addEventListener('mousedown', function(e) {
+        vcDragging = true;
+        vcDidDrag = false;
+        vcStartX = e.clientX;
+        vcStartY = e.clientY;
+        vcStartRotX = vcRotX;
+        vcStartRotZ = vcRotZ;
+        map3dPlane.style.transition = 'none';
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!vcDragging) return;
+        var dx = e.clientX - vcStartX;
+        var dy = e.clientY - vcStartY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) vcDidDrag = true;
+        vcRotZ = vcStartRotZ - dx * 0.6;
+        vcRotX = Math.max(0, Math.min(80, vcStartRotX - dy * 0.3));
+        updateViewCube();
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (vcDragging) {
+          vcDragging = false;
+          map3dPlane.style.transition = 'transform 0.25s ease';
+        }
+      });
+
+      // Face clicks — maintain current tilt, just rotate cardinal direction
+      // Top/bottom reset tilt; sides keep current tilt and only change heading
+      function handleFaceClick(view) {
+        map3dPlane.style.transition = 'transform 0.4s ease';
+        if (view === 'top') { vcRotX = 0; vcRotZ = 0; }
+        else if (view === 'bottom') { vcRotX = 0; vcRotZ = 180; }
+        else {
+          // Keep current tilt, but if flat (0), bump to a slight angle so user sees the side
+          if (vcRotX < 10) vcRotX = 15;
+          if (view === 'front') vcRotZ = 0;
+          else if (view === 'back') vcRotZ = 180;
+          else if (view === 'left') vcRotZ = 90;
+          else if (view === 'right') vcRotZ = -90;
+        }
+        updateViewCube();
+        setTimeout(function() { map3dPlane.style.transition = 'transform 0.25s ease'; }, 450);
+      }
+
+      vcCube.querySelectorAll('.vc-face').forEach(function(face) {
+        face.addEventListener('click', function(e) {
+          if (vcDidDrag) return;
+          e.stopPropagation();
+          handleFaceClick(this.dataset.view);
+        });
+      });
+
+      // Tilt slider
+      tiltSlider.addEventListener('input', function() {
+        vcRotX = parseFloat(this.value);
+        updateViewCube();
+      });
+      // Update slider range for full tilt
+      tiltSlider.max = 80;
+
+      // Double-click to reset to top-down
+      vcWrap.addEventListener('dblclick', function() {
+        map3dPlane.style.transition = 'transform 0.4s ease';
+        vcRotX = 0;
+        vcRotZ = 0;
+        vcPanX = 0;
+        vcPanY = 0;
+        updateViewCube();
+        setTimeout(function() { map3dPlane.style.transition = 'transform 0.25s ease'; }, 450);
       });
 
       /* Delete button */
@@ -5031,6 +6773,8 @@ app.get("/design", (req, res) => {
     /* ── Save / dirty state ── */
     var isDirty = false;
     var pendingNav = null;
+    var projectId = '${projectId || ""}';
+    var currentDesignId = '${activeDesignId}';
 
     function markDirty() { isDirty = true; }
 
@@ -5042,8 +6786,9 @@ app.get("/design", (req, res) => {
     }
 
     function showModal() {
-      var m = document.getElementById('saveModal');
-      m.style.display = 'flex';
+      document.querySelector('.save-modal-sub').textContent =
+        'You have unsaved changes to ' + document.getElementById('tbDesignLabel').textContent + '. Would you like to save before leaving?';
+      document.getElementById('saveModal').style.display = 'flex';
     }
     function closeModal() {
       document.getElementById('saveModal').style.display = 'none';
@@ -5057,19 +6802,643 @@ app.get("/design", (req, res) => {
       document.getElementById('saveModal').style.display = 'none';
       if (pendingNav) pendingNav();
     }
+
+    /* Serialize current segments to JSON for saving */
+    function serializeSegments() {
+      return segments.map(function(seg) {
+        var path = seg.getPath().getArray().map(function(ll) { return { lat: ll.lat(), lng: ll.lng() }; });
+        return {
+          path: path,
+          panelCount: seg._panels ? seg._panels.length : 0,
+          tilt: seg._tilt || 0,
+          azimuth: seg._azimuth || 180
+        };
+      });
+    }
+
+    function getCurrentStats() {
+      var totalPanels = 0;
+      segments.forEach(function(seg) { if (seg._panels) totalPanels += seg._panels.length; });
+      var kw = parseFloat((totalPanels * 0.4).toFixed(2));
+      return { cost: Math.round(kw * 2300), offset: ${energyOffset || 0}, kw: kw };
+    }
+
+    function saveCurrentDesign(callback) {
+      if (!projectId || !currentDesignId) { if (callback) callback(); return; }
+      var data = { segments: serializeSegments(), stats: getCurrentStats() };
+      fetch('/api/projects/' + projectId + '/designs/' + currentDesignId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      }).then(function() {
+        isDirty = false;
+        if (callback) callback();
+      });
+    }
+
     function saveAndLeave() {
-      // Flash the save icon, mark clean, then navigate
       var btn = document.querySelector('.save-modal-save');
       btn.textContent = 'Saving…';
       btn.disabled = true;
-      setTimeout(function() {
-        isDirty = false;
+      saveCurrentDesign(function() {
         document.getElementById('saveModal').style.display = 'none';
+        btn.textContent = 'Save changes';
+        btn.disabled = false;
         if (pendingNav) pendingNav();
-      }, 600);
+      });
+    }
+
+    /* ── Design switching ── */
+    function toggleDesignDropdown(e) {
+      e.stopPropagation();
+      document.getElementById('tbDesignDropdown').classList.toggle('open');
+    }
+    document.addEventListener('click', function(e) {
+      var wrap = document.getElementById('tbDesignWrap');
+      if (wrap && !wrap.contains(e.target)) {
+        document.getElementById('tbDesignDropdown').classList.remove('open');
+      }
+    });
+
+    function switchDesign(designId) {
+      if (designId === currentDesignId) {
+        document.getElementById('tbDesignDropdown').classList.remove('open');
+        return;
+      }
+      document.getElementById('tbDesignDropdown').classList.remove('open');
+      if (isDirty) {
+        pendingNav = function() { loadDesign(designId); };
+        showModal();
+      } else {
+        loadDesign(designId);
+      }
+    }
+
+    function loadDesign(designId) {
+      /* Clear existing segments from map */
+      segments.forEach(function(seg) {
+        if (seg._panels) seg._panels.forEach(function(p) { p.setMap(null); });
+        if (seg._dimLabels) seg._dimLabels.forEach(function(l) { l.setMap(null); });
+        if (seg._azArrow) seg._azArrow.setMap(null);
+        seg.setMap(null);
+      });
+      segments = [];
+      selectedSegment = null;
+
+      /* Fetch design data */
+      fetch('/api/projects/' + projectId + '/designs/active', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ designId: designId })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        currentDesignId = designId;
+        isDirty = false;
+        var design = data.design;
+
+        /* Update header */
+        document.getElementById('tbDesignLabel').textContent = design.name;
+
+        /* Update dropdown active state */
+        var items = document.querySelectorAll('.tb-dd-item');
+        items.forEach(function(el) {
+          el.classList.remove('active');
+          var check = el.querySelector('.tb-dd-check');
+          if (check) check.remove();
+          if (el.getAttribute('data-design-id') === designId) {
+            el.classList.add('active');
+            var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('class', 'tb-dd-check');
+            svg.setAttribute('width', '16');
+            svg.setAttribute('height', '16');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'none');
+            svg.setAttribute('stroke', '#8b5cf6');
+            svg.setAttribute('stroke-width', '2.5');
+            var polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+            polyline.setAttribute('points', '20 6 9 17 4 12');
+            svg.appendChild(polyline);
+            el.appendChild(svg);
+          }
+        });
+
+        /* Restore segments on map */
+        if (design.segments && design.segments.length > 0) {
+          design.segments.forEach(function(segData) {
+            var path = segData.path.map(function(p) { return new google.maps.LatLng(p.lat, p.lng); });
+            var polygon = new google.maps.Polygon({
+              paths: path,
+              strokeColor: '#f5a623',
+              strokeOpacity: 1,
+              strokeWeight: 2,
+              fillColor: '#f5a623',
+              fillOpacity: 0.18,
+              editable: true,
+              draggable: true,
+              zIndex: 1,
+              map: map
+            });
+            polygon._tilt = segData.tilt || 0;
+            polygon._azimuth = segData.azimuth || 180;
+            segments.push(polygon);
+            polygon.addListener('click', function() { selectSegment(polygon); });
+            fillPanels(polygon);
+            addDimensionLabels(polygon);
+            addAzimuthArrow(polygon);
+          });
+          updateStats();
+        }
+      });
+    }
+
+    function createNewDesign() {
+      document.getElementById('tbDesignDropdown').classList.remove('open');
+      if (!projectId) return;
+
+      function doCreate() {
+        fetch('/api/projects/' + projectId + '/designs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        }).then(function(r) { return r.json(); }).then(function(design) {
+          /* Add to dropdown */
+          var dd = document.getElementById('tbDesignDropdown');
+          var divider = dd.querySelector('.tb-dd-divider');
+          var item = document.createElement('div');
+          item.className = 'tb-dd-item';
+          item.setAttribute('data-design-id', design.id);
+          item.setAttribute('onclick', "switchDesign('" + design.id + "')");
+          item.innerHTML = '<div class="tb-dd-name">' + design.name + '</div>'
+            + '<div class="tb-dd-meta">$0 · 0% · 0 kW</div>';
+          dd.insertBefore(item, divider);
+
+          /* Switch to the new design */
+          loadDesign(design.id);
+        });
+      }
+
+      if (isDirty) {
+        pendingNav = doCreate;
+        showModal();
+      } else {
+        doCreate();
+      }
+    }
+
+    /* ── SHADE ANALYSIS ── */
+    var solarData = null;
+    var shadeOverlayType = 'none';
+    var solarRoofPolygons = [];
+
+    document.getElementById('btnShade').addEventListener('click', function() {
+      var panel = document.getElementById('shadePanel');
+      if (panel.style.display === 'none') {
+        panel.style.display = '';
+        this.classList.add('active');
+        if (!solarData) loadSolarData();
+      } else {
+        panel.style.display = 'none';
+        this.classList.remove('active');
+        clearShadeOverlay();
+      }
+    });
+
+    document.getElementById('shadePanelClose').addEventListener('click', function() {
+      document.getElementById('shadePanel').style.display = 'none';
+      document.getElementById('btnShade').classList.remove('active');
+      clearShadeOverlay();
+    });
+
+    function loadSolarData() {
+      var loading = document.getElementById('shadeLoading');
+      var content = document.getElementById('shadeContent');
+      loading.style.display = '';
+      content.style.display = 'none';
+      loading.textContent = 'Loading solar data...';
+
+      fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) {
+            loading.textContent = 'Error: ' + data.error;
+            return;
+          }
+          solarData = data;
+          loading.style.display = 'none';
+          content.style.display = '';
+          renderShadePanel();
+        })
+        .catch(function(e) {
+          loading.textContent = 'Failed to load solar data';
+        });
+    }
+
+    function renderShadePanel() {
+      if (!solarData) return;
+      var si = solarData.solarPotential || {};
+      var maxSun = si.maxSunshineHoursPerYear || 0;
+
+      document.getElementById('shadeSunHours').textContent = Math.round(maxSun).toLocaleString();
+      document.getElementById('shadeMaxFlux').textContent = maxSun ? (maxSun * 0.2).toFixed(0) : '—';
+
+      var roofSegs = si.roofSegmentStats || [];
+      var totalArea = 0;
+      roofSegs.forEach(function(s) { totalArea += (s.stats && s.stats.areaMeters2) || 0; });
+      document.getElementById('shadeRoofArea').textContent = Math.round(totalArea * 10.764).toLocaleString();
+      document.getElementById('shadeSegments').textContent = roofSegs.length;
+
+      // Monthly chart
+      var monthNames = ['J','F','M','A','M','J','J','A','S','O','N','D'];
+      var monthlyFactors = [0.045,0.055,0.08,0.095,0.11,0.115,0.12,0.11,0.09,0.075,0.055,0.05];
+      var maxBar = 0;
+      var monthlyHours = monthlyFactors.map(function(f) {
+        var v = maxSun * f;
+        if (v > maxBar) maxBar = v;
+        return v;
+      });
+      document.getElementById('shadeMonthChart').innerHTML = monthlyHours.map(function(h, i) {
+        var pct = maxBar > 0 ? (h / maxBar * 100) : 0;
+        var color = pct > 70 ? '#f59e0b' : (pct > 40 ? '#fbbf24' : '#d1d5db');
+        return '<div class="shade-month-bar" style="height:' + pct + '%;background:' + color + ';" title="' + monthNames[i] + ': ' + Math.round(h) + ' hrs">'
+          + '<div class="shade-month-bar-label">' + monthNames[i] + '</div></div>';
+      }).join('');
+
+      // Segment list
+      document.getElementById('shadeSegmentList').innerHTML = roofSegs.map(function(s, i) {
+        var pitch = s.pitchDegrees || 0;
+        var azimuth = s.azimuthDegrees || 0;
+        var area = (s.stats && s.stats.areaMeters2) || 0;
+        var dirs = ['N','NE','E','SE','S','SW','W','NW'];
+        var dir = dirs[Math.round(azimuth / 45) % 8];
+        var sunHrs = (s.stats && s.stats.sunshineQuantiles)
+          ? s.stats.sunshineQuantiles[Math.floor(s.stats.sunshineQuantiles.length / 2)] : 0;
+        return '<div class="shade-seg-item" onclick="highlightSolarSegment(' + i + ')">'
+          + '<div><strong>Segment ' + (i + 1) + '</strong> <span class="shade-seg-pitch">' + Math.round(pitch) + '\\u00B0 ' + dir + '</span></div>'
+          + '<div class="shade-seg-flux">' + Math.round(area * 10.764) + ' ft\\u00B2 \\u00B7 ' + Math.round(sunHrs) + ' hrs</div>'
+          + '</div>';
+      }).join('');
+
+      drawSolarRoofSegments(roofSegs);
+    }
+
+    function drawSolarRoofSegments(roofSegs) {
+      solarRoofPolygons.forEach(function(p) { p.setMap(null); });
+      solarRoofPolygons = [];
+      var maxSun = (solarData.solarPotential && solarData.solarPotential.maxSunshineHoursPerYear) || 1;
+
+      roofSegs.forEach(function(seg) {
+        var center = seg.center;
+        if (!center) return;
+        var areaM2 = (seg.stats && seg.stats.areaMeters2) || 50;
+        var side = Math.sqrt(areaM2) / 2;
+        var azRad = (seg.azimuthDegrees || 0) * Math.PI / 180;
+        var cLat = center.latitude;
+        var cLng = center.longitude;
+        var mPerDegLat = 111320;
+        var mPerDegLng = 111320 * Math.cos(cLat * Math.PI / 180);
+        var dLat = side / mPerDegLat;
+        var dLng = side / mPerDegLng;
+
+        var corners = [[-1,-1],[-1,1],[1,1],[1,-1]].map(function(c) {
+          var x = c[0] * dLng;
+          var y = c[1] * dLat;
+          var rx = x * Math.cos(azRad) - y * Math.sin(azRad);
+          var ry = x * Math.sin(azRad) + y * Math.cos(azRad);
+          return { lat: cLat + ry, lng: cLng + rx };
+        });
+
+        var sunHrs = (seg.stats && seg.stats.sunshineQuantiles)
+          ? seg.stats.sunshineQuantiles[Math.floor(seg.stats.sunshineQuantiles.length / 2)] : 0;
+        var ratio = Math.min(sunHrs / maxSun, 1);
+        var r = Math.round(255 * (1 - ratio));
+        var g = Math.round(200 * ratio);
+        var color = 'rgb(' + r + ',' + g + ',50)';
+
+        var poly = new google.maps.Polygon({
+          paths: corners,
+          strokeColor: color, strokeOpacity: 0.9, strokeWeight: 2,
+          fillColor: color, fillOpacity: 0.25,
+          map: null,
+          zIndex: 5,
+          clickable: false,
+        });
+        solarRoofPolygons.push(poly);
+      });
+    }
+
+    function setShadeOverlay(type) {
+      shadeOverlayType = type;
+      document.querySelectorAll('.shade-overlay-btn').forEach(function(b) { b.classList.remove('active'); });
+      var btnId = 'btnOverlay' + type.charAt(0).toUpperCase() + type.slice(1);
+      document.getElementById(btnId).classList.add('active');
+
+      if (type === 'none') { clearShadeOverlay(); return; }
+
+      var segs = (solarData.solarPotential && solarData.solarPotential.roofSegmentStats) || [];
+      var maxSun = (solarData.solarPotential && solarData.solarPotential.maxSunshineHoursPerYear) || 1;
+
+      solarRoofPolygons.forEach(function(p, i) {
+        p.setMap(map);
+        var seg = segs[i];
+        var sunHrs = (seg && seg.stats && seg.stats.sunshineQuantiles)
+          ? seg.stats.sunshineQuantiles[Math.floor(seg.stats.sunshineQuantiles.length / 2)] : 0;
+        var ratio = Math.min(sunHrs / maxSun, 1);
+
+        if (type === 'shade') {
+          var sr = 1 - ratio;
+          var cr = Math.round(80 + 100 * sr);
+          var cg = Math.round(50 * (1 - sr));
+          var cb = Math.round(150 + 100 * sr);
+          var c = 'rgb(' + cr + ',' + cg + ',' + cb + ')';
+          p.setOptions({ fillColor: c, strokeColor: c, fillOpacity: 0.35 });
+        } else {
+          var r = Math.round(255 * (1 - ratio));
+          var g = Math.round(200 * ratio);
+          var c2 = 'rgb(' + r + ',' + g + ',50)';
+          p.setOptions({ fillColor: c2, strokeColor: c2, fillOpacity: 0.25 });
+        }
+      });
+    }
+
+    function clearShadeOverlay() {
+      solarRoofPolygons.forEach(function(p) { p.setMap(null); });
+    }
+
+    function highlightSolarSegment(i) {
+      solarRoofPolygons.forEach(function(p) { p.setMap(map); });
+      var poly = solarRoofPolygons[i];
+      if (!poly) return;
+      poly.setOptions({ fillOpacity: 0.6, strokeWeight: 3 });
+      setTimeout(function() {
+        poly.setOptions({ fillOpacity: shadeOverlayType === 'shade' ? 0.35 : 0.25, strokeWeight: 2 });
+        if (shadeOverlayType === 'none') clearShadeOverlay();
+      }, 1500);
+      var bounds = new google.maps.LatLngBounds();
+      poly.getPath().forEach(function(pt) { bounds.extend(pt); });
+      map.panTo(bounds.getCenter());
     }
   </script>
   <script src="https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=drawing,geometry&callback=initMap" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+    /* ── LiDAR 3D VIEW ──
+       Simple approach: one Three.js scene with satellite ground plane + LiDAR points.
+       OrbitControls handles all navigation (zoom, rotate, pan).
+       Toggle on = show scene. Toggle off = back to map. */
+
+    var scene3d, camera3d, renderer3d, controls3d, raycaster3d, mouse3d;
+    var lidarPoints = null;
+    var groundPlane3d = null;
+    var groundLevel = 0;
+    var vertExag = 2.0;
+    var lidarActive = false;
+
+    // Geo-to-local: meters offset from design center
+    var metersPerDegLat = 111320;
+    var metersPerDegLng = 111320 * Math.cos((typeof designLat !== 'undefined' ? designLat : 0) * Math.PI / 180);
+    function geoToLocal(lat, lng) {
+      return {
+        x: (lng - designLng) * metersPerDegLng,
+        z: -(lat - designLat) * metersPerDegLat
+      };
+    }
+
+    function setStatus3d(msg) {
+      var el = document.getElementById('lidarStatus');
+      if (el) el.textContent = msg || '';
+    }
+
+    /* ── Init Three.js scene (once) ── */
+    function init3dViewer() {
+      if (typeof THREE === 'undefined') {
+        setTimeout(init3dViewer, 300);
+        return;
+      }
+      var canvas = document.getElementById('canvas3d');
+      var container = document.getElementById('viewer3d');
+      var w = container.clientWidth || 800;
+      var h = container.clientHeight || 600;
+
+      scene3d = new THREE.Scene();
+      scene3d.background = new THREE.Color(0x1a1a2e);
+
+      camera3d = new THREE.PerspectiveCamera(50, w / h, 0.1, 2000);
+      camera3d.position.set(30, 50, 30);
+      camera3d.lookAt(0, 0, 0);
+
+      renderer3d = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+      renderer3d.setSize(w, h);
+      renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      // OrbitControls — full navigation
+      controls3d = new THREE.OrbitControls(camera3d, canvas);
+      controls3d.enableDamping = true;
+      controls3d.dampingFactor = 0.08;
+      controls3d.minDistance = 5;
+      controls3d.maxDistance = 500;
+      controls3d.maxPolarAngle = Math.PI / 2.05; // don't go below ground
+
+      // Lights
+      scene3d.add(new THREE.AmbientLight(0xffffff, 0.6));
+      var sun = new THREE.DirectionalLight(0xffffff, 0.9);
+      sun.position.set(30, 50, 20);
+      scene3d.add(sun);
+
+      // Raycaster (for future tree height click)
+      raycaster3d = new THREE.Raycaster();
+      raycaster3d.params.Points = { threshold: 0.5 };
+      mouse3d = new THREE.Vector2();
+
+      window.addEventListener('resize', resize3d);
+      animate3d();
+    }
+
+    function animate3d() {
+      requestAnimationFrame(animate3d);
+      if (!renderer3d || !lidarActive) return;
+      if (controls3d) controls3d.update();
+      renderer3d.render(scene3d, camera3d);
+    }
+
+    function resize3d() {
+      if (!renderer3d || !lidarActive) return;
+      var container = document.getElementById('viewer3d');
+      var w = container.clientWidth;
+      var h = container.clientHeight;
+      if (w < 1 || h < 1) return;
+      renderer3d.setSize(w, h);
+      camera3d.aspect = w / h;
+      camera3d.updateProjectionMatrix();
+    }
+
+    /* ── Build satellite ground plane (the "paper") ── */
+    function buildGroundPlane() {
+      if (groundPlane3d) return; // already built
+      // Fetch satellite image from DSM endpoint (just need the image, not elevation data)
+      fetch('/api/solar/dsm-elevation?lat=' + designLat + '&lng=' + designLng + '&radius=40')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data.satelliteDataUrl) return;
+          var bbox = data.bbox; // [minLng, minLat, maxLng, maxLat]
+          if (!bbox || bbox.length < 4) return;
+
+          var sw = geoToLocal(bbox[1], bbox[0]);
+          var ne = geoToLocal(bbox[3], bbox[2]);
+          var planeW = ne.x - sw.x;
+          var planeH = sw.z - ne.z;
+          var cx = (sw.x + ne.x) / 2;
+          var cz = (sw.z + ne.z) / 2;
+
+          var geo = new THREE.PlaneGeometry(planeW, planeH);
+          geo.rotateX(-Math.PI / 2);
+
+          var img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = function() {
+            var texture = new THREE.Texture(img);
+            texture.needsUpdate = true;
+            var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+            groundPlane3d = new THREE.Mesh(geo, mat);
+            groundPlane3d.position.set(cx, -0.1, cz);
+            scene3d.add(groundPlane3d);
+          };
+          img.src = data.satelliteDataUrl;
+        })
+        .catch(function(e) { console.error('Ground plane error:', e); });
+    }
+
+    /* ── Toggle LiDAR view on/off ── */
+    var lidarFetched = false;
+    var lidarLoading = false;
+
+    document.getElementById('btn3dView').addEventListener('click', function() {
+      var viewer = document.getElementById('viewer3d');
+
+      if (lidarActive) {
+        // Turn off — hide 3D view, show map
+        lidarActive = false;
+        viewer.style.display = 'none';
+        this.classList.remove('active');
+        this.style.background = '';
+        this.style.color = '';
+        return;
+      }
+
+      // Turn on — show 3D view
+      viewer.style.display = '';
+      lidarActive = true;
+      this.classList.add('active');
+      this.style.background = '#22c55e';
+      this.style.color = '#000';
+
+      if (!scene3d) {
+        init3dViewer();
+        // Small delay for layout, then resize + load data
+        setTimeout(function() {
+          resize3d();
+          buildGroundPlane();
+          loadLidarPoints();
+        }, 60);
+      } else {
+        resize3d();
+        if (!lidarFetched) loadLidarPoints();
+      }
+    });
+
+    function loadLidarPoints() {
+      if (lidarFetched || lidarLoading) return;
+      if (typeof designLat === 'undefined') {
+        setStatus3d('No location — search for an address first');
+        return;
+      }
+
+      lidarLoading = true;
+      setStatus3d('Loading LiDAR points...');
+
+      fetch('/api/lidar/points?lat=' + designLat + '&lng=' + designLng + '&radius=15')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          lidarLoading = false;
+          if (data.error) { setStatus3d('LiDAR: ' + data.error); return; }
+          if (!data.points || data.points.length === 0) {
+            setStatus3d(data.message || 'No LiDAR data for this location');
+            return;
+          }
+          buildLidarPointCloud(data.points);
+          lidarFetched = true;
+          setStatus3d(data.points.length.toLocaleString() + ' points loaded');
+        })
+        .catch(function(e) {
+          lidarLoading = false;
+          setStatus3d('Error: ' + e.message);
+        });
+    }
+
+    /* ── Build LiDAR point cloud (the "stuff in the glass") ── */
+    function buildLidarPointCloud(points) {
+      if (lidarPoints) { scene3d.remove(lidarPoints); lidarPoints = null; }
+
+      var positions = new Float32Array(points.length * 3);
+      var colors = new Float32Array(points.length * 3);
+
+      var minZ = Infinity, maxZ = -Infinity;
+      for (var i = 0; i < points.length; i++) {
+        if (points[i][2] < minZ) minZ = points[i][2];
+        if (points[i][2] > maxZ) maxZ = points[i][2];
+      }
+      var zRange = maxZ - minZ || 1;
+      groundLevel = minZ;
+
+      for (var i = 0; i < points.length; i++) {
+        var p = points[i];
+        var cls = p[3] || 0;
+        var local = geoToLocal(p[1], p[0]);
+        positions[i * 3]     = local.x;
+        positions[i * 3 + 1] = (p[2] - minZ) * vertExag;
+        positions[i * 3 + 2] = local.z;
+
+        var r, g, b;
+        if (cls === 2) { r = 0.5; g = 0.5; b = 0.53; }
+        else if (cls === 6) { r = 0.29; g = 0.56; b = 0.89; }
+        else if (cls >= 3 && cls <= 5) {
+          var ht = (p[2] - minZ) / zRange;
+          r = 0.1; g = 0.4 + 0.4 * ht; b = 0.15;
+        } else {
+          var ht = (p[2] - minZ) / zRange;
+          r = 0.3 + 0.6 * ht; g = 0.3 + 0.3 * ht; b = 0.3;
+        }
+        colors[i * 3] = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
+      }
+
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      var mat = new THREE.PointsMaterial({
+        size: 0.3,
+        vertexColors: true,
+        sizeAttenuation: true,
+      });
+
+      lidarPoints = new THREE.Points(geo, mat);
+      scene3d.add(lidarPoints);
+
+      // Position camera to see the whole thing
+      geo.computeBoundingBox();
+      var bb = geo.boundingBox;
+      var cx = (bb.max.x + bb.min.x) / 2;
+      var cz = (bb.max.z + bb.min.z) / 2;
+      var extent = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z);
+      var cy = zRange * vertExag * 0.3;
+
+      camera3d.position.set(cx + extent * 0.5, extent * 0.6, cz + extent * 0.5);
+      controls3d.target.set(cx, cy, cz);
+      controls3d.update();
+    }
+  </script>
 
   <!-- Save changes modal -->
   <div id="saveModal" class="save-modal-backdrop" style="display:none;" onclick="handleModalBackdrop(event)">
@@ -5087,6 +7456,341 @@ app.get("/design", (req, res) => {
     </div>
   </div>
 
+</body>
+</html>`);
+});
+
+// ── Sales Mode (Slideshow) ─────────────────────────────────────────────────────
+app.get("/sales", (req, res) => {
+  const { projectId } = req.query;
+  if (!projectId) return res.redirect("/");
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.redirect("/");
+
+  const customerName = esc(project.customer?.name || project.projectName || "Homeowner");
+  const address = esc(project.address || "");
+  const shortAddr = esc((project.address || "").split(",").slice(0, 2).join(","));
+  const lat = project.lat;
+  const lng = project.lng;
+  const propertyType = project.propertyType === "commercial" ? "Commercial" : "Residential";
+  const energyUsage = project.energyUsage || [];
+  const hasUsageData = energyUsage.length > 0 && energyUsage.some(v => v > 0);
+  const annualUsage = energyUsage.reduce((a, b) => a + (Number(b) || 0), 0);
+  const avgMonthlyUsage = Math.round(annualUsage / 12);
+  const production = [220, 280, 870, 1010, 1060, 1200, 1250, 1220, 880, 490, 220, 120];
+  const annualProduction = production.reduce((a, b) => a + b, 0);
+  const systemCost = 46225;
+  const systemSize = 10.75;
+  const panelCount = Math.round(systemSize * 1000 / 400);
+  const avgRate = 0.18;
+  const estMonthlyBill = Math.round(avgMonthlyUsage * avgRate) || 185;
+  const estAnnualBill = estMonthlyBill * 12;
+  const annualSavings = Math.round(annualProduction * avgRate);
+  const monthlySavings = Math.round(annualSavings / 12);
+  const paybackYears = Math.round(systemCost / annualSavings);
+  const savings25yr = annualSavings * 25;
+  const offsetPct = hasUsageData && annualUsage > 0 ? Math.min(100, Math.round((annualProduction / annualUsage) * 100)) : 96;
+  const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const energyJSON = JSON.stringify(energyUsage.map(Number));
+  const prodJSON = JSON.stringify(production);
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sales Mode — ${customerName}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f14; color: #fff; }
+    .s-topbar {
+      height: 52px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; background: rgba(15,15,20,0.95); border-bottom: 1px solid rgba(255,255,255,0.06);
+      position: relative; z-index: 10;
+    }
+    .s-exit {
+      display: flex; align-items: center; gap: 8px; background: none; border: 1px solid rgba(255,255,255,0.12);
+      color: #aaa; font-size: 0.82rem; padding: 6px 14px; border-radius: 8px; cursor: pointer; transition: all 0.15s;
+    }
+    .s-exit:hover { background: rgba(255,255,255,0.06); color: #fff; border-color: rgba(255,255,255,0.25); }
+    .s-title { font-size: 0.88rem; font-weight: 500; color: rgba(255,255,255,0.6); position: absolute; left: 50%; transform: translateX(-50%); }
+    .s-counter { font-size: 0.82rem; color: rgba(255,255,255,0.35); font-variant-numeric: tabular-nums; }
+    .s-viewport { position: relative; flex: 1; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+    .slide {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none; transition: opacity 0.5s ease;
+      padding: 40px 60px; overflow-y: auto;
+    }
+    .slide.active { opacity: 1; pointer-events: auto; }
+    .slide-inner { max-width: 1000px; width: 100%; }
+    .s-nav {
+      height: 56px; display: flex; align-items: center; justify-content: center; gap: 20px;
+      background: rgba(15,15,20,0.95); border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .s-arrow {
+      width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      background: none; border: 1px solid rgba(255,255,255,0.12); color: #aaa; cursor: pointer; transition: all 0.15s;
+    }
+    .s-arrow:hover { background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.3); }
+    .s-arrow:disabled { opacity: 0.2; cursor: default; }
+    .s-dots { display: flex; gap: 8px; }
+    .s-dot {
+      width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.15);
+      cursor: pointer; transition: all 0.25s; border: none;
+    }
+    .s-dot.active { background: #c084fc; transform: scale(1.2); }
+    .s-dot:hover:not(.active) { background: rgba(255,255,255,0.3); }
+    .s-label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: #c084fc; margin-bottom: 12px; }
+    .s-heading { font-size: 2.6rem; font-weight: 700; line-height: 1.15; margin-bottom: 16px; letter-spacing: -1px; }
+    .s-divider { width: 60px; height: 3px; background: linear-gradient(90deg, #c084fc, #818cf8); border-radius: 2px; margin-bottom: 4px; }
+    .s-accent { color: #c084fc; }
+    .s-green { color: #34d399; }
+    .welcome-center { text-align: center; }
+    .welcome-logo {
+      width: 56px; height: 56px; border-radius: 14px;
+      background: linear-gradient(135deg, #c084fc, #818cf8);
+      display: flex; align-items: center; justify-content: center; margin: 0 auto 28px;
+    }
+    .welcome-heading { font-size: 3rem; font-weight: 700; letter-spacing: -1.5px; margin-bottom: 8px; }
+    .welcome-customer { font-size: 1.3rem; color: rgba(255,255,255,0.6); margin-bottom: 32px; }
+    .welcome-meta { display: flex; gap: 24px; justify-content: center; font-size: 0.85rem; color: rgba(255,255,255,0.35); }
+    .welcome-meta span { display: flex; align-items: center; gap: 6px; }
+    .welcome-divider { width: 80px; height: 3px; background: linear-gradient(90deg, #c084fc, #818cf8); border-radius: 2px; margin: 24px auto; }
+    .home-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; align-items: center; }
+    .home-img { width: 100%; aspect-ratio: 4/3; border-radius: 16px; object-fit: cover; border: 1px solid rgba(255,255,255,0.08); background: #1a1a22; }
+    .home-detail { display: flex; flex-direction: column; gap: 20px; }
+    .home-detail-item { display: flex; align-items: flex-start; gap: 14px; }
+    .home-detail-icon { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; background: rgba(192,132,252,0.1); display: flex; align-items: center; justify-content: center; }
+    .home-detail-label { font-size: 0.75rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+    .home-detail-val { font-size: 0.95rem; color: #fff; line-height: 1.4; }
+    .energy-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
+    .energy-stat { text-align: center; }
+    .energy-stat-val { font-size: 1.8rem; font-weight: 700; }
+    .energy-stat-label { font-size: 0.78rem; color: rgba(255,255,255,0.4); margin-top: 4px; }
+    .energy-chart-wrap { background: rgba(255,255,255,0.03); border-radius: 12px; padding: 20px; }
+    .energy-empty { text-align: center; padding: 48px; color: rgba(255,255,255,0.3); font-size: 0.9rem; }
+    .design-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 40px; align-items: start; }
+    .design-specs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .design-spec { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 20px; text-align: center; }
+    .design-spec-val { font-size: 1.6rem; font-weight: 700; margin-bottom: 4px; }
+    .design-spec-label { font-size: 0.78rem; color: rgba(255,255,255,0.4); }
+    .design-img { width: 100%; aspect-ratio: 4/3; border-radius: 16px; object-fit: cover; border: 1px solid rgba(255,255,255,0.08); background: #1a1a22; }
+    .savings-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }
+    .savings-card { border-radius: 16px; padding: 32px; text-align: center; }
+    .savings-before { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+    .savings-after { background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); }
+    .savings-card-title { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,0.4); margin-bottom: 16px; }
+    .savings-card-val { font-size: 2.4rem; font-weight: 700; margin-bottom: 4px; }
+    .savings-card-sub { font-size: 0.85rem; color: rgba(255,255,255,0.4); }
+    .savings-bottom { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .savings-badge { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 20px; text-align: center; }
+    .savings-badge-val { font-size: 1.6rem; font-weight: 700; margin-bottom: 4px; }
+    .savings-badge-label { font-size: 0.78rem; color: rgba(255,255,255,0.4); }
+    .steps-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 40px; align-items: start; }
+    .step-item { display: flex; gap: 18px; align-items: flex-start; margin-bottom: 24px; }
+    .step-num { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: linear-gradient(135deg, #c084fc, #818cf8); display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700; }
+    .step-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+    .step-desc { font-size: 0.85rem; color: rgba(255,255,255,0.45); line-height: 1.5; }
+    .cta-card { background: linear-gradient(135deg, rgba(192,132,252,0.12), rgba(129,140,248,0.12)); border: 1px solid rgba(192,132,252,0.2); border-radius: 16px; padding: 32px; text-align: center; }
+    .cta-heading { font-size: 1.3rem; font-weight: 600; margin-bottom: 8px; }
+    .cta-sub { font-size: 0.88rem; color: rgba(255,255,255,0.5); margin-bottom: 20px; line-height: 1.5; }
+    .cta-btn { display: inline-block; padding: 14px 36px; border-radius: 12px; background: linear-gradient(135deg, #c084fc, #818cf8); color: #fff; font-size: 0.95rem; font-weight: 600; border: none; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
+    .cta-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(192,132,252,0.3); }
+  </style>
+</head>
+<body>
+  <div class="s-topbar">
+    <button class="s-exit" onclick="location.href='/project/${projectId}'">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg> Exit
+    </button>
+    <div class="s-title" id="slideTitle">Welcome</div>
+    <div class="s-counter" id="slideCounter">1 / 6</div>
+  </div>
+  <div class="s-viewport">
+    <!-- Slide 1: Welcome -->
+    <div class="slide active" id="slide0">
+      <div class="slide-inner welcome-center">
+        <div class="welcome-logo"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></div>
+        <div class="s-label">Solar Proposal</div>
+        <div class="welcome-heading">Your Solar Proposal</div>
+        <div class="welcome-divider"></div>
+        <div class="welcome-customer">Prepared for ${customerName}</div>
+        <div class="welcome-meta">
+          <span><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> ${shortAddr}</span>
+          <span><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${today}</span>
+        </div>
+      </div>
+    </div>
+    <!-- Slide 2: Your Home -->
+    <div class="slide" id="slide1">
+      <div class="slide-inner">
+        <div class="s-label">Property Overview</div>
+        <div class="s-heading">Your Home</div>
+        <div class="s-divider"></div>
+        <div class="home-grid" style="margin-top:28px">
+          <img class="home-img" src="/api/satellite?lat=${lat}&lng=${lng}&zoom=19&size=800x600" alt="Satellite view"/>
+          <div class="home-detail">
+            <div class="home-detail-item"><div class="home-detail-icon"><svg width="18" height="18" fill="none" stroke="#c084fc" stroke-width="2" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg></div><div><div class="home-detail-label">Address</div><div class="home-detail-val">${address}</div></div></div>
+            <div class="home-detail-item"><div class="home-detail-icon"><svg width="18" height="18" fill="none" stroke="#c084fc" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><polyline points="9 21 9 12 15 12 15 21"/></svg></div><div><div class="home-detail-label">Property Type</div><div class="home-detail-val">${propertyType}</div></div></div>
+            <div class="home-detail-item"><div class="home-detail-icon"><svg width="18" height="18" fill="none" stroke="#c084fc" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg></div><div><div class="home-detail-label">Coordinates</div><div class="home-detail-val">${lat.toFixed(5)}, ${lng.toFixed(5)}</div></div></div>
+            <div class="home-detail-item"><div class="home-detail-icon"><svg width="18" height="18" fill="none" stroke="#c084fc" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0112 2a8 8 0 018 8.2c0 7.3-8 11.8-8 11.8z"/></svg></div><div><div class="home-detail-label">Service Area</div><div class="home-detail-val">${esc((project.address || "").split(",").slice(-2).join(",").trim()) || "Massachusetts"}</div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Slide 3: Energy Profile -->
+    <div class="slide" id="slide2">
+      <div class="slide-inner">
+        <div class="s-label">Current Usage</div>
+        <div class="s-heading">Your Energy Profile</div>
+        <div class="s-divider"></div>
+        ${hasUsageData ? `
+        <div class="energy-stats" style="margin-top:24px">
+          <div class="energy-stat"><div class="energy-stat-val">${annualUsage.toLocaleString()} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">kWh</span></div><div class="energy-stat-label">Annual Usage</div></div>
+          <div class="energy-stat"><div class="energy-stat-val">${avgMonthlyUsage.toLocaleString()} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">kWh</span></div><div class="energy-stat-label">Avg. Monthly</div></div>
+          <div class="energy-stat"><div class="energy-stat-val">$${estMonthlyBill} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">/mo</span></div><div class="energy-stat-label">Est. Monthly Bill</div></div>
+        </div>
+        <div class="energy-chart-wrap"><canvas id="energyChart" width="900" height="280"></canvas></div>
+        ` : `
+        <div class="energy-stats" style="margin-top:24px">
+          <div class="energy-stat"><div class="energy-stat-val">~$${estMonthlyBill} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">/mo</span></div><div class="energy-stat-label">Est. Monthly Bill</div></div>
+          <div class="energy-stat"><div class="energy-stat-val">~${Math.round(estMonthlyBill / avgRate).toLocaleString()} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">kWh</span></div><div class="energy-stat-label">Est. Monthly Usage</div></div>
+          <div class="energy-stat"><div class="energy-stat-val">$${estAnnualBill.toLocaleString()} <span style="font-size:0.7em;font-weight:400;color:rgba(255,255,255,0.4)">/yr</span></div><div class="energy-stat-label">Est. Annual Bill</div></div>
+        </div>
+        <div class="energy-chart-wrap"><div class="energy-empty">
+          <svg width="40" height="40" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:12px"><path d="M12 20V10M6 20V4M18 20v-4"/></svg>
+          <div>Detailed energy usage data not yet entered.</div>
+          <div style="margin-top:6px;font-size:0.8rem;">Estimates shown above are based on regional averages.</div>
+        </div></div>
+        `}
+      </div>
+    </div>
+    <!-- Slide 4: Solar Design -->
+    <div class="slide" id="slide3">
+      <div class="slide-inner">
+        <div class="s-label">System Overview</div>
+        <div class="s-heading">Your Solar Design</div>
+        <div class="s-divider"></div>
+        <div class="design-grid" style="margin-top:28px">
+          <div>
+            <img class="design-img" src="/api/satellite?lat=${lat}&lng=${lng}&zoom=20&size=800x600" alt="Design view"/>
+            <div style="text-align:center;margin-top:10px;font-size:0.78rem;color:rgba(255,255,255,0.3);">Design 1 — Satellite View</div>
+          </div>
+          <div class="design-specs">
+            <div class="design-spec"><div class="design-spec-val s-accent">${systemSize} kW</div><div class="design-spec-label">System Size</div></div>
+            <div class="design-spec"><div class="design-spec-val">${panelCount}</div><div class="design-spec-label">Solar Panels</div></div>
+            <div class="design-spec"><div class="design-spec-val">${annualProduction.toLocaleString()} <span style="font-size:0.55em;font-weight:400">kWh</span></div><div class="design-spec-label">Annual Production</div></div>
+            <div class="design-spec"><div class="design-spec-val">$${systemCost.toLocaleString()}</div><div class="design-spec-label">System Cost</div></div>
+            <div class="design-spec" style="grid-column:span 2"><div class="design-spec-val s-green">${offsetPct}%</div><div class="design-spec-label">Estimated Energy Offset</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Slide 5: Savings -->
+    <div class="slide" id="slide4">
+      <div class="slide-inner">
+        <div class="s-label">Financial Impact</div>
+        <div class="s-heading">Your Savings</div>
+        <div class="s-divider"></div>
+        <div class="savings-compare" style="margin-top:28px">
+          <div class="savings-card savings-before">
+            <div class="savings-card-title">Before Solar</div>
+            <div class="savings-card-val">$${estMonthlyBill}<span style="font-size:0.4em;font-weight:400;color:rgba(255,255,255,0.4)">/mo</span></div>
+            <div class="savings-card-sub">$${estAnnualBill.toLocaleString()} per year</div>
+          </div>
+          <div class="savings-card savings-after">
+            <div class="savings-card-title" style="color:#34d399">After Solar</div>
+            <div class="savings-card-val s-green">$${Math.max(0, estMonthlyBill - monthlySavings)}<span style="font-size:0.4em;font-weight:400;color:rgba(255,255,255,0.4)">/mo</span></div>
+            <div class="savings-card-sub" style="color:rgba(52,211,153,0.6)">Save ~$${monthlySavings}/mo</div>
+          </div>
+        </div>
+        <div class="savings-bottom">
+          <div class="savings-badge"><div class="savings-badge-val s-accent">~${paybackYears} yrs</div><div class="savings-badge-label">Payback Period</div></div>
+          <div class="savings-badge"><div class="savings-badge-val s-green">$${savings25yr.toLocaleString()}</div><div class="savings-badge-label">25-Year Savings</div></div>
+          <div class="savings-badge"><div class="savings-badge-val">${offsetPct}%</div><div class="savings-badge-label">Energy Offset</div></div>
+        </div>
+      </div>
+    </div>
+    <!-- Slide 6: Next Steps -->
+    <div class="slide" id="slide5">
+      <div class="slide-inner">
+        <div class="s-label">Getting Started</div>
+        <div class="s-heading">Next Steps</div>
+        <div class="s-divider"></div>
+        <div class="steps-grid" style="margin-top:28px">
+          <div>
+            <div class="step-item"><div class="step-num">1</div><div><div class="step-title">Site Assessment</div><div class="step-desc">We verify roof condition, measurements, and shading to finalize your design.</div></div></div>
+            <div class="step-item"><div class="step-num">2</div><div><div class="step-title">Final Design &amp; Proposal</div><div class="step-desc">Your custom system design is completed with final pricing and financing options.</div></div></div>
+            <div class="step-item"><div class="step-num">3</div><div><div class="step-title">Permitting</div><div class="step-desc">We handle all permits and utility interconnection paperwork on your behalf.</div></div></div>
+            <div class="step-item"><div class="step-num">4</div><div><div class="step-title">Installation</div><div class="step-desc">Professional installation typically completed in 1-2 days.</div></div></div>
+            <div class="step-item"><div class="step-num">5</div><div><div class="step-title">Activation</div><div class="step-desc">Final inspection, utility approval, and your system goes live — start saving from day one.</div></div></div>
+          </div>
+          <div class="cta-card">
+            <div class="cta-heading">Ready to go solar?</div>
+            <div class="cta-sub">Take the next step toward energy independence and start saving on your electricity bills.</div>
+            <button class="cta-btn">Let's Get Started</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="s-nav">
+    <button class="s-arrow" id="prevBtn" disabled><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></button>
+    <div class="s-dots"><button class="s-dot active"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button></div>
+    <button class="s-arrow" id="nextBtn"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg></button>
+  </div>
+  <script>
+    var current = 0, total = 6;
+    var titles = ['Welcome','Your Home','Energy Profile','Solar Design','Your Savings','Next Steps'];
+    var slides = document.querySelectorAll('.slide');
+    var dots = document.querySelectorAll('.s-dot');
+    var prevBtn = document.getElementById('prevBtn');
+    var nextBtn = document.getElementById('nextBtn');
+    function goTo(n) {
+      if (n < 0 || n >= total) return;
+      slides.forEach(function(s,i) { s.classList.toggle('active', i===n); });
+      dots.forEach(function(d,i) { d.classList.toggle('active', i===n); });
+      current = n;
+      document.getElementById('slideTitle').textContent = titles[n];
+      document.getElementById('slideCounter').textContent = (n+1)+' / '+total;
+      prevBtn.disabled = n === 0; nextBtn.disabled = n === total-1;
+      if (n === 2) drawEnergyChart();
+    }
+    prevBtn.onclick = function() { goTo(current-1); };
+    nextBtn.onclick = function() { goTo(current+1); };
+    dots.forEach(function(d,i) { d.onclick = function() { goTo(i); }; });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goTo(current+1); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); goTo(current-1); }
+      if (e.key === 'Escape') location.href = '/project/${projectId}';
+    });
+    var chartDrawn = false;
+    function drawEnergyChart() {
+      if (chartDrawn) return;
+      var canvas = document.getElementById('energyChart');
+      if (!canvas) return;
+      chartDrawn = true;
+      var ctx = canvas.getContext('2d');
+      var W = canvas.width, H = canvas.height;
+      var usage = ${energyJSON};
+      var prod = ${prodJSON};
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      var allVals = usage.concat(prod);
+      var maxVal = Math.max.apply(null, allVals.filter(function(v){return v>0;})) || 1500;
+      maxVal = maxVal * 1.15;
+      var pad = {top:20,right:20,bottom:40,left:55};
+      var chartW = W-pad.left-pad.right, chartH = H-pad.top-pad.bottom;
+      var barGroupW = chartW/12, barW = barGroupW*0.3;
+      ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.lineWidth=1;
+      for(var g=0;g<=4;g++){var gy=pad.top+(chartH/4)*g;ctx.beginPath();ctx.moveTo(pad.left,gy);ctx.lineTo(W-pad.right,gy);ctx.stroke();ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font='11px -apple-system,sans-serif';ctx.textAlign='right';ctx.fillText(Math.round(maxVal-(maxVal/4)*g).toLocaleString(),pad.left-8,gy+4);}
+      for(var i=0;i<12;i++){var cx=pad.left+barGroupW*i+barGroupW/2;if(usage[i]>0){var uh=(usage[i]/maxVal)*chartH;ctx.fillStyle='#f87171';ctx.beginPath();rr(ctx,cx-barW-1,pad.top+chartH-uh,barW,uh,3);ctx.fill();}var ph=(prod[i]/maxVal)*chartH;ctx.fillStyle='#fbbf24';ctx.beginPath();rr(ctx,cx+1,pad.top+chartH-ph,barW,ph,3);ctx.fill();ctx.fillStyle='rgba(255,255,255,0.35)';ctx.font='11px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(months[i],cx,H-pad.bottom+18);}
+      ctx.fillStyle='#f87171';ctx.fillRect(W-200,8,10,10);ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='11px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText('Energy Usage',W-186,17);
+      ctx.fillStyle='#fbbf24';ctx.fillRect(W-200,24,10,10);ctx.fillStyle='rgba(255,255,255,0.5)';ctx.fillText('Solar Production',W-186,33);
+    }
+    function rr(ctx,x,y,w,h,r){if(h<r*2)r=h/2;ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  </script>
 </body>
 </html>`);
 });
@@ -5285,7 +7989,7 @@ app.get("/settings", (req, res) => {
 
       <div class="sidebar-group">
         <div class="sidebar-section-label">User management</div>
-        <a class="sidebar-item" href="/settings">Users and licenses</a>
+        <a class="sidebar-item" href="/settings/users">Users and licenses</a>
         <a class="sidebar-item" href="/settings">Roles</a>
         <a class="sidebar-item" href="/settings">Teams</a>
       </div>
@@ -5338,11 +8042,11 @@ app.get("/settings", (req, res) => {
             </svg>
             Profile
           </div>
-          <div class="field"><div class="field-label">First name</div><div class="field-value">Adam</div></div>
-          <div class="field"><div class="field-label">Last name</div><div class="field-value">Bahou</div></div>
-          <div class="field"><div class="field-label">Job function</div><div class="field-value muted">—</div></div>
-          <div class="field"><div class="field-label">Phone number</div><div class="field-value muted">—</div></div>
-          <div class="field"><div class="field-label">Email address</div><div class="field-value">adam@teamsunshine.solar</div></div>
+          <div class="field"><div class="field-label">First name</div><div class="field-value">${esc(req.user.firstName)}</div></div>
+          <div class="field"><div class="field-label">Last name</div><div class="field-value">${esc(req.user.lastName)}</div></div>
+          <div class="field"><div class="field-label">Job function</div><div class="field-value${req.user.jobFunction ? '' : ' muted'}">${req.user.jobFunction ? esc(req.user.jobFunction) : '—'}</div></div>
+          <div class="field"><div class="field-label">Phone number</div><div class="field-value${req.user.phone ? '' : ' muted'}">${req.user.phone ? esc(req.user.phone) : '—'}</div></div>
+          <div class="field"><div class="field-label">Email address</div><div class="field-value">${esc(req.user.email)}</div></div>
           <hr class="divider"/>
           <div class="section-heading">
             <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -5384,11 +8088,11 @@ app.get("/settings", (req, res) => {
           </div>
           <div class="field">
             <div class="field-label">License type <span class="info-icon">i</span></div>
-            <div class="field-value">Premium</div>
+            <div class="field-value">${esc(req.user.license)}</div>
           </div>
           <div class="field">
             <div class="field-label">Role <span class="info-icon">i</span></div>
-            <div class="field-value">Admin</div>
+            <div class="field-value">${esc(req.user.role)}</div>
           </div>
         </div>
 
@@ -5398,6 +8102,258 @@ app.get("/settings", (req, res) => {
 
 </body>
 </html>`);
+});
+
+// ── Users API ─────────────────────────────────────────────────────────────────
+app.get("/api/users", (req, res) => {
+  const users = loadUsers().map(u => ({ ...u, password: undefined }));
+  res.json(users);
+});
+
+app.post("/api/users", (req, res) => {
+  const users = loadUsers();
+  const { username, password, firstName, lastName, email, phone, role, license, team, jobFunction } = req.body;
+  if (!username || !password) return res.status(400).json({ error: "Username and password required" });
+  if (users.find(u => u.username === username)) return res.status(409).json({ error: "Username already exists" });
+  const user = {
+    id: "u_" + newId(),
+    username, password, firstName: firstName || "", lastName: lastName || "",
+    email: email || "", phone: phone || "", role: role || "Designer",
+    license: license || "Standard", team: team || "", jobFunction: jobFunction || "",
+    active: true, createdAt: new Date().toISOString()
+  };
+  users.push(user);
+  saveUsers(users);
+  res.json({ ...user, password: undefined });
+});
+
+app.patch("/api/users/:id", (req, res) => {
+  const users = loadUsers();
+  const idx = users.findIndex(u => u.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "User not found" });
+  const allowed = ["firstName", "lastName", "email", "phone", "role", "license", "team", "jobFunction", "active", "password"];
+  allowed.forEach(k => { if (req.body[k] !== undefined) users[idx][k] = req.body[k]; });
+  saveUsers(users);
+  res.json({ ...users[idx], password: undefined });
+});
+
+app.delete("/api/users/:id", (req, res) => {
+  let users = loadUsers();
+  users = users.filter(u => u.id !== req.params.id);
+  saveUsers(users);
+  res.json({ ok: true });
+});
+
+// ── Users & Licenses settings page ────────────────────────────────────────────
+app.get("/settings/users", (req, res) => {
+  const users = loadUsers();
+  const activeCount = users.filter(u => u.active).length;
+  const userRows = users.map(u => `
+    <tr class="ut-row${u.id === req.user.id ? ' ut-you' : ''}${!u.active ? ' ut-inactive' : ''}">
+      <td>
+        <div class="ut-user">
+          <div class="ut-avatar" style="background:${u.active ? '#7c3aed' : '#9ca3af'}">${esc(u.firstName[0] || '?')}${esc(u.lastName[0] || '')}</div>
+          <div>
+            <div class="ut-name">${esc(u.firstName)} ${esc(u.lastName)}${u.id === req.user.id ? ' <span class="ut-you-badge">You</span>' : ''}</div>
+            <div class="ut-email">${esc(u.email)}</div>
+          </div>
+        </div>
+      </td>
+      <td>${esc(u.username)}</td>
+      <td>${esc(u.role)}</td>
+      <td>${esc(u.team || '\u2014')}</td>
+      <td><span class="ut-license ut-license-${u.license.toLowerCase()}">${esc(u.license)}</span></td>
+      <td><span class="ut-status ut-status-${u.active ? 'active' : 'inactive'}">${u.active ? 'Active' : 'Inactive'}</span></td>
+      <td>
+        <button class="ut-action-btn" onclick="editUser('${u.id}')" title="Edit">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      </td>
+    </tr>`).join("");
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Users &amp; Licenses \u2014 Solar CRM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#111;display:flex;height:100vh;overflow:hidden}
+  .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+  .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0}
+  .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+  .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+  .settings-shell{flex:1;display:flex;overflow:hidden}
+  .settings-sidebar{width:210px;flex-shrink:0;border-right:1px solid #e5e7eb;overflow-y:auto;padding:20px 0;background:#fafafa}
+  .sidebar-group{padding:0 12px;margin-bottom:4px}
+  .sidebar-group+.sidebar-group{margin-top:4px;padding-top:12px;border-top:1px solid #e5e7eb}
+  .sidebar-section-label{font-size:0.68rem;font-weight:700;color:#b0b7c3;text-transform:uppercase;letter-spacing:0.6px;padding:0 4px 6px}
+  .sidebar-item{display:block;padding:6px 8px;font-size:0.84rem;color:#4b5563;text-decoration:none;border-radius:6px;transition:background 0.1s,color 0.1s;margin-bottom:1px}
+  .sidebar-item:hover{background:#ede9f6;color:#1a0828}
+  .sidebar-item.active{background:#ede9f6;color:#1a0828;font-weight:600;position:relative}
+  .sidebar-item.active::before{content:'';position:absolute;left:-12px;top:6px;bottom:6px;width:3px;background:#7c3aed;border-radius:0 2px 2px 0}
+  .settings-main{flex:1;overflow-y:auto;padding:32px 40px}
+  .settings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+  .settings-header h1{font-size:1.6rem;font-weight:700;color:#111}
+  .btn-add{display:inline-flex;align-items:center;gap:7px;padding:8px 18px;background:#7c3aed;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:600;border:none;cursor:pointer;transition:background 0.15s}
+  .btn-add:hover{background:#6d28d9}
+  .ut-summary{display:flex;gap:24px;margin-bottom:24px}
+  .ut-stat{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 20px;min-width:140px}
+  .ut-stat-val{font-size:1.5rem;font-weight:700;color:#111}
+  .ut-stat-label{font-size:0.75rem;color:#6b7280;margin-top:2px}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;padding:10px 12px;font-size:0.72rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;border-bottom:2px solid #e5e7eb}
+  td{padding:12px;border-bottom:1px solid #f3f4f6;font-size:0.88rem;color:#374151}
+  .ut-row:hover{background:#f9fafb}
+  .ut-row.ut-inactive{opacity:0.55}
+  .ut-user{display:flex;align-items:center;gap:10px}
+  .ut-avatar{width:32px;height:32px;border-radius:50%;color:#fff;font-size:0.72rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .ut-name{font-weight:600;color:#111;font-size:0.88rem}
+  .ut-email{font-size:0.75rem;color:#6b7280}
+  .ut-you-badge{display:inline-block;background:#ede9f6;color:#7c3aed;font-size:0.65rem;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:4px;vertical-align:middle}
+  .ut-license{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600}
+  .ut-license-premium{background:#fef3c7;color:#92400e}
+  .ut-license-standard{background:#e0e7ff;color:#3730a3}
+  .ut-status{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600}
+  .ut-status-active{background:#d1fae5;color:#065f46}
+  .ut-status-inactive{background:#fee2e2;color:#991b1b}
+  .ut-action-btn{background:none;border:1px solid #d1d5db;border-radius:6px;padding:5px 7px;cursor:pointer;color:#6b7280;transition:all 0.15s}
+  .ut-action-btn:hover{border-color:#7c3aed;color:#7c3aed;background:#f5f3ff}
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;align-items:center;justify-content:center}
+  .modal-overlay.open{display:flex}
+  .modal{background:#fff;border-radius:14px;padding:28px 32px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,0.2)}
+  .modal h2{font-size:1.15rem;font-weight:700;margin-bottom:20px}
+  .modal label{display:block;font-size:0.78rem;font-weight:600;color:#374151;margin-bottom:3px}
+  .modal input,.modal select{width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:7px;font-size:0.88rem;outline:none;margin-bottom:12px;transition:border-color 0.15s}
+  .modal input:focus,.modal select:focus{border-color:#7c3aed}
+  .modal-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .modal-actions button{padding:8px 18px;border-radius:7px;font-size:0.85rem;font-weight:600;cursor:pointer;border:none;transition:background 0.15s}
+  .btn-cancel{background:#f3f4f6;color:#374151}.btn-cancel:hover{background:#e5e7eb}
+  .btn-save{background:#7c3aed;color:#fff}.btn-save:hover{background:#6d28d9}
+</style>
+</head><body>
+  <nav class="rail">
+    <div class="rail-logo"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="rail-btn active" href="/settings" title="Settings" style="margin-top:auto;"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+  </nav>
+  <div class="settings-shell">
+    <aside class="settings-sidebar">
+      <div class="sidebar-group"><div class="sidebar-section-label">Account</div>
+        <a class="sidebar-item" href="/settings">User profile</a>
+        <a class="sidebar-item" href="/settings">Organization profile</a>
+        <a class="sidebar-item" href="/settings">Apps</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">User management</div>
+        <a class="sidebar-item active" href="/settings/users">Users and licenses</a>
+        <a class="sidebar-item" href="/settings">Roles</a>
+        <a class="sidebar-item" href="/settings">Teams</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Pricing &amp; financing</div>
+        <a class="sidebar-item" href="/settings">Pricing defaults</a>
+        <a class="sidebar-item" href="/settings">Financing</a>
+        <a class="sidebar-item" href="/settings">Utility and tax rates</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Projects and designs</div>
+        <a class="sidebar-item" href="/settings">Statuses and warnings</a>
+        <a class="sidebar-item" href="/settings">Design</a>
+        <a class="sidebar-item" href="/settings">Financing integrations</a>
+        <a class="sidebar-item" href="/settings">Performance simulations</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">API</div>
+        <a class="sidebar-item" href="/settings">API tokens</a>
+        <a class="sidebar-item" href="/settings">Webhooks</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Plan sets</div>
+        <a class="sidebar-item" href="/settings">Contractor profiles</a>
+      </div>
+    </aside>
+    <main class="settings-main">
+      <div class="settings-header">
+        <h1>Users and licenses</h1>
+        <button class="btn-add" onclick="openModal()"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add user</button>
+      </div>
+      <div class="ut-summary">
+        <div class="ut-stat"><div class="ut-stat-val">${users.length}</div><div class="ut-stat-label">Total users</div></div>
+        <div class="ut-stat"><div class="ut-stat-val">${activeCount}</div><div class="ut-stat-label">Active</div></div>
+        <div class="ut-stat"><div class="ut-stat-val">${users.length - activeCount}</div><div class="ut-stat-label">Inactive</div></div>
+      </div>
+      <table><thead><tr><th>User</th><th>Username</th><th>Role</th><th>Team</th><th>License</th><th>Status</th><th></th></tr></thead>
+      <tbody>${userRows}</tbody></table>
+    </main>
+  </div>
+
+  <div class="modal-overlay" id="userModal">
+    <div class="modal">
+      <h2 id="modalTitle">Add user</h2>
+      <input type="hidden" id="editUserId"/>
+      <div class="modal-row"><div><label>First name</label><input id="mFirstName"/></div><div><label>Last name</label><input id="mLastName"/></div></div>
+      <div class="modal-row"><div><label>Username</label><input id="mUsername"/></div><div><label>Password</label><input id="mPassword" type="password"/></div></div>
+      <label>Email</label><input id="mEmail" type="email"/>
+      <label>Phone</label><input id="mPhone"/>
+      <div class="modal-row">
+        <div><label>Role</label><select id="mRole"><option>Admin</option><option>Designer</option><option>Sales Rep</option><option>Installer</option></select></div>
+        <div><label>License</label><select id="mLicense"><option>Premium</option><option>Standard</option></select></div>
+      </div>
+      <div class="modal-row">
+        <div><label>Team</label><select id="mTeam"><option value="">None</option><option>Team Sunshine</option><option>Team Alpha</option><option>Team Beta</option></select></div>
+        <div><label>Job function</label><input id="mJobFunction"/></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button class="btn-save" onclick="saveUser()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  var currentUsers = ${JSON.stringify(users.map(u => ({ ...u, password: undefined })))};
+  function openModal() {
+    document.getElementById('editUserId').value = '';
+    document.getElementById('modalTitle').textContent = 'Add user';
+    ['mFirstName','mLastName','mUsername','mPassword','mEmail','mPhone','mJobFunction'].forEach(function(id){ document.getElementById(id).value = ''; });
+    document.getElementById('mRole').value = 'Designer';
+    document.getElementById('mLicense').value = 'Standard';
+    document.getElementById('mTeam').value = '';
+    document.getElementById('mUsername').disabled = false;
+    document.getElementById('userModal').classList.add('open');
+  }
+  function editUser(id) {
+    var u = currentUsers.find(function(x){ return x.id === id; });
+    if (!u) return;
+    document.getElementById('editUserId').value = u.id;
+    document.getElementById('modalTitle').textContent = 'Edit user';
+    document.getElementById('mFirstName').value = u.firstName;
+    document.getElementById('mLastName').value = u.lastName;
+    document.getElementById('mUsername').value = u.username;
+    document.getElementById('mUsername').disabled = true;
+    document.getElementById('mPassword').value = '';
+    document.getElementById('mEmail').value = u.email;
+    document.getElementById('mPhone').value = u.phone || '';
+    document.getElementById('mRole').value = u.role;
+    document.getElementById('mLicense').value = u.license;
+    document.getElementById('mTeam').value = u.team || '';
+    document.getElementById('mJobFunction').value = u.jobFunction || '';
+    document.getElementById('userModal').classList.add('open');
+  }
+  function closeModal() { document.getElementById('userModal').classList.remove('open'); }
+  function saveUser() {
+    var editId = document.getElementById('editUserId').value;
+    var body = { firstName: document.getElementById('mFirstName').value, lastName: document.getElementById('mLastName').value, email: document.getElementById('mEmail').value, phone: document.getElementById('mPhone').value, role: document.getElementById('mRole').value, license: document.getElementById('mLicense').value, team: document.getElementById('mTeam').value, jobFunction: document.getElementById('mJobFunction').value };
+    var pw = document.getElementById('mPassword').value;
+    if (editId) {
+      if (pw) body.password = pw;
+      fetch('/api/users/' + editId, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function(){ location.reload(); });
+    } else {
+      body.username = document.getElementById('mUsername').value;
+      body.password = pw || 'password';
+      fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function(r){ if(!r.ok) return r.json().then(function(d){ alert(d.error); }); location.reload(); });
+    }
+  }
+  document.getElementById('userModal').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
+  </script>
+</body></html>`);
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
