@@ -5,6 +5,31 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-28 (Session 20)
+
+### UI Cleanup & Navigation
+- [x] Moved Calibrate icon from bottom draw-toolbar to top toolbar2 (next to LiDAR button)
+- [x] Calibrate icon shows default color when uncalibrated, green (#22c55e) when complete
+- [x] Removed redundant project name and settings ellipsis from sub-header bar
+- [x] Sun logo on home page opens nav drawer; on all other pages navigates to home (`/`)
+
+### Geocode API
+- [x] Added missing `GET /api/geocode?address=` endpoint (was returning HTML 404, causing JSON parse error)
+- [x] Uses Google Geocoding API, returns `{ lat, lng, formatted_address }`
+
+### New Project — Draggable Map Pin
+- [x] Red teardrop pin appears centered on satellite image after address geocode
+- [x] Pin fades in with smooth opacity transition
+- [x] Fully draggable via mouse (grab/grabbing cursor) and touch
+- [x] Pin positioned via percentage-based CSS for responsive layout
+
+### Dashboard — Energy Usage Display
+- [x] Dashboard energy usage card now shows actual saved values (annual energy, avg monthly energy)
+- [x] Values computed server-side from `project.energyUsage` array
+- [x] Shows "—" when no usage data has been entered
+
+---
+
 ## Completed Features
 
 ### Infrastructure
@@ -34,6 +59,7 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 - [x] Create button disabled until address is geocoded; activates and goes dark on success
 - [x] Right panel: custom SVG iceberg illustration (small white cap above waterline, large dark navy submerged body, stars, shimmer lines)
 - [x] Satellite image fades in over iceberg once address is resolved
+- [x] Draggable red map pin appears centered on satellite image after geocode
 - [x] On Create: POSTs to `/api/projects`, saves to JSON, redirects to project detail page
 
 ---
@@ -161,6 +187,123 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 | DELETE | `/api/projects/:id` | Delete project |
 | PATCH | `/api/projects/:id/rename` | Rename project |
 | PATCH | `/api/projects/:id/notes` | Save project notes |
+| GET | `/api/projects/:id/calibration` | Get saved calibration transform |
+| PUT | `/api/projects/:id/calibration` | Save calibration transform + control points |
+
+---
+
+---
+
+## Completed — 2026-03-28 (Session 19)
+
+### Calibration UI Overhaul — Side-by-Side Pin Placement
+- [x] Redesigned calibration overlay from tabbed single-canvas to **side-by-side dual-panel layout**
+- [x] Left panel: Satellite image (loaded directly from `/api/satellite` endpoint — no 3D viewer dependency)
+- [x] Right panel: LiDAR image (rendered from point cloud, waits for data with loading indicator)
+- [x] Each panel has **independent zoom/pan** (scroll to zoom, drag to pan, +/-/Fit buttons)
+- [x] Blue numbered pins on satellite, orange numbered pins on LiDAR
+- [x] Per-panel pin count display ("X pins") + combined pair count in header
+- [x] Header with instructions: "Place matching pins on house corners in both images"
+- [x] Canvas sizing via `requestAnimationFrame` to fix 0x0 canvas layout bug
+- [x] Pin coordinates stored as image-pixel coords, converted to world coords on confirm
+
+### Calibrate Button — Visual State Indicators
+- [x] Calibrate button in drawing toolbar shows **amber pulse** when uncalibrated (`.needs-calibration`)
+- [x] Shows **green** when calibrated (`.calibrated`)
+- [x] State set server-side via `hasCalibration` variable passed to template
+- [x] `applyCalibration()` toggles button class on successful calibration
+- [x] Removed mistakenly-added extra calibrate button from top navigation bar
+
+### Auto-Calibration Flow
+- [x] Uncalibrated designs auto-open calibration overlay on page load (800ms delay)
+- [x] On LiDAR build: checks for saved calibration, applies silently or auto-prompts
+- [x] Calibrate button click auto-activates 3D viewer if not already active
+
+---
+
+## Completed — 2026-03-28 (Session 16)
+
+### Tree Placement Tool
+- [x] Trees menu item (left panel Site tab) activates tree placement mode (click item or press T)
+- [x] Click ground to place center, drag outward to set canopy width
+- [x] Height auto-snaps to LiDAR DSM elevation (max height within canopy radius)
+- [x] Tree mesh: brown cylinder trunk + green sphere canopy, scaled by vertExag
+- [x] Escape exits tree mode; switching to draw tools also exits
+- [x] Elevation grid stored globally from LiDAR fetch for real-time height queries
+
+### ViewCube
+- [x] Bottom face: "BTM" → "BOT"
+- [x] Cardinal directions: front=S, back=N, left=W, right=E (die-on-table writing perspective)
+
+### Known Issue — Pan Sensitivity (UNRESOLVED)
+- OrbitControls `panSpeed` has no visible effect (tested 0.01 to 4.0)
+- Camera: FOV 50, starting position Y=80, perspective camera
+- Multiple overlapping mousedown handlers on canvas3d may be conflicting
+- Spacebar+drag custom pan has separate scale (`dist / 60000`)
+- Needs full investigation — see ROADMAP.md Session 16 notes for details
+
+---
+
+## Completed — 2026-03-28 (Session 19)
+
+### Calibrate Icon — Deferred Green State
+- [x] Calibrate button no longer starts green on page load
+- [x] Removed server-side `tb2-calibrated` class from initial button render
+- [x] Removed green class from `applyCalibration()` (fires on saved data load)
+- [x] Green class only applied when user actively completes calibration via save handler
+
+### ViewCube — Face Label Reorientation
+- [x] Front face (default visible): TOP (was S)
+- [x] Back face: BOT (was B)
+- [x] Top face: N (was TOP)
+- [x] Bottom face: S (was BOT)
+- [x] Updated both 2D and 3D viewcube instances
+
+### Settings — Teams Page
+- [x] New `/settings/teams` route with dedicated Teams page
+- [x] "Add team" button (purple, top right) matching "Add user" button pattern
+- [x] Teams table built dynamically from user data (team field aggregation)
+- [x] Search bar with filter icon
+- [x] Add team modal with team name and organization fields
+- [x] All sidebar "Teams" links updated from `/settings` to `/settings/teams`
+
+### LiDAR Viewer — Legend Removed
+- [x] Removed LiDAR legend overlay (ground/building/vegetation/high point color key) from 3D viewer
+
+---
+
+## Completed — 2026-03-28 (Session 18)
+
+### Calibration System — Restored After Accidental Revert
+Previous sessions (13, 15) built a full calibration system that was lost when `git checkout -- server.js` reverted uncommitted changes. Rebuilt from scratch based on PROGRESS.md specs and saved calibration data in projects.json.
+
+#### Calibration API
+- [x] `GET /api/projects/:id/calibration` — returns saved calibration transform + control points
+- [x] `PUT /api/projects/:id/calibration` — saves calibration data to project JSON
+
+#### Calibration Overlay UI
+- [x] Full-screen overlay with tab switcher: LiDAR Image / Satellite Image / Side by Side
+- [x] Each tab renders to a canvas with zoom (scroll wheel, +/- buttons, Fit reset, up to 10x) and pan (Space+drag)
+- [x] Crosshair overlay for precise point placement
+- [x] Numbered markers (orange for LiDAR, blue for satellite) scale inversely with zoom
+- [x] Dynamic point count display + Confirm button (enabled at 4+ pairs)
+- [x] Clear and Skip buttons
+
+#### Calibration Process Flow
+- [x] Auto-prompts calibration on first LiDAR load when no saved calibration exists
+- [x] Saved calibrations silently applied on subsequent visits (no re-prompt)
+- [x] Calibrate button in drawing toolbar — click auto-loads LiDAR if needed, then opens overlay
+- [x] Calibrate button icon turns green when calibration is active/applied
+
+#### Calibration Transform
+- [x] Least-squares 4-DOF similarity transform solver (translation + uniform scale + rotation)
+- [x] Transform applied to ground plane (position.x/z, scale, rotation.y) for satellite-LiDAR alignment
+- [x] Control points saved with transform for future reference
+
+#### LiDAR Image Rendering
+- [x] Offscreen canvas renders LiDAR point cloud to 1024x1024 image with classification colors
+- [x] Satellite ground plane texture extracted as calibration image
+- [x] World coordinate mapping preserved for pixel-to-world conversion in both images
 
 ---
 
@@ -169,7 +312,7 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 ```bash
 cd "project Interrupt"
 npm start
-# → http://localhost:3000
+# → http://localhost:3001
 ```
 
 ## Stack
@@ -411,14 +554,361 @@ npm start
 
 ---
 
-## Next Up (not yet built)
+## Completed — 2026-03-27 (Session 9)
+
+### LiDAR Viewer — Unified 3D Scene Rebuild
+- [x] Replaced dual-system approach (CSS transforms + Three.js overlay) with single Three.js scene
+- [x] One scene contains satellite ground plane (the "paper") + elevation point cloud (the "stuff in the glass")
+- [x] OrbitControls for full 360° rotation, zoom, and pan — drag to orbit, scroll to zoom, right-drag to pan
+- [x] LiDAR button is a simple on/off toggle — click on shows 3D scene, click off returns to map
+- [x] ViewCube auto-hides when LiDAR is active, restores when toggled off
+
+### Satellite Ground Plane
+- [x] Uses Google Maps Static API (same imagery as the map view, not Solar API RGB)
+- [x] Zoom 18 for wide area coverage (~380m across)
+- [x] 1280x1280px resolution (640px with scale=2)
+- [x] Plane sized using precise meters-per-pixel calculation at property latitude
+
+### Elevation Point Cloud (from Google Solar DSM)
+- [x] Generates 3D point cloud from DSM elevation grid (replaced broken USGS Entwine endpoint)
+- [x] Points classified by height: gray (ground <0.8m), blue (buildings >5m), green (vegetation)
+- [x] Smart density: ground points thinned (every 6th pixel, max 30m from center), full density on buildings/trees
+- [x] 40m radius focused on the property — not the whole neighborhood
+- [x] Height exaggeration (2x) for visual clarity
+
+### Three.js Setup
+- [x] Downgraded to Three.js r128 for reliable `THREE.OrbitControls` global support
+- [x] PerspectiveCamera with OrbitControls (damping, distance limits, max polar angle)
+- [x] Camera auto-positions to fit point cloud extent on load
+
+### UI Cleanup
+- [x] Removed satellite date/source selector from bottom-left of design tool
+- [x] Removed old viewer HUD buttons (separate LiDAR/Reset buttons inside 3D view)
+- [x] Legend and status text inside 3D viewer overlay
+- [x] Raycaster infrastructure preserved for future tree height measurement feature
+
+---
+
+## Completed — 2026-03-28 (Session 10)
+
+### LiDAR Point Cloud — Density & Color
+- [x] Doubled-tripled point cloud density: ground skip reduced (6→3), distance cutoff extended (30m→55m), 2x2 sub-pixel bilinear interpolation for elevated features
+- [x] Height-based color scale: blue (0-40 ft) → green (40-80 ft) → orange (80-90 ft) → red (90+ ft) with smooth blending
+- [x] Legend updated to show height scale with ft ranges
+- [x] Status bar now shows total point count with breakdown (elevated + ground)
+- [x] `ftAbove` stored per point for foot-based color classification
+- [x] Point size tunable (currently 3px)
+
+### LiDAR Viewer — ViewCube Integration
+- [x] ViewCube stays visible in LiDAR mode (was hidden before)
+- [x] Tilt slider stays visible in LiDAR mode
+- [x] ViewCube drag/face-click drives Three.js camera via `syncCameraToMap()`
+- [x] CSS map transforms skipped in LiDAR mode — only 3D camera moves
+- [x] `vcRotX`/`vcRotZ`/`vcDragging` exposed on `window` for cross-script-block communication
+- [x] Disabled direct OrbitControls canvas interaction — all navigation through ViewCube (same UX in both modes)
+- [x] Scroll-to-zoom on 3D canvas via `lidar3dZoomDist` variable
+- [x] Face click transitions and drag transitions scoped to 2D-only
+
+### LiDAR Viewer — Camera Sync
+- [x] `syncCameraToMap()` positions Three.js camera from ViewCube tilt/heading/zoom
+- [x] Camera matches 2D map perspective on LiDAR open (tilt, heading, zoom all carried over)
+- [x] Heading direction corrected to match 2D cube drag direction
+
+### LiDAR Viewer — Loading UX
+- [x] Loading overlay with blur backdrop shown over map while LiDAR data fetches (no more blank blue screen)
+- [x] Spinner icon + "Loading LiDAR Data" + subtitle text
+- [x] Overlay hidden and 3D viewer revealed only after data is fully loaded
+- [x] Error states also dismiss overlay and show 3D viewer with error message
+
+### LiDAR Viewer — Satellite Ground Plane
+- [x] Ground plane aspect ratio matches viewer dimensions (was square before)
+- [x] Zoom 20 for high resolution matching the 2D map
+- [x] Request dimensions shaped to screen aspect (640px max per axis)
+
+### LiDAR Button — Navigation Menu
+- [x] LiDAR toggle moved from bottom toolbar to top-left nav menu (next to Irradiance)
+- [x] Old toolbar LiDAR button removed
+- [x] Active state styled for `tb2-btn` class (green tint)
+
+---
+
+## Completed — 2026-03-28 (Session 11)
+
+### LiDAR Point Cloud — Size Attenuation
+- [x] Changed point rendering from fixed pixel size to world-space size (`sizeAttenuation: true`)
+- [x] Points now grow larger when zooming in and shrink when zooming out (Aurora Solar-style)
+- [x] Base size tuned to 0.8 world units for natural appearance at all zoom levels
+
+### LiDAR Button — Input Fix
+- [x] Changed LiDAR toggle from `click` to `mousedown` event — spacebar no longer accidentally toggles LiDAR off
+- [x] Added "K" keyboard shortcut for LiDAR toggle (skips input/textarea fields)
+- [x] Extracted `triggerLidarToggle()` function shared by mouse and keyboard handlers
+
+### 3D Viewer — Mouse Controls Remapped
+- [x] Left-click + drag = pan (was rotate)
+- [x] Right-click + drag = tilt/orbit via ViewCube (was OrbitControls pan)
+- [x] Scroll wheel = zoom (unchanged)
+- [x] Disabled OrbitControls' built-in rotate — right-click drives ViewCube `vcRotX`/`vcRotZ` directly
+- [x] ViewCube updates in real-time during right-click drag (tilt + heading synced)
+- [x] Context menu suppressed on canvas to prevent right-click menu interference
+
+### 3D Viewer — Spacebar Pan
+- [x] Hold spacebar + left-click drag to pan camera across the scene
+- [x] Custom pan implementation: disables OrbitControls entirely while space is held
+- [x] Pan direction computed from camera heading (right/forward vectors on ground plane)
+- [x] Distance-based scaling so pan speed feels natural at any zoom level
+- [x] Canvas gets `tabindex="0"` and auto-focuses on click for reliable keyboard capture
+- [x] Grab/grabbing cursor feedback during space-pan
+
+---
+
+## Completed — 2026-03-28 (Session 12)
+
+### 3D Viewer — ViewCube Fix
+- [x] Fixed bug where pulling ViewCube tilt back to 0 locked camera facing true north with no heading response
+- [x] Root cause: `polarAngle = 0` zeroed out horizontal offset (`sin(0) = 0`), making heading rotation invisible
+- [x] Fix: clamped `vcRotX` to minimum of 5 in `syncCameraFromViewCube()` so heading always has effect
+
+### 3D Viewer — Spacebar Pan Mode
+- [x] Hold spacebar + drag to pan camera parallel to the ground plane (XZ)
+- [x] Custom pan implementation: disables OrbitControls rotate/pan while space is held
+- [x] Pan direction computed from camera heading (right + forward vectors projected onto ground)
+- [x] Distance-based speed scaling for natural feel at any zoom level
+- [x] Grab/grabbing cursor feedback
+
+### Satellite Imagery — LiDAR Alignment System
+- [x] Ground plane now uses high-res imagery from `/api/imagery` (provider-agnostic: Google, Nearmap, EagleView)
+- [x] Zoom auto-selected (up to 21) to cover LiDAR extent at highest resolution
+- [x] `scale=2` on server gives 1280x1280px actual resolution
+- [x] Server-side DSM bbox now computed from actual GeoTIFF resolution (`image.getResolution()`) instead of hardcoded 0.5m pixel assumption
+
+### Satellite Imagery — UV-Based Alignment to LiDAR
+- [x] `computeAlignmentUVs()` — analytically maps LiDAR bbox onto high-res image UV space using known geographic footprints
+- [x] Ground plane geometry sized to LiDAR bbox with custom UV coordinates that crop the texture to match
+- [x] `refineAlignmentNCC()` — normalized cross-correlation refinement using Solar API's co-registered RGB image as ground truth
+- [x] Downscales both images to 128x128 grayscale, slides a 48px center patch over ±20px search window
+- [x] Pixel offset converted to UV correction for sub-pixel alignment accuracy
+- [x] Runs in <50ms in browser using offscreen canvas — no external dependencies
+- [x] Console logging: `[Alignment] NCC offset` and `[Alignment] UVs` for debugging
+- [x] `THREE.ClampToEdgeWrapping` on texture to handle edge overhang cleanly
+
+### Provider-Agnostic Imagery Architecture
+- [x] All imagery fetched through `/api/imagery` endpoint — never hardcodes a provider
+- [x] Alignment system works with any tile-based provider (only needs center + zoom + pixel size)
+- [x] Stubs in place for Nearmap (`NEARMAP_API_KEY`) and EagleView (`EAGLEVIEW_API_KEY`)
+- [x] Future provider swap requires only env var change — alignment code unchanged
+
+---
+
+## Completed — 2026-03-28 (Session 13)
+
+### Satellite/LiDAR Alignment — Projection Fix
+- [x] Replaced equirectangular (linear) `geoToLocal`/`localToGeo` with true Web Mercator projection
+- [x] Ground plane sizing now uses Mercator meters (`156543.03392 / 2^zoom`) — removed incorrect `cos(lat)` factor that caused scale mismatch
+- [x] Ground plane texture upgrade no longer replaces the plane (just swaps the texture) — eliminates the 20ft positional shift bug
+- [x] `computeAlignmentUVs()` rewritten for Mercator-consistent UV mapping
+- [x] NCC refinement search window widened from ±20px to ±32px for better sub-pixel correction
+
+### Provider-Agnostic Projection Metadata
+- [x] `/api/imagery/info` endpoint now returns `projection` field per provider (webmercator, ortho)
+- [x] Foundation for future providers (Nearmap, EagleView) with different projection models
+
+### Manual 2D Calibration System
+- [x] Mandatory calibration prompt when LiDAR loads for the first time on a project (no saved calibration)
+- [x] Full-screen overlay with side-by-side canvases: Google Maps satellite (left) + Solar API co-registered RGB (right)
+- [x] User marks 4+ matching house corners on both images — numbered markers with connecting lines
+- [x] Auto-detected roof corners from LiDAR elevation data (convex hull of building-class points with angle filtering)
+- [x] Magenta markers pre-placed at detected LiDAR corners for guidance
+- [x] Similarity transform solver (4-DOF: translation + uniform scale + rotation) via least-squares with Gaussian elimination
+- [x] Transform applied to ground plane (`position.x/z`, `scale`, `rotation.y`) for pixel-perfect alignment
+- [x] Confirm Calibration button (enabled at 4+ pairs), Clear button, Skip button
+- [x] Re-calibrate toolbar button for later adjustments
+
+### Calibration Persistence
+- [x] `GET /api/projects/:id/calibration` — returns saved calibration transform + control points
+- [x] `PUT /api/projects/:id/calibration` — saves calibration data to project JSON
+- [x] Auto-applies saved calibration on future LiDAR loads (skips overlay prompt)
+
+### API Endpoints (new)
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/projects/:id/calibration` | Get saved calibration for a project |
+| PUT | `/api/projects/:id/calibration` | Save calibration transform + control points |
+
+---
+
+## Completed — 2026-03-28 (Session 14)
+
+### Design Tool — Nav Submenu Fix
+- [x] Fixed submenu persistence when switching between Site/System tabs — `closeAllSubmenus()` called on tab switch
+
+### LiDAR Point Cloud — Aurora-Style Restyle
+- [x] Changed color scheme from height-based rainbow to Aurora Solar palette: teal (roof/buildings), blue (ground/trees), dark blue (low vegetation)
+- [x] Round circle sprite texture (64x64 canvas) replaces square points
+- [x] `sizeAttenuation: true` with world-space sizing (base size 0.8)
+- [x] Dynamic point sizing in render loop: grows/shrinks based on camera distance (`clamp(dist * 0.006 + 0.3, 0.5, 1.4)`)
+- [x] Reduced point density (`subSteps=1`, `groundSkip=5`) for cleaner appearance
+- [x] Removed LiDAR legend overlay from bottom-right corner
+
+### Project Profile — Top Bar Cleanup
+- [x] Removed `···` menu button from sub-header bar (kept sidebar `···` menu)
+
+### Nav Rail — Redesign
+- [x] Nav rail now matches expanded drawer: logo at top (opens drawer on click), Projects, Database, Settings, Partners icons
+- [x] Consistent rail across all pages (main, settings, settings/users, database)
+- [x] Rail icons redirect to corresponding pages when clicked
+
+### Partners Section
+- [x] `/partners` — Partners list page with table (14 sample partners), search filter, type/status columns
+- [x] `/partners/new` — 3-step New Partner wizard:
+  - Step 1: Create organization (name, type, address, contact)
+  - Step 2: Customize settings & database access
+  - Step 3: Add users & teams
+  - Client-side step navigation with sidebar progress indicator
+
+### Settings — User Detail Page
+- [x] `/settings/users/:uid` — Full user detail page with User Details, Permission, and Region sections
+- [x] Loads real user data from `data/users.json`
+
+### Settings — Roles System
+- [x] `/settings/roles` — Roles list page with 8 roles (Admin, Team Member, Limited Team Member, Commercial Partner, Proposal Manager, Sales Manager, Sales Rep, Team Manager)
+- [x] Type badges (Default/Advanced), user count, project & user access summary, last edited columns
+- [x] Clickable rows navigate to role detail
+- [x] `/settings/roles/:roleName` — Role detail page with full permissions matrix
+- [x] Collapsible sections: Services, Project features & content, Database, Settings
+- [x] Permission profiles for Admin (all Y), Team Member (mixed), Limited Team Member (no assign), Commercial Partner (no financing), Proposal Manager, Sales Manager, Sales Rep, Team Manager
+- [x] Y/N/D permission indicators with color coding
+
+---
+
+## Completed — 2026-03-28 (Session 15)
+
+### Calibration UX — Full Redesign
+- [x] Single large image view replacing cramped side-by-side layout — image fills available viewport
+- [x] Tab switcher: LiDAR Image / Satellite Image / Side by Side
+- [x] Zoom: scroll wheel with gentle sensitivity (0.06 per tick), +/− buttons, Fit reset button, up to 10x
+- [x] Pan: Space+drag to move around zoomed image, grab cursor feedback
+- [x] Crosshair overlay at canvas center for precision
+- [x] Canvas internal buffer matches display size for sharp rendering at any size
+- [x] Markers and connecting lines scale inversely with zoom to stay readable
+- [x] Polygon outline closes at 3+ points for visual feedback
+
+### Calibration — Unlimited Points
+- [x] Removed 4-point cap — designers can place as many points as desired (minimum 4 still required)
+- [x] More points = better least-squares fit = higher accuracy
+- [x] UI dynamically shows point count, target matching count, and pair count on confirm button
+- [x] `applyAndSaveCalibration()` uses `Math.min(lidar, sat)` matched pairs (not hardcoded 4)
+- [x] Auto-switches to Satellite tab after 4 LiDAR points; designer can switch back to add more
+
+### Calibration — Workflow Improvements
+- [x] Auto-loads LiDAR on design page entry (no need to click LiDAR button)
+- [x] Auto-prompts calibration if no saved calibration exists
+- [x] Saved calibrations silently applied on revisit — no re-prompt
+- [x] Calibrate button moved from drawing toolbar to top toolbar (next to LiDAR button)
+- [x] Calibrate icon turns green when calibration has been applied
+- [x] Clicking Calibrate in top toolbar auto-loads LiDAR if not already loaded, then opens calibration
+
+### Layout
+- [x] ViewCube moved from bottom-left to bottom-right
+
+---
+
+## Completed — 2026-03-28 (Session 17)
+
+### Roles — Additional Permission Profiles
+- [x] Added Proposal Manager role (Advanced, Assigned and team-enabled)
+- [x] Added Sales Manager role (Advanced, Assigned-only, financing edit, user management)
+- [x] Added Sales Rep role (Advanced, Assigned-only, view-heavy with limited edit)
+- [x] Added Team Manager role (Advanced, Assigned and team-enabled, utility/energy edit, user mgmt view)
+
+### LiDAR Point Cloud — Height-Based Color Gradient
+- [x] Replaced flat teal/blue color scheme with Aurora-style height gradient
+- [x] Color ramp: dark slate blue (ground) → teal/cyan (low) → green (mid) → yellow/orange (upper) → red (tallest)
+- [x] Normalized to 0-45ft range with smooth blending between bands
+
+### LiDAR Viewer — Near-Orthographic Camera
+- [x] **Design goal:** LiDAR points should always appear directly above their corresponding 2D map positions — no perspective shift when panning. Default view is top-down; user can tilt via ViewCube when they want 3D perspective, and both satellite + LiDAR tilt together.
+- [x] Switched from standard PerspectiveCamera (50° FOV) to narrow FOV (5°) with far camera (800 units) — near-orthographic projection eliminates parallax
+- [x] Points switched to screen-space pixel sizing (`sizeAttenuation: false`) for consistent visibility at any camera distance
+- [x] Dynamic sizing: `1600/dist` formula, range 1.5-6px
+- [x] LiDAR opens in true top-down view by default (vcRotX reset to 0)
+- [x] User can still tilt via ViewCube/right-drag — both satellite and LiDAR tilt together
+
+### Geocode & Satellite API Routes
+- [x] Added missing `GET /api/geocode` — proxies Google Geocoding API, returns lat/lng + formatted address
+- [x] Added missing `GET /api/satellite` — proxies Google Static Maps API for satellite imagery
+- [x] Both routes protected by existing auth middleware
+
+### API Endpoints (new)
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/geocode?address=` | Geocode address → lat/lng |
+| GET | `/api/satellite?lat=&lng=&zoom=` | Proxy satellite image |
+
+---
+
+## Planned — Shading Engine (5 phases)
+- [ ] **Phase 1:** Replace `kW × 1400` with Google Solar per-segment sunshine hours for production estimates
+- [ ] **Phase 2:** PVWatts API integration — industry-standard AC output with real system losses
+- [ ] **Phase 3:** Flux map heatmap overlay — parse Google Solar GeoTIFFs, render on 3D ground plane
+- [ ] **Phase 4:** LiDAR shadow casting — ray-trace sun through point cloud for tree/obstruction shade analysis
+- [ ] **Phase 5:** Time-of-day shade animation — scrub shadows across roof throughout the day
+
+## Planned — CAD Engine & Equipment Catalog (6 phases)
+- [ ] **Phase 1:** Equipment catalog — `data/equipment.json` with real module/inverter/optimizer/battery specs, wire up `/database` page
+- [ ] **Phase 2:** Module selection — dropdown in design tool replaces hardcoded 400W panel, stats recalculate live
+- [ ] **Phase 3:** Inverter & stringing — string sizing, AutoStringer, DC/AC ratio validation, color-coded strings
+- [ ] **Phase 4:** Obstruction & tree tools — draw chimneys/vents/skylights, panels auto-avoid them
+- [ ] **Phase 5:** Roof modeling — editable tilt/azimuth, 3D pitch rendering, snap-to-LiDAR, SmartRoof auto-detect
+- [ ] **Phase 6:** BOM generation — full bill of materials, CSV export, Sales Mode slide
+
+---
+
+## Session — 2026-03-28
+
+### Navigation & Sidebar
+- [x] Retracted rail icons updated to match expanded nav drawer (Projects, Database, Settings, Partners)
+- [x] Removed `margin-top:auto` so rail icons are grouped sequentially like the expanded drawer
+- [x] All rail instances updated across home, settings, and users settings pages
+
+### Database Page (`/database`)
+- [x] New route at `/database` with full Aurora-style layout
+- [x] Left sidebar with 3 section groups: Components (Modules, Inverters, DC optimizers, etc.), Quoting (Proposal templates, Adders & discounts, etc.), Operations (Jurisdictions, Suppliers, etc.)
+- [x] "Specify component availability" toggle at top of sidebar
+- [x] Main area with search bar, All/Enabled tabs, "Request custom component" button
+- [x] Empty state placeholder — no components data wired yet
+- [x] All Database nav links (`href="#"`) updated to `/database`
+
+### Roles Page (`/settings/roles`)
+- [x] New route at `/settings/roles` with full permissions matrix matching Aurora
+- [x] Top bar with back arrow and "Admin" label
+- [x] Admin role with "Default" badge
+- [x] Permissions sections: Project access level, Services, Project features and content, Database, Settings
+- [x] Green checkmark and em-dash indicators for all permission rows
+- [x] Sub-items with indentation (Site model, Proposal templates > Edit/Set default, Operations > AHJ/Utilities, etc.)
+- [x] View links to corresponding settings/database pages
+- [x] Sidebar Roles links updated from `/settings` to `/settings/roles`
+
+### Project Detail — Sidebar & Designs Tab
+- [x] Removed top customer name/address block with "···" menu from project sidebar
+- [x] Designs tab now renders all designs from `project.designs` (was hardcoded to show only "Design 1")
+- [x] Each design card links to design page with correct `designId` query param
+- [x] Design cards show actual stats (cost, offset, kW) and correct edit timestamps
+- [x] Added "..." dropdown menu on each design card with "Rename" option
+- [x] Rename uses prompt dialog and saves via existing PUT API
+
+### LiDAR / 3D Viewer
+- [x] Replaced USGS 3DEP/Entwine LiDAR fetcher with Google Solar DSM grid generator
+- [x] 161×161 grid (25,921 points) sampled via bilinear interpolation within ±15m of pin
+- [x] Ground plane satellite imagery now fetches at 50m radius (was 40m)
+
+---
+
+## Other Next Up
 - [ ] Customer profile editing (save form edits back to project data)
 - [ ] Stage pipeline (make status dropdown functional with real stages)
 - [ ] Persistent storage (SQLite — projects lost on server restart)
 - [ ] Assignee management (functional assignment, not hardcoded)
 - [ ] User authentication
 - [ ] Real organization / team management
-- [ ] Render Google Solar flux GeoTIFF as per-pixel heatmap overlay on map
-- [ ] CAD tools: snap-to-point roof tracing from LiDAR, auto-detect roof planes
-- [ ] Shadow simulation using real tree/structure heights + sun path
 - [ ] LAZ file processing for full USGS point cloud support

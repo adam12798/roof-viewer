@@ -2,7 +2,7 @@
   {
     "id": "mn9805q0ddm",
     "createdAt": "2026-03-27T18:14:03.768Z",
-    "projectName": "",
+    "projectName": "adam b",
     "propertyType": "residential",
     "address": "20 Meadow Dr, Lowell, MA 01854, USA",
     "lat": 42.64627489999999,
@@ -34,8 +34,59 @@
           "offset": 0,
           "kw": 0
         }
+      },
+      {
+        "id": "mnb4ccppuz5",
+        "name": "Design 3",
+        "createdAt": "2026-03-29T02:07:06.589Z",
+        "segments": [],
+        "stats": {
+          "cost": 0,
+          "offset": 0,
+          "kw": 0
+        }
+      },
+      {
+        "id": "mnb6ew4f8m3",
+        "name": "Design 4",
+        "createdAt": "2026-03-29T03:05:04.287Z",
+        "segments": [],
+        "stats": {
+          "cost": 0,
+          "offset": 0,
+          "kw": 0
+        }
       }
     ],
-    "activeDesignId": "mn9kvvxht9w"
+    "activeDesignId": "mnb6ew4f8m3",
+    "energyUsage": []
+  },
+  {
+    "id": "mnb6yh8q3v2",
+    "createdAt": "2026-03-29T03:20:18.122Z",
+    "projectName": "",
+    "propertyType": "residential",
+    "address": "254 Foster St, Lowell, MA 01851, USA",
+    "lat": 42.6322265,
+    "lng": -71.3377793,
+    "customer": {
+      "name": "Adam F Bahou",
+      "email": "ablahou@gmail.com",
+      "phone": "9787617590"
+    },
+    "designs": [
+      {
+        "id": "mnb6yh8qmxd",
+        "name": "Design 1",
+        "createdAt": "2026-03-29T03:20:18.122Z",
+        "segments": [],
+        "stats": {
+          "cost": 0,
+          "offset": 0,
+          "kw": 0
+        }
+      }
+    ],
+    "activeDesignId": "mnb6yh8qmxd"
   }
 ]

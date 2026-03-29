@@ -684,7 +684,7 @@ app.get("/", (req, res) => {
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Projects
       </a>
-      <a class="nav-drawer-link" href="#">
+      <a class="nav-drawer-link" href="/database">
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
         Database
       </a>
@@ -719,20 +719,19 @@ app.get("/", (req, res) => {
         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
       </svg>
     </a>
-    <a class="rail-btn" href="/" title="List">
+    <a class="rail-btn" href="/database" title="Database">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/>
       </svg>
     </a>
-    <a class="rail-btn" href="/settings" title="Settings" style="margin-top:auto;">
+    <a class="rail-btn" href="/settings" title="Settings" >
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
       </svg>
     </a>
-    <a class="rail-btn" href="/" title="Account">
+    <a class="rail-btn" href="#" title="Partners">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
       </svg>
     </a>
   </nav>
@@ -1443,6 +1442,12 @@ app.get("/new", (req, res) => {
         </div>
       </div>
       <img id="satelliteImg" src="" alt="Satellite view" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.5s ease;"/>
+      <div id="mapPin" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-100%);cursor:grab;z-index:10;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.4));transition:opacity 0.3s;">
+        <svg width="40" height="52" viewBox="0 0 40 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M20 0C8.95 0 0 8.95 0 20c0 14.25 18.35 30.85 19.13 31.53a1.25 1.25 0 001.74 0C21.65 50.85 40 34.25 40 20 40 8.95 31.05 0 20 0z" fill="#e53e3e"/>
+          <circle cx="20" cy="20" r="8" fill="white"/>
+        </svg>
+      </div>
     </div>
 
   </div>
@@ -1494,6 +1499,13 @@ app.get("/new", (req, res) => {
           img.style.opacity = '1';
         };
         img.src = '/api/satellite?lat=' + confirmedLat + '&lng=' + confirmedLng + '&zoom=20';
+
+        var pin = document.getElementById('mapPin');
+        pin.style.display = '';
+        pin.style.opacity = '0';
+        pin.style.top = '50%';
+        pin.style.left = '50%';
+        setTimeout(function() { pin.style.opacity = '1'; }, 100);
 
         enableCreate();
       } catch(err) {
@@ -1547,10 +1559,88 @@ app.get("/new", (req, res) => {
         enableCreate();
       }
     });
+
+    // ── Draggable pin ──
+    (function() {
+      var pin = document.getElementById('mapPin');
+      var panel = document.getElementById('imagePanel');
+      var dragging = false, offX = 0, offY = 0;
+
+      pin.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        dragging = true;
+        pin.style.cursor = 'grabbing';
+        var rect = pin.getBoundingClientRect();
+        offX = e.clientX - rect.left - rect.width / 2;
+        offY = e.clientY - rect.top;
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        var pr = panel.getBoundingClientRect();
+        var x = e.clientX - pr.left - offX;
+        var y = e.clientY - pr.top - offY;
+        pin.style.left = (x / pr.width * 100) + '%';
+        pin.style.top = (y / pr.height * 100) + '%';
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (dragging) {
+          dragging = false;
+          pin.style.cursor = 'grab';
+        }
+      });
+
+      // Touch support
+      pin.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        dragging = true;
+        var t = e.touches[0];
+        var rect = pin.getBoundingClientRect();
+        offX = t.clientX - rect.left - rect.width / 2;
+        offY = t.clientY - rect.top;
+      }, { passive: false });
+
+      document.addEventListener('touchmove', function(e) {
+        if (!dragging) return;
+        var t = e.touches[0];
+        var pr = panel.getBoundingClientRect();
+        var x = t.clientX - pr.left - offX;
+        var y = t.clientY - pr.top - offY;
+        pin.style.left = (x / pr.width * 100) + '%';
+        pin.style.top = (y / pr.height * 100) + '%';
+      }, { passive: false });
+
+      document.addEventListener('touchend', function() {
+        if (dragging) dragging = false;
+      });
+    })();
   </script>
 
 </body>
 </html>`);
+});
+
+// ── Geocode API ───────────────────────────────────────────────────────────────
+app.get("/api/geocode", async (req, res) => {
+  const address = req.query.address;
+  if (!address) return res.status(400).json({ error: "Address is required" });
+  const key = process.env.GOOGLE_MAPS_KEY || API_KEY;
+  if (!key) return res.status(500).json({ error: "No Google Maps API key configured" });
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${key}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!data.results || !data.results.length) return res.status(404).json({ error: "Address not found" });
+    const result = data.results[0];
+    res.json({
+      lat: result.geometry.location.lat,
+      lng: result.geometry.location.lng,
+      formatted_address: result.formatted_address
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Geocoding failed" });
+  }
 });
 
 // ── Create project API ─────────────────────────────────────────────────────────
@@ -1641,6 +1731,23 @@ app.patch("/api/projects/:id/notes", (req, res) => {
   const project = projects.find(p => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: "Not found" });
   project.notes = req.body.notes || "";
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// ── Calibration API ─────────────────────────────────────────────────────────
+app.get("/api/projects/:id/calibration", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  res.json(project.calibration || null);
+});
+
+app.put("/api/projects/:id/calibration", express.json(), (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  project.calibration = req.body;
   saveProjects(projects);
   res.json({ ok: true });
 });
@@ -1774,6 +1881,30 @@ app.get("/api/solar/geotiff", async (req, res) => {
   }
 });
 
+// ── Satellite imagery proxy (Google Maps Static API) ────────────────────────
+app.get("/api/satellite", async (req, res) => {
+  const { lat, lng, zoom, size } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
+  const mapsKey = process.env.GOOGLE_MAPS_KEY || API_KEY;
+  if (!mapsKey) return res.status(500).json({ error: "No Google Maps API key configured" });
+  const z = zoom || 20;
+  const s = size || "640x640";
+  const dims = s.includes("x") ? s : `${s}x${s}`;
+  try {
+    const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${dims}&scale=2&maptype=satellite&key=${mapsKey}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "Unknown error");
+      return res.status(resp.status).json({ error: "Static Maps API error: " + errText.slice(0, 200) });
+    }
+    res.set("Content-Type", resp.headers.get("content-type") || "image/png");
+    res.set("Cache-Control", "public, max-age=86400");
+    resp.body.pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DSM elevation JSON (server-side GeoTIFF parse) ───────────────────────────
 app.get("/api/solar/dsm-elevation", async (req, res) => {
   const { lat, lng, radius } = req.query;
@@ -1858,110 +1989,128 @@ app.get("/api/solar/dsm-elevation", async (req, res) => {
   }
 });
 
-// ── USGS 3DEP LiDAR API ──────────────────────────────────────────────────────
+// ── DSM Grid Points (161×161 elevation grid from Google Solar DSM) ────────────
 app.get("/api/lidar/points", async (req, res) => {
-  const { lat, lng, radius } = req.query;
+  const { lat, lng } = req.query;
   if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
-  const r = parseFloat(radius) || 15; // meters (~50ft — just the target property)
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
-
-  // Convert radius to approximate degree offset
-  const dLat = r / 111320;
-  const dLng = r / (111320 * Math.cos(latF * Math.PI / 180));
-  const minX = lngF - dLng;
-  const maxX = lngF + dLng;
-  const minY = latF - dLat;
-  const maxY = latF + dLat;
+  const gridSize = 121;       // 121×121 = 14,641 points
+  const halfExtent = 35;      // 35 meters from pin in each direction (~70m × 70m, matches satellite image)
 
   try {
-    // Step 1: Search USGS Entwine index for LiDAR datasets at this location
-    const searchUrl = `https://usgs.entwine.io/boundaries/`;
-    let boundaries = [];
-    try {
-      const searchResp = await fetch(searchUrl);
-      if (searchResp.ok) {
-        const allBoundaries = await searchResp.json();
-        // Filter boundaries that contain our point
-        boundaries = allBoundaries.filter(b => {
-          if (!b.bounds) return false;
-          const [bMinX, bMinY, , bMaxX, bMaxY] = b.bounds;
-          return lngF >= bMinX && lngF <= bMaxX && latF >= bMinY && latF <= bMaxY;
-        });
-      }
-    } catch(e) { /* entwine search failed, try fallback */ }
+    const GeoTIFF = require("geotiff");
 
-    if (boundaries.length > 0) {
-      // Found matching LiDAR dataset — try to read points
-      const boundary = boundaries[0];
-      const eptRoot = boundary.url;
+    // Fetch DSM from Google Solar API — request 75m radius to cover full satellite image extent
+    const layersUrl = `https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${latF}&location.longitude=${lngF}&radiusMeters=75&view=FULL_LAYERS&requiredQuality=HIGH&pixelSizeMeters=0.5&key=${API_KEY}`;
+    const layersResp = await fetch(layersUrl);
+    if (!layersResp.ok) {
+      const err = await layersResp.json().catch(() => ({}));
+      return res.status(layersResp.status).json({ error: err.error?.message || "Solar API error", points: [] });
+    }
+    const layers = await layersResp.json();
+    const dsmUrl = layers.dsmUrl;
+    if (!dsmUrl) return res.json({ error: "No DSM data available for this location", points: [] });
 
-      if (eptRoot) {
-        // Read points from EPT endpoint
-        const readUrl = `https://usgs.entwine.io/data/read?url=${encodeURIComponent(eptRoot)}&bounds=[${minX},${minY},${maxX},${maxY}]&depthEnd=14`;
-        const readResp = await fetch(readUrl);
+    // Fetch and parse DSM GeoTIFF
+    const dsmSep = dsmUrl.includes("?") ? "&" : "?";
+    const tiffResp = await fetch(`${dsmUrl}${dsmSep}key=${API_KEY}`);
+    if (!tiffResp.ok) return res.json({ error: "DSM fetch failed", points: [] });
 
-        if (readResp.ok) {
-          const pointData = await readResp.json();
-          let points = [];
-          if (Array.isArray(pointData)) {
-            const raw = pointData.map(p => [
-              p.X ?? p.x ?? p[0] ?? 0,
-              p.Y ?? p.y ?? p[1] ?? 0,
-              p.Z ?? p.z ?? p[2] ?? 0,
-              p.Classification ?? p.classification ?? p[3] ?? 0
-            ]);
-            // Spatial thinning: keep highest point per 0.3m grid cell (outer surface only)
-            const cellSize = 0.000003; // ~0.3m in degrees
-            const grid = new Map();
-            for (const pt of raw) {
-              const key = Math.floor(pt[0] / cellSize) + ',' + Math.floor(pt[1] / cellSize);
-              const existing = grid.get(key);
-              if (!existing || pt[2] > existing[2]) grid.set(key, pt);
-            }
-            points = Array.from(grid.values()).slice(0, 50000);
-          }
-          return res.json({
-            error: null,
-            points,
-            bounds: { minX, maxX, minY, maxY },
-            dataset: boundary.name || "USGS 3DEP",
-            count: points.length
-          });
-        }
-      }
+    const buf = await tiffResp.arrayBuffer();
+    const tiff = await GeoTIFF.fromArrayBuffer(buf);
+    const image = await tiff.getImage();
+    const rasters = await image.readRasters();
+    const imgW = image.getWidth();
+    const imgH = image.getHeight();
+    const elevData = rasters[0];
 
-      // EPT root found but point read failed
-      return res.json({
-        error: null,
-        available: true,
-        dataset: boundary.name || "USGS 3DEP",
-        points: [],
-        message: "LiDAR dataset found (" + (boundary.name || "USGS 3DEP") + ") but point streaming unavailable."
-      });
+    // Use actual GeoTIFF geotransform for accurate coordinate mapping
+    const origin = image.getOrigin();     // [originX, originY] in CRS coords
+    const resolution = image.getResolution(); // [resX, resY] (resY is negative)
+    const tiepoints = image.getTiePoints ? image.getTiePoints() : null;
+    // GeoTIFF bbox from actual metadata (projected coords)
+    const geoBbox = image.getBoundingBox(); // [minX, minY, maxX, maxY]
+    const dsmMinX = geoBbox[0], dsmMinY = geoBbox[1];
+    const dsmMaxX = geoBbox[2], dsmMaxY = geoBbox[3];
+
+    // Check if CRS is geographic (lat/lng) or projected (meters/UTM)
+    // Google Solar API GeoTIFFs use EPSG:4326-like coords if values are small
+    const isGeographic = Math.abs(dsmMaxX) <= 360 && Math.abs(dsmMaxY) <= 360;
+
+    let dsmMinLng, dsmMaxLng, dsmMinLat, dsmMaxLat;
+    if (isGeographic) {
+      dsmMinLng = dsmMinX; dsmMaxLng = dsmMaxX;
+      dsmMinLat = dsmMinY; dsmMaxLat = dsmMaxY;
+    } else {
+      // Projected coords (UTM) — approximate conversion back to geographic
+      // Use the requested center as reference and compute offsets in meters
+      const metersPerDegLat_ = 111320;
+      const metersPerDegLng_ = 111320 * Math.cos(latF * Math.PI / 180);
+      const centerX = (dsmMinX + dsmMaxX) / 2;
+      const centerY = (dsmMinY + dsmMaxY) / 2;
+      const halfW = (dsmMaxX - dsmMinX) / 2;
+      const halfH = (dsmMaxY - dsmMinY) / 2;
+      dsmMinLng = lngF - halfW / metersPerDegLng_;
+      dsmMaxLng = lngF + halfW / metersPerDegLng_;
+      dsmMinLat = latF - halfH / metersPerDegLat_;
+      dsmMaxLat = latF + halfH / metersPerDegLat_;
     }
 
-    // Step 2: Fallback — check The National Map for available LiDAR products
-    const tnmUrl = `https://tnmaccess.nationalmap.gov/api/v1/products?datasets=Lidar%20Point%20Cloud%20(LPC)&bbox=${minX},${minY},${maxX},${maxY}&max=3&outputFormat=JSON`;
-    const tnmResp = await fetch(tnmUrl);
-    if (tnmResp.ok) {
-      const tnmData = await tnmResp.json();
-      if (tnmData.items && tnmData.items.length > 0) {
-        return res.json({
-          error: null,
-          available: true,
-          dataset: tnmData.items[0].title,
-          downloadUrl: tnmData.items[0].downloadURL,
-          points: [],
-          message: "LiDAR data available: " + tnmData.items[0].title + ". Full point cloud requires LAZ processing."
-        });
+    console.log(`DSM actual bbox: [${dsmMinLng.toFixed(6)}, ${dsmMinLat.toFixed(6)}, ${dsmMaxLng.toFixed(6)}, ${dsmMaxLat.toFixed(6)}] isGeo=${isGeographic}`);
+
+    // Build grid centered on pin, spanning ±halfExtent meters
+    const metersPerDegLat = 111320;
+    const metersPerDegLng = 111320 * Math.cos(latF * Math.PI / 180);
+    const stepM = (halfExtent * 2) / (gridSize - 1);
+
+    const points = [];
+    for (let row = 0; row < gridSize; row++) {
+      for (let col = 0; col < gridSize; col++) {
+        const offsetX = -halfExtent + col * stepM;
+        const offsetY = -halfExtent + row * stepM;
+        const ptLng = lngF + offsetX / metersPerDegLng;
+        const ptLat = latF + offsetY / metersPerDegLat;
+
+        // Map geographic point to pixel using actual DSM bbox
+        const normX = (ptLng - dsmMinLng) / (dsmMaxLng - dsmMinLng);
+        const normY = 1 - (ptLat - dsmMinLat) / (dsmMaxLat - dsmMinLat);
+        const px = normX * (imgW - 1);
+        const py = normY * (imgH - 1);
+
+        if (px < 0 || px >= imgW - 1 || py < 0 || py >= imgH - 1) continue;
+
+        // Bilinear interpolation
+        const x0 = Math.floor(px), x1 = x0 + 1;
+        const y0 = Math.floor(py), y1 = y0 + 1;
+        const fx = px - x0, fy = py - y0;
+        const e00 = elevData[y0 * imgW + x0];
+        const e10 = elevData[y0 * imgW + x1];
+        const e01 = elevData[y1 * imgW + x0];
+        const e11 = elevData[y1 * imgW + x1];
+        const elev = e00 * (1 - fx) * (1 - fy) + e10 * fx * (1 - fy) + e01 * (1 - fx) * fy + e11 * fx * fy;
+
+        if (isNaN(elev) || elev < -100) continue;
+
+        // [lng, lat, elevation, classification=0]
+        points.push([ptLng, ptLat, elev, 0]);
       }
     }
 
-    return res.json({ error: "No LiDAR coverage found for this location. USGS 3DEP covers ~80% of the US.", points: [] });
-
+    return res.json({
+      error: null,
+      points,
+      bounds: {
+        minX: lngF - halfExtent / metersPerDegLng,
+        maxX: lngF + halfExtent / metersPerDegLng,
+        minY: latF - halfExtent / metersPerDegLat,
+        maxY: latF + halfExtent / metersPerDegLat
+      },
+      dataset: "Google Solar DSM",
+      count: points.length
+    });
   } catch (e) {
-    res.status(500).json({ error: "LiDAR query failed: " + e.message, points: [] });
+    res.status(500).json({ error: "DSM grid failed: " + e.message, points: [] });
   }
 });
 
@@ -2040,40 +2189,47 @@ app.get("/project/:id", (req, res) => {
           </div>
         </div>
 
-        <!-- Design 1 -->
-        <a href="${designUrl}" class="design-card design-card-clickable">
+        ${project.designs.map(d => {
+          const dUrl = designUrl + '&designId=' + d.id;
+          const st = d.stats || {};
+          return `
+        <a href="${dUrl}" class="design-card design-card-clickable" id="dcard-${d.id}">
           <span class="dc-open-hint">
             Open
             <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
-          <div class="dc-head" style="justify-content:flex-end;gap:10px;">
-            <button class="icon-btn" title="More options" onclick="event.preventDefault();event.stopPropagation();">
+          <div class="dc-head" style="justify-content:flex-end;gap:10px;position:relative;">
+            <button class="icon-btn" title="More options" onclick="event.preventDefault();event.stopPropagation();toggleDesignMenu('${d.id}')">
               <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
                 <circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>
               </svg>
             </button>
+            <div class="dc-menu" id="dmenu-${d.id}">
+              <button onclick="event.preventDefault();event.stopPropagation();renameDesign('${project.id}','${d.id}')">Rename</button>
+            </div>
           </div>
           <div style="padding:0 0 16px;">
-            <div class="d1-name">Design 1</div>
-            <div class="d1-meta">Edited ${timeAgo(project.createdAt)}</div>
+            <div class="d1-name" id="dname-${d.id}">${esc(d.name)}</div>
+            <div class="d1-meta">Edited ${timeAgo(d.updatedAt || d.createdAt || project.createdAt)}</div>
           </div>
           <div class="d1-stats">
             <div>
               <div class="stat-label">Cost</div>
-              <div class="stat-val">$0.00</div>
+              <div class="stat-val">$${(st.cost || 0).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
             </div>
             <div>
               <div class="stat-label">Offset</div>
-              <div class="stat-val">0%</div>
+              <div class="stat-val">${st.offset || 0}%</div>
             </div>
           </div>
           <div class="d1-stats" style="margin-top:14px;">
             <div>
               <div class="stat-label">Size</div>
-              <div class="stat-val">0 kW</div>
+              <div class="stat-val">${st.kw || 0} kW</div>
             </div>
           </div>
-        </a>
+        </a>`;
+        }).join('')}
 
       </div>
 
@@ -2327,6 +2483,10 @@ app.get("/project/:id", (req, res) => {
     const addrParts = (project.address||"").split(",");
     const addrLine1 = esc(addrParts[0]||"—");
     const addrLine2 = esc(addrParts.slice(1).join(",").trim()||"");
+    const dbUsage = project.energyUsage || [];
+    const dbHasUsage = dbUsage.length > 0 && dbUsage.some(v => v > 0);
+    const dbAnnualUsage = dbUsage.reduce((a, b) => a + b, 0);
+    const dbAvgMonthly = dbHasUsage ? Math.round(dbAnnualUsage / 12) : 0;
     tabContent = `
       <!-- Top two cards -->
       <div class="db-top-row">
@@ -2390,9 +2550,9 @@ app.get("/project/:id", (req, res) => {
           </div>
           <div class="db-energy-grid">
             <div class="db-field"><div class="db-fl">Avg. monthly bill</div><div class="db-fv">—</div></div>
-            <div class="db-field"><div class="db-fl">Avg. monthly energy</div><div class="db-fv">— kWh</div></div>
+            <div class="db-field"><div class="db-fl">Avg. monthly energy</div><div class="db-fv">${dbHasUsage ? dbAvgMonthly.toLocaleString() + ' kWh' : '— kWh'}</div></div>
             <div class="db-field"><div class="db-fl">Annual bill</div><div class="db-fv">—</div></div>
-            <div class="db-field"><div class="db-fl">Annual energy</div><div class="db-fv">— kWh</div></div>
+            <div class="db-field"><div class="db-fl">Annual energy</div><div class="db-fv">${dbHasUsage ? dbAnnualUsage.toLocaleString() + ' kWh' : '— kWh'}</div></div>
           </div>
         </div>
 
@@ -2953,6 +3113,18 @@ app.get("/project/:id", (req, res) => {
     .icon-btn { background: none; border: none; cursor: pointer; color: #9ca3af; padding: 4px; }
     .icon-btn:hover { color: #374151; }
 
+    .dc-menu {
+      display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 200;
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1); min-width: 120px; padding: 4px 0;
+    }
+    .dc-menu.open { display: block; }
+    .dc-menu button {
+      display: block; width: 100%; text-align: left; padding: 8px 14px;
+      border: none; background: none; font-size: 0.85rem; color: #374151; cursor: pointer;
+    }
+    .dc-menu button:hover { background: #f9fafb; }
+
     .d1-name { font-size: 1.05rem; font-weight: 700; color: #111; }
     .d1-meta { font-size: 0.78rem; color: #9ca3af; margin-top: 2px; }
     .d1-stats { display: flex; gap: 32px; }
@@ -3402,8 +3574,6 @@ app.get("/project/:id", (req, res) => {
 
   <!-- Sub-header -->
   <div class="sub-header">
-    <div class="sh-customer-name">${customerName}</div>
-    <button class="sh-more">···</button>
     <div class="progress-wrap">
       <div class="progress-bar"><div class="progress-fill"></div></div>
       <span class="progress-text">1 / 6</span>
@@ -3444,23 +3614,6 @@ app.get("/project/:id", (req, res) => {
 
     <!-- Sidebar -->
     <nav class="sidebar">
-      <div class="sidebar-customer">
-        <div>
-          <div class="sidebar-customer-name">${customerName}</div>
-          <div class="sidebar-customer-sub">${shortAddr}</div>
-        </div>
-        <div class="sidebar-more-wrap" onclick="event.stopPropagation()">
-          <button class="sidebar-more" onclick="toggleSidebarMenu()">···</button>
-          <div class="sidebar-more-menu" id="sidebarMoreMenu">
-            <button class="menu-item" onclick="sidebarRename()">Rename</button>
-            <button class="menu-item" onclick="sidebarAssign()">Assign to team</button>
-            <div class="menu-divider"></div>
-            <button class="menu-item danger" onclick="sidebarDelete()">Delete</button>
-            <button class="menu-item" onclick="sidebarArchive()">Archive</button>
-          </div>
-        </div>
-      </div>
-
       ${navItem("dashboard","Dashboard",`<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>`)}
       ${navItem("designs","Designs",`<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>`)}
       ${navItem("energy","Energy usage",`<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`)}
@@ -3765,6 +3918,25 @@ app.get("/project/:id", (req, res) => {
     function toggleSidebarMenu() {
       document.getElementById('sidebarMoreMenu').classList.toggle('open');
     }
+    function toggleDesignMenu(designId) {
+      document.querySelectorAll('.dc-menu.open').forEach(function(m) { if (m.id !== 'dmenu-' + designId) m.classList.remove('open'); });
+      document.getElementById('dmenu-' + designId).classList.toggle('open');
+    }
+    function renameDesign(projectId, designId) {
+      document.querySelectorAll('.dc-menu.open').forEach(function(m) { m.classList.remove('open'); });
+      var el = document.getElementById('dname-' + designId);
+      var current = el.textContent.trim();
+      var newName = prompt('Rename design:', current);
+      if (!newName || newName === current) return;
+      fetch('/api/projects/' + projectId + '/designs/' + designId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.ok) el.textContent = newName;
+      });
+    }
+    document.addEventListener('click', function() { document.querySelectorAll('.dc-menu.open').forEach(function(m) { m.classList.remove('open'); }); });
     var sidebarRenameOriginal = '';
     function sidebarRename() {
       sidebarRenameOriginal = document.querySelector('.sidebar-customer-name').textContent.trim();
@@ -3919,6 +4091,7 @@ app.get("/project/:id", (req, res) => {
 
 // ── Design / Pin screen ────────────────────────────────────────────────────────
 app.get("/design", (req, res) => {
+  res.set('Cache-Control', 'no-store');
   const { lat, lng, address, customer, projectId } = req.query;
   if (!lat || !lng) return res.redirect("/");
   const safeAddress = (address || "Selected Location").replace(/`/g, "'").replace(/</g, "&lt;");
@@ -3940,6 +4113,12 @@ app.get("/design", (req, res) => {
       activeDesignId = designs[designIdx].id;
       saveProjects(projects);
     }
+  }
+  let hasCalibration = false;
+  if (projectId) {
+    const projects2 = loadProjects();
+    const proj2 = projects2.find(p => p.id === projectId);
+    if (proj2 && proj2.calibration && proj2.calibration.tx !== undefined) hasCalibration = true;
   }
   const hasUsageData = energyUsage.length > 0 && energyUsage.some(v => v > 0);
   const annualUsage = energyUsage.reduce((a, b) => a + b, 0);
@@ -4381,13 +4560,13 @@ app.get("/design", (req, res) => {
     .map-controls-bl {
       position: absolute;
       bottom: 50px;
-      left: 14px;
+      right: 14px;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 8px;
       pointer-events: all;
-      z-index: 10;
+      z-index: 35;
     }
     .map-controls-br {
       display: flex;
@@ -4901,6 +5080,8 @@ app.get("/design", (req, res) => {
       position: relative;
     }
     .tb2-btn:hover { background: #f0f0f0; color: #111; }
+    .tb2-btn.tb2-calibrated { color: #22c55e; }
+    .tb2-btn.tb2-calibrated:hover { color: #16a34a; background: rgba(34,197,94,0.1); }
     .tb2-btn:disabled { color: #ccc; cursor: default; pointer-events: none; }
     .tb2-btn .tb2-chevron { opacity: 0.5; }
     .tb2-btn:hover .tb2-chevron { opacity: 0.8; }
@@ -5255,6 +5436,11 @@ app.get("/design", (req, res) => {
       <span class="tb2-shortcut">L</span>
       <span class="tb2-tip">LIDAR <span class="tb2-tip-key">L</span></span>
     </button>
+    <!-- Calibrate -->
+    <button class="tb2-btn" id="btnCalibrate" title="Calibrate LiDAR/Satellite Alignment">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+      <span class="tb2-tip">Calibrate</span>
+    </button>
     <!-- Irradiance -->
     <button class="tb2-btn">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -5529,20 +5715,91 @@ app.get("/design", (req, res) => {
         </div>
       </div>
       <!-- LiDAR 3D viewer — sits on top of map, hidden until toggled -->
-      <div id="viewer3d" style="display:none;position:absolute;inset:0;z-index:10;">
+      <div id="viewer3d" style="position:absolute;inset:0;z-index:10;">
         <canvas id="canvas3d" style="width:100%;height:100%;display:block;"></canvas>
-        <!-- Legend -->
-        <div id="lidarLegend" style="position:absolute;bottom:12px;right:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:10px 14px;color:#fff;font-size:0.7rem;z-index:20;">
-          <div style="font-weight:600;margin-bottom:6px;">LiDAR Legend</div>
-          <div style="display:flex;gap:12px;">
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#888;margin-right:4px;"></span>Ground</span>
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#4a90e2;margin-right:4px;"></span>Building</span>
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#22c55e;margin-right:4px;"></span>Vegetation</span>
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#f59e0b;margin-right:4px;"></span>High point</span>
-          </div>
-        </div>
         <!-- Status -->
         <div id="lidarStatus" style="position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.85rem;font-weight:600;z-index:20;"></div>
+        <!-- LiDAR loading overlay -->
+        <div id="lidarLoadingOverlay" style="display:none;position:absolute;inset:0;z-index:30;background:rgba(0,0,0,0.4);backdrop-filter:blur(2px);display:none;align-items:center;justify-content:center;">
+          <div style="background:rgba(20,20,40,0.9);border-radius:12px;padding:24px 36px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+            <div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.2);border-top-color:#22c55e;border-radius:50%;margin:0 auto 12px;animation:lidarSpin 0.8s linear infinite;"></div>
+            <div style="color:#fff;font-size:0.95rem;font-weight:600;">Loading LiDAR Data</div>
+            <div id="lidarLoadingMsg" style="color:rgba(255,255,255,0.6);font-size:0.8rem;margin-top:4px;">Fetching elevation points...</div>
+          </div>
+        </div>
+        <style>@keyframes lidarSpin{to{transform:rotate(360deg)}}</style>
+        <!-- 3D ViewCube — bottom right -->
+        <div class="map-controls-bl" id="viewcube3dControls" style="bottom:14px;right:14px;z-index:40;pointer-events:all;">
+          <div class="viewcube-wrap" id="viewcubeWrap3d">
+            <div class="viewcube-ring"></div>
+            <div class="viewcube-compass" id="vcCompass3d">
+              <span class="vc-n">S</span>
+              <span class="vc-s"></span>
+              <span class="vc-e">E</span>
+              <span class="vc-w">W</span>
+            </div>
+            <div class="viewcube-scene">
+              <div class="viewcube" id="viewcube3d">
+                <div class="vc-face vc-top" data-view="top">N</div>
+                <div class="vc-face vc-bottom" data-view="bottom">S</div>
+                <div class="vc-face vc-front" data-view="front">TOP</div>
+                <div class="vc-face vc-back" data-view="back">BOT</div>
+                <div class="vc-face vc-left" data-view="left">W</div>
+                <div class="vc-face vc-right" data-view="right">E</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Calibration overlay — side-by-side -->
+      <div id="calibOverlay" style="display:none;position:absolute;inset:0;z-index:50;background:#111;">
+        <!-- Header bar -->
+        <div style="position:absolute;top:0;left:0;right:0;height:48px;background:#1a1a2e;display:flex;align-items:center;padding:0 16px;z-index:52;gap:12px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+          <span style="color:#fff;font-weight:600;font-size:0.9rem;">Calibrate Alignment</span>
+          <span style="color:#888;font-size:0.78rem;margin-left:4px;">Place matching pins on house corners in both images</span>
+          <div style="flex:1"></div>
+          <span id="calibPointCount" style="color:#aaa;font-size:0.8rem;">0 point pairs</span>
+          <button id="calibClear" style="padding:5px 12px;border:1px solid #555;border-radius:6px;background:none;color:#ccc;font-size:0.78rem;cursor:pointer;">Clear All</button>
+          <button id="calibSkip" style="padding:5px 12px;border:1px solid #555;border-radius:6px;background:none;color:#ccc;font-size:0.78rem;cursor:pointer;">Skip</button>
+          <button id="calibConfirm" disabled style="padding:5px 14px;border:none;border-radius:6px;background:#555;color:#888;font-size:0.78rem;font-weight:600;cursor:not-allowed;">Confirm (need 4+ pairs)</button>
+        </div>
+        <!-- Side-by-side body -->
+        <div id="calibBody" style="position:absolute;top:48px;bottom:0;left:0;right:0;display:flex;overflow:hidden;">
+          <!-- LEFT: Satellite Image -->
+          <div style="flex:1;position:relative;border-right:2px solid #333;">
+            <div style="position:absolute;top:8px;left:12px;z-index:53;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);border-radius:6px;padding:4px 10px;display:flex;align-items:center;gap:6px;">
+              <div style="width:8px;height:8px;border-radius:50%;background:#3b82f6;"></div>
+              <span style="color:#fff;font-size:0.75rem;font-weight:600;">Satellite Image</span>
+              <span id="calibSatCount" style="color:#888;font-size:0.7rem;margin-left:4px;">0 pins</span>
+            </div>
+            <canvas id="calibCanvasSat" style="position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;"></canvas>
+            <div id="calibSatLoading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#888;font-size:0.85rem;">Loading satellite image...</div>
+            <!-- Zoom controls -->
+            <div style="position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:4px;z-index:53;">
+              <button class="calib-zoom-btn" data-panel="sat" data-action="in" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:1.1rem;cursor:pointer;">+</button>
+              <button class="calib-zoom-btn" data-panel="sat" data-action="out" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:1.1rem;cursor:pointer;">-</button>
+              <button class="calib-zoom-btn" data-panel="sat" data-action="fit" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.65rem;cursor:pointer;">Fit</button>
+            </div>
+          </div>
+          <!-- RIGHT: LiDAR Image -->
+          <div style="flex:1;position:relative;">
+            <div style="position:absolute;top:8px;left:12px;z-index:53;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);border-radius:6px;padding:4px 10px;display:flex;align-items:center;gap:6px;">
+              <div style="width:8px;height:8px;border-radius:50%;background:#ea580c;"></div>
+              <span style="color:#fff;font-size:0.75rem;font-weight:600;">Aerial Image</span>
+              <span id="calibLidarCount" style="color:#888;font-size:0.7rem;margin-left:4px;">0 pins</span>
+            </div>
+            <canvas id="calibCanvasLidar" style="position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;"></canvas>
+            <div id="calibLidarLoading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#888;font-size:0.85rem;">Loading aerial image...</div>
+            <!-- Zoom controls -->
+            <div style="position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:4px;z-index:53;">
+              <button class="calib-zoom-btn" data-panel="lidar" data-action="in" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:1.1rem;cursor:pointer;">+</button>
+              <button class="calib-zoom-btn" data-panel="lidar" data-action="out" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:1.1rem;cursor:pointer;">-</button>
+              <button class="calib-zoom-btn" data-panel="lidar" data-action="fit" style="width:32px;height:32px;border:none;border-radius:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.65rem;cursor:pointer;">Fit</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Floating re-open button (shown when panel is collapsed) -->
@@ -5625,30 +5882,30 @@ app.get("/design", (req, res) => {
         </div>
       </div>
 
-      <!-- ViewCube — bottom left -->
-      <div class="map-controls-bl">
+      <!-- ViewCube — bottom left (hidden when 3D viewer is active) -->
+      <div class="map-controls-bl" style="display:none;">
         <div class="viewcube-wrap" id="viewcubeWrap">
           <div class="viewcube-ring"></div>
           <div class="vc-north-arrow" id="vcNorthArrow"></div>
           <div class="viewcube-compass" id="vcCompass">
-            <span class="vc-n">N</span>
-            <span class="vc-s">S</span>
+            <span class="vc-n">S</span>
+            <span class="vc-s"></span>
             <span class="vc-e">E</span>
             <span class="vc-w">W</span>
           </div>
           <div class="viewcube-scene">
             <div class="viewcube" id="viewcube">
-              <div class="vc-face vc-top" data-view="top">TOP</div>
-              <div class="vc-face vc-bottom" data-view="bottom">BTM</div>
-              <div class="vc-face vc-front" data-view="front">N</div>
-              <div class="vc-face vc-back" data-view="back">S</div>
-              <div class="vc-face vc-left" data-view="left">E</div>
-              <div class="vc-face vc-right" data-view="right">W</div>
+              <div class="vc-face vc-top" data-view="top">N</div>
+              <div class="vc-face vc-bottom" data-view="bottom">S</div>
+              <div class="vc-face vc-front" data-view="front">TOP</div>
+              <div class="vc-face vc-back" data-view="back">BOT</div>
+              <div class="vc-face vc-left" data-view="left">W</div>
+              <div class="vc-face vc-right" data-view="right">E</div>
             </div>
           </div>
         </div>
         <div class="tilt-slider-wrap">
-          <input type="range" class="tilt-slider" id="tiltSlider" min="0" max="45" value="0" title="Tilt"/>
+          <input type="range" class="tilt-slider" id="tiltSlider" min="0" max="45" value="30" title="Tilt"/>
         </div>
       </div>
 
@@ -6407,7 +6664,7 @@ app.get("/design", (req, res) => {
       }, { passive: false });
 
       /* ── ViewCube — 3D CAD orbit ── */
-      var vcRotX = 0;   // tilt: 0 = top-down, 90 = eye-level
+      var vcRotX = 30;  // tilt: 0 = top-down, 90 = eye-level — default dice-on-table
       var vcRotZ = 0;   // heading/spin around vertical axis
       var vcCube = document.getElementById('viewcube');
       var vcWrap = document.getElementById('viewcubeWrap');
@@ -6456,9 +6713,17 @@ app.get("/design", (req, res) => {
       });
       document.addEventListener('keyup', function(e) {
         if (e.code === 'Space') {
+          e.preventDefault();
           spaceHeld = false;
           spacePanning = false;
           map3dScene.style.cursor = '';
+        }
+      });
+
+      /* Prevent spacebar from triggering click on focused toolbar buttons */
+      document.addEventListener('keydown', function(e) {
+        if (e.code === 'Space' && e.target.matches('button')) {
+          e.preventDefault();
         }
       });
 
@@ -6527,14 +6792,14 @@ app.get("/design", (req, res) => {
       function handleFaceClick(view) {
         map3dPlane.style.transition = 'transform 0.4s ease';
         if (view === 'top') { vcRotX = 0; vcRotZ = 0; }
-        else if (view === 'bottom') { vcRotX = 0; vcRotZ = 180; }
+        else if (view === 'bottom') { vcRotX = 80; vcRotZ = vcRotZ; }
         else {
-          // Keep current tilt, but if flat (0), bump to a slight angle so user sees the side
-          if (vcRotX < 10) vcRotX = 15;
-          if (view === 'front') vcRotZ = 0;
+          // Keep current tilt, but if flat (0), bump to dice-on-table angle
+          if (vcRotX < 10) vcRotX = 30;
+          if (view === 'front') vcRotZ = 0;           // S (self) — facing user
           else if (view === 'back') vcRotZ = 180;
-          else if (view === 'left') vcRotZ = 90;
-          else if (view === 'right') vcRotZ = -90;
+          else if (view === 'left') vcRotZ = 90;      // W — twist left
+          else if (view === 'right') vcRotZ = -90;    // E — twist right
         }
         updateViewCube();
         setTimeout(function() { map3dPlane.style.transition = 'transform 0.25s ease'; }, 450);
@@ -6556,10 +6821,13 @@ app.get("/design", (req, res) => {
       // Update slider range for full tilt
       tiltSlider.max = 80;
 
-      // Double-click to reset to top-down
+      // Apply default dice-on-table orientation on load
+      updateViewCube();
+
+      // Double-click to reset to dice-on-table default
       vcWrap.addEventListener('dblclick', function() {
         map3dPlane.style.transition = 'transform 0.4s ease';
-        vcRotX = 0;
+        vcRotX = 30;
         vcRotZ = 0;
         vcPanX = 0;
         vcPanY = 0;
@@ -6775,6 +7043,7 @@ app.get("/design", (req, res) => {
     var pendingNav = null;
     var projectId = '${projectId || ""}';
     var currentDesignId = '${activeDesignId}';
+    var projectHasCalibration = ${hasCalibration};
 
     function markDirty() { isDirty = true; }
 
@@ -7178,8 +7447,8 @@ app.get("/design", (req, res) => {
     }
   </script>
   <script src="https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=drawing,geometry&callback=initMap" async defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
   <script>
     /* ── LiDAR 3D VIEW ──
@@ -7192,14 +7461,16 @@ app.get("/design", (req, res) => {
     var groundPlane3d = null;
     var groundLevel = 0;
     var vertExag = 2.0;
-    var lidarActive = false;
+    var lidarActive = true;
+    var satExtentM = 0; // satellite ground plane extent in meters
+    var lidarExtentMX = 0, lidarExtentMY = 0; // LiDAR/RGB image extent in meters
 
     // Geo-to-local: meters offset from design center
     var metersPerDegLat = 111320;
-    var metersPerDegLng = 111320 * Math.cos((typeof designLat !== 'undefined' ? designLat : 0) * Math.PI / 180);
     function geoToLocal(lat, lng) {
+      var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
       return {
-        x: (lng - designLng) * metersPerDegLng,
+        x: (lng - designLng) * mPerDegLng,
         z: -(lat - designLat) * metersPerDegLat
       };
     }
@@ -7223,8 +7494,9 @@ app.get("/design", (req, res) => {
       scene3d = new THREE.Scene();
       scene3d.background = new THREE.Color(0x1a1a2e);
 
-      camera3d = new THREE.PerspectiveCamera(50, w / h, 0.1, 2000);
-      camera3d.position.set(30, 50, 30);
+      camera3d = new THREE.PerspectiveCamera(5, w / h, 1, 5000);
+      // Dice-on-table default: 30° tilt from above
+      camera3d.position.set(0, 800, 0.001);
       camera3d.lookAt(0, 0, 0);
 
       renderer3d = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
@@ -7235,9 +7507,11 @@ app.get("/design", (req, res) => {
       controls3d = new THREE.OrbitControls(camera3d, canvas);
       controls3d.enableDamping = true;
       controls3d.dampingFactor = 0.08;
-      controls3d.minDistance = 5;
-      controls3d.maxDistance = 500;
+      controls3d.minDistance = 50;
+      controls3d.maxDistance = 3000;
       controls3d.maxPolarAngle = Math.PI / 2.05; // don't go below ground
+      controls3d.screenSpacePanning = true;
+      controls3d.panSpeed = 12;
 
       // Lights
       scene3d.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -7254,15 +7528,77 @@ app.get("/design", (req, res) => {
       animate3d();
     }
 
+    // Auto-init 3D viewer on page load
+    setTimeout(function() {
+      if (!scene3d) {
+        init3dViewer();
+        setTimeout(function() { resize3d(); buildGroundPlane(); }, 60);
+      }
+    }, 100);
+
     function animate3d() {
       requestAnimationFrame(animate3d);
-      if (!renderer3d || !lidarActive) return;
+      if (!renderer3d) return;
       if (controls3d) controls3d.update();
+      // sizeAttenuation handles zoom-based point scaling automatically
       renderer3d.render(scene3d, camera3d);
+      // Sync 3D viewcube with Three.js camera
+      updateViewCube3d();
     }
 
+    /* ── 3D ViewCube sync ── */
+    var vcCube3d = document.getElementById('viewcube3d');
+    var vcCompass3d = document.getElementById('vcCompass3d');
+
+    function updateViewCube3d() {
+      if (!camera3d || !controls3d || !vcCube3d) return;
+      // Spherical coords from camera relative to target
+      var dx = camera3d.position.x - controls3d.target.x;
+      var dy = camera3d.position.y - controls3d.target.y;
+      var dz = camera3d.position.z - controls3d.target.z;
+      // polar angle (tilt): 0 = top-down, 90 = eye-level
+      var r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      var polarDeg = Math.acos(Math.max(-1, Math.min(1, dy / r))) * (180 / Math.PI);
+      // azimuth (heading around Y axis)
+      var azimuthDeg = Math.atan2(dx, dz) * (180 / Math.PI);
+      vcCube3d.style.transform = 'rotateX(' + polarDeg + 'deg) rotateZ(' + azimuthDeg + 'deg)';
+      vcCompass3d.style.transform = 'rotate(' + azimuthDeg + 'deg)';
+    }
+
+    // 3D viewcube face clicks — snap the Three.js camera
+    (function() {
+      var wrap3d = document.getElementById('viewcubeWrap3d');
+      if (!wrap3d) return;
+      wrap3d.querySelectorAll('.vc-face').forEach(function(face) {
+        face.addEventListener('click', function() {
+          if (!camera3d || !controls3d) return;
+          var view = this.dataset.view;
+          var dist = camera3d.position.distanceTo(controls3d.target);
+          var t = controls3d.target.clone();
+          if (view === 'top') camera3d.position.set(t.x, t.y + dist, t.z);
+          else if (view === 'bottom') camera3d.position.set(t.x, t.y + dist * 0.05, t.z);
+          else if (view === 'front') camera3d.position.set(t.x, t.y + dist * 0.5, t.z + dist * 0.87);
+          else if (view === 'back') camera3d.position.set(t.x, t.y + dist * 0.5, t.z - dist * 0.87);
+          else if (view === 'left') camera3d.position.set(t.x - dist * 0.87, t.y + dist * 0.5, t.z);
+          else if (view === 'right') camera3d.position.set(t.x + dist * 0.87, t.y + dist * 0.5, t.z);
+          camera3d.lookAt(t);
+          controls3d.update();
+        });
+      });
+      // Double-click reset to dice-on-table (30° tilt from above, front-facing)
+      wrap3d.addEventListener('dblclick', function() {
+        if (!camera3d || !controls3d) return;
+        var dist = camera3d.position.distanceTo(controls3d.target);
+        var t = controls3d.target.clone();
+        // Top-down default
+        camera3d.position.set(t.x, t.y + dist, t.z + 0.001);
+        camera3d.lookAt(t);
+        controls3d.update();
+      });
+    })();
+
     function resize3d() {
-      if (!renderer3d || !lidarActive) return;
+      if (!renderer3d) return;
       var container = document.getElementById('viewer3d');
       var w = container.clientWidth;
       var h = container.clientHeight;
@@ -7272,77 +7608,73 @@ app.get("/design", (req, res) => {
       camera3d.updateProjectionMatrix();
     }
 
-    /* ── Build satellite ground plane (the "paper") ── */
+    /* ── Build satellite ground plane (high-res Google Maps Static API) ── */
     function buildGroundPlane() {
-      if (groundPlane3d) return; // already built
-      // Fetch satellite image from DSM endpoint (just need the image, not elevation data)
-      fetch('/api/solar/dsm-elevation?lat=' + designLat + '&lng=' + designLng + '&radius=40')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (!data.satelliteDataUrl) return;
-          var bbox = data.bbox; // [minLng, minLat, maxLng, maxLat]
-          if (!bbox || bbox.length < 4) return;
+      if (groundPlane3d) return;
+      if (typeof designLat === 'undefined') return;
 
-          var sw = geoToLocal(bbox[1], bbox[0]);
-          var ne = geoToLocal(bbox[3], bbox[2]);
-          var planeW = ne.x - sw.x;
-          var planeH = sw.z - ne.z;
-          var cx = (sw.x + ne.x) / 2;
-          var cz = (sw.z + ne.z) / 2;
+      // Google Maps Static API: zoom=20, size=640, scale=2 → 1280px image
+      // Geographic extent = 640 logical pixels at zoom 20 (scale only doubles resolution)
+      var metersPerPx = 156543.03392 * Math.cos(designLat * Math.PI / 180) / Math.pow(2, 20);
+      var extentM = 640 * metersPerPx;
+      satExtentM = extentM;
 
-          var geo = new THREE.PlaneGeometry(planeW, planeH);
-          geo.rotateX(-Math.PI / 2);
+      console.log('Satellite ground plane: metersPerPx=' + metersPerPx.toFixed(4) +
+                  ' extent=' + extentM.toFixed(1) + 'm');
 
-          var img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = function() {
-            var texture = new THREE.Texture(img);
-            texture.needsUpdate = true;
-            var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-            groundPlane3d = new THREE.Mesh(geo, mat);
-            groundPlane3d.position.set(cx, -0.1, cz);
-            scene3d.add(groundPlane3d);
-          };
-          img.src = data.satelliteDataUrl;
-        })
-        .catch(function(e) { console.error('Ground plane error:', e); });
+      var geo = new THREE.PlaneGeometry(extentM, extentM);
+      geo.rotateX(-Math.PI / 2);
+
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function() {
+        var texture = new THREE.Texture(img);
+        texture.needsUpdate = true;
+        var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+        groundPlane3d = new THREE.Mesh(geo, mat);
+        groundPlane3d.position.set(0, -0.1, 0);
+        scene3d.add(groundPlane3d);
+
+        // Frame camera to see the ground plane
+        var fovRad = camera3d.fov * Math.PI / 180;
+        var camDist = (extentM / 2) / Math.tan(fovRad / 2) * 1.3;
+        camDist = Math.max(200, Math.min(2000, camDist));
+        camera3d.position.set(0, camDist, 0.001);
+        controls3d.target.set(0, 0, 0);
+        controls3d.update();
+      };
+      img.src = '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640';
     }
 
-    /* ── Toggle LiDAR view on/off ── */
+    /* ── Toggle LiDAR point cloud on/off (3D viewer always visible) ── */
     var lidarFetched = false;
     var lidarLoading = false;
+    var lidarLoadError = null;
+    var lidarVisible = false;
 
     document.getElementById('btn3dView').addEventListener('click', function() {
-      var viewer = document.getElementById('viewer3d');
+      if (!scene3d) return;
 
-      if (lidarActive) {
-        // Turn off — hide 3D view, show map
-        lidarActive = false;
-        viewer.style.display = 'none';
+      if (lidarVisible) {
+        // Hide LiDAR points only
+        if (lidarPoints) lidarPoints.visible = false;
+        lidarVisible = false;
         this.classList.remove('active');
         this.style.background = '';
         this.style.color = '';
         return;
       }
 
-      // Turn on — show 3D view
-      viewer.style.display = '';
-      lidarActive = true;
+      // Show LiDAR points
+      lidarVisible = true;
       this.classList.add('active');
       this.style.background = '#22c55e';
       this.style.color = '#000';
 
-      if (!scene3d) {
-        init3dViewer();
-        // Small delay for layout, then resize + load data
-        setTimeout(function() {
-          resize3d();
-          buildGroundPlane();
-          loadLidarPoints();
-        }, 60);
-      } else {
-        resize3d();
-        if (!lidarFetched) loadLidarPoints();
+      if (lidarPoints) {
+        lidarPoints.visible = true;
+      } else if (!lidarFetched) {
+        loadLidarPoints();
       }
     });
 
@@ -7355,14 +7687,18 @@ app.get("/design", (req, res) => {
 
       lidarLoading = true;
       setStatus3d('Loading LiDAR points...');
+      var overlay = document.getElementById('lidarLoadingOverlay');
+      if (overlay) overlay.style.display = 'flex';
 
-      fetch('/api/lidar/points?lat=' + designLat + '&lng=' + designLng + '&radius=15')
+      fetch('/api/lidar/points?lat=' + designLat + '&lng=' + designLng)
         .then(function(r) { return r.json(); })
         .then(function(data) {
           lidarLoading = false;
-          if (data.error) { setStatus3d('LiDAR: ' + data.error); return; }
+          if (overlay) overlay.style.display = 'none';
+          if (data.error) { lidarLoadError = data.error; setStatus3d('LiDAR: ' + data.error); return; }
           if (!data.points || data.points.length === 0) {
-            setStatus3d(data.message || 'No LiDAR data for this location');
+            lidarLoadError = data.message || 'No LiDAR data for this location';
+            setStatus3d(lidarLoadError);
             return;
           }
           buildLidarPointCloud(data.points);
@@ -7371,6 +7707,8 @@ app.get("/design", (req, res) => {
         })
         .catch(function(e) {
           lidarLoading = false;
+          if (overlay) overlay.style.display = 'none';
+          lidarLoadError = e.message;
           setStatus3d('Error: ' + e.message);
         });
     }
@@ -7398,15 +7736,21 @@ app.get("/design", (req, res) => {
         positions[i * 3 + 1] = (p[2] - minZ) * vertExag;
         positions[i * 3 + 2] = local.z;
 
+        // Aurora-style rainbow elevation gradient: blue → cyan → green → yellow → red
+        var ht = (p[2] - minZ) / zRange;
         var r, g, b;
-        if (cls === 2) { r = 0.5; g = 0.5; b = 0.53; }
-        else if (cls === 6) { r = 0.29; g = 0.56; b = 0.89; }
-        else if (cls >= 3 && cls <= 5) {
-          var ht = (p[2] - minZ) / zRange;
-          r = 0.1; g = 0.4 + 0.4 * ht; b = 0.15;
+        if (ht < 0.25) {
+          var t = ht / 0.25;
+          r = 0.0; g = t; b = 1.0;                // blue → cyan
+        } else if (ht < 0.5) {
+          var t = (ht - 0.25) / 0.25;
+          r = 0.0; g = 1.0; b = 1.0 - t;          // cyan → green
+        } else if (ht < 0.75) {
+          var t = (ht - 0.5) / 0.25;
+          r = t; g = 1.0; b = 0.0;                 // green → yellow
         } else {
-          var ht = (p[2] - minZ) / zRange;
-          r = 0.3 + 0.6 * ht; g = 0.3 + 0.3 * ht; b = 0.3;
+          var t = (ht - 0.75) / 0.25;
+          r = 1.0; g = 1.0 - t; b = 0.0;           // yellow → red
         }
         colors[i * 3] = r;
         colors[i * 3 + 1] = g;
@@ -7417,27 +7761,335 @@ app.get("/design", (req, res) => {
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
+      // Round point texture (circle instead of square)
+      var ptCanvas = document.createElement('canvas');
+      ptCanvas.width = 64; ptCanvas.height = 64;
+      var ptCtx = ptCanvas.getContext('2d');
+      ptCtx.beginPath();
+      ptCtx.arc(32, 32, 30, 0, Math.PI * 2);
+      ptCtx.fillStyle = '#ffffff';
+      ptCtx.fill();
+      var ptTexture = new THREE.Texture(ptCanvas);
+      ptTexture.needsUpdate = true;
+
       var mat = new THREE.PointsMaterial({
-        size: 0.3,
+        size: 2.0,
+        map: ptTexture,
         vertexColors: true,
         sizeAttenuation: true,
+        depthWrite: true,
+        transparent: true,
+        alphaTest: 0.5,
       });
 
       lidarPoints = new THREE.Points(geo, mat);
       scene3d.add(lidarPoints);
 
-      // Position camera to see the whole thing
-      geo.computeBoundingBox();
-      var bb = geo.boundingBox;
-      var cx = (bb.max.x + bb.min.x) / 2;
-      var cz = (bb.max.z + bb.min.z) / 2;
-      var extent = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z);
-      var cy = zRange * vertExag * 0.3;
-
-      camera3d.position.set(cx + extent * 0.5, extent * 0.6, cz + extent * 0.5);
-      controls3d.target.set(cx, cy, cz);
-      controls3d.update();
+      // Auto-align: use Solar API roof segments to correct LiDAR offset
+      autoAlignLidar(points, positions, minZ, zRange);
     }
+
+    function autoAlignLidar(points, positions, minZ, zRange) {
+      fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var si = data.solarPotential;
+          if (!si || !si.roofSegmentStats || si.roofSegmentStats.length === 0) return;
+
+          // Compute area-weighted centroid of roof segments
+          var roofX = 0, roofZ = 0, totalArea = 0;
+          si.roofSegmentStats.forEach(function(seg) {
+            var area = (seg.stats && seg.stats.areaMeters2) || 1;
+            var local = geoToLocal(seg.center.latitude, seg.center.longitude);
+            roofX += local.x * area;
+            roofZ += local.z * area;
+            totalArea += area;
+          });
+          roofX /= totalArea;
+          roofZ /= totalArea;
+
+          // Find LiDAR elevation peak centroid (points above median + 1 stdev = likely building)
+          var elevs = [];
+          for (var i = 0; i < points.length; i++) elevs.push(points[i][2]);
+          elevs.sort(function(a, b) { return a - b; });
+          var median = elevs[Math.floor(elevs.length / 2)];
+          var sumSq = 0;
+          for (var i = 0; i < elevs.length; i++) sumSq += (elevs[i] - median) * (elevs[i] - median);
+          var stdev = Math.sqrt(sumSq / elevs.length);
+          var threshold = median + stdev * 0.5;
+
+          var peakX = 0, peakZ = 0, peakCount = 0;
+          for (var i = 0; i < points.length; i++) {
+            if (points[i][2] >= threshold) {
+              var local = geoToLocal(points[i][1], points[i][0]);
+              peakX += local.x;
+              peakZ += local.z;
+              peakCount++;
+            }
+          }
+          if (peakCount === 0) return;
+          peakX /= peakCount;
+          peakZ /= peakCount;
+
+          // Apply offset to align LiDAR peaks with roof centroid
+          var offsetX = roofX - peakX;
+          var offsetZ = roofZ - peakZ;
+          if (lidarPoints) {
+            lidarPoints.position.x = offsetX;
+            lidarPoints.position.z = offsetZ;
+            console.log('Auto-align offset: x=' + offsetX.toFixed(2) + ' z=' + offsetZ.toFixed(2));
+          }
+        })
+        .catch(function(e) { console.error('Auto-align error:', e); });
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       CALIBRATION SYSTEM — side-by-side alignment of satellite + LiDAR
+       User places matching control points on house corners in both images,
+       then a least-squares similarity transform (tx, tz, scale, rotation)
+       is computed and applied to the ground plane.
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    var calibrationActive = false;
+    var calibSavedTransform = null;
+    var calibPoints = { lidar: [], satellite: [] }; // arrays of {px, py} in image-pixel coords
+    var calibSatImage = null;
+    var calibLidarImage = null;
+    var calibPanels = {
+      sat:   { zoom: 1, panX: 0, panY: 0, dragging: false, didDrag: false, sx: 0, sy: 0, spx: 0, spy: 0 },
+      lidar: { zoom: 1, panX: 0, panY: 0, dragging: false, didDrag: false, sx: 0, sy: 0, spx: 0, spy: 0 }
+    };
+
+    // Load satellite image directly from API (no dependency on 3D viewer)
+    function loadCalibSatelliteImage(callback) {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function() { callback(img); };
+      img.onerror = function() { callback(null); };
+      img.src = '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640';
+    }
+
+    // Load high-res Solar API aerial image for calibration (same source as 3D ground plane)
+    function loadCalibLidarImage(callback) {
+      fetch('/api/solar/dsm-elevation?lat=' + designLat + '&lng=' + designLng + '&radius=50')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data.satelliteDataUrl) { callback(null); return; }
+          // Compute LiDAR image extent in meters from bbox
+          if (data.bbox) {
+            var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
+            lidarExtentMX = (data.bbox[2] - data.bbox[0]) * mPerDegLng;
+            lidarExtentMY = (data.bbox[3] - data.bbox[1]) * 111320;
+          }
+          var img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = function() { callback(img); };
+          img.onerror = function() { callback(null); };
+          img.src = data.satelliteDataUrl;
+        })
+        .catch(function() { callback(null); });
+    }
+
+    // Draw one calibration panel (satellite or lidar)
+    function drawCalibPanel(canvasId, img, points, color, panelKey) {
+      var canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      var ctx = canvas.getContext('2d');
+      var w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, w, h);
+
+      if (!img) return;
+      var p = calibPanels[panelKey];
+      var iw = img.width, ih = img.height;
+      var fitScale = Math.min(w / iw, h / ih) * 0.85;
+
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.scale(p.zoom * fitScale, p.zoom * fitScale);
+      ctx.translate(p.panX, p.panY);
+      ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+      ctx.restore();
+
+      // Draw numbered pin markers
+      for (var i = 0; i < points.length; i++) {
+        var cx = (points[i].px - iw / 2 + p.panX) * p.zoom * fitScale + w / 2;
+        var cy = (points[i].py - ih / 2 + p.panY) * p.zoom * fitScale + h / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(i + 1), cx, cy);
+      }
+    }
+
+    function drawAllCalibPanels() {
+      drawCalibPanel('calibCanvasSat', calibSatImage, calibPoints.satellite, 'rgba(59,130,246,0.9)', 'sat');
+      drawCalibPanel('calibCanvasLidar', calibLidarImage, calibPoints.lidar, 'rgba(234,88,12,0.9)', 'lidar');
+    }
+
+    // Convert image-pixel pin coords to world (meter) coords for transform solving
+    // panelType: 'satellite' or 'lidar'
+    function calibPinsToWorld(pins, panelType) {
+      var result = [];
+      var img = (panelType === 'satellite') ? calibSatImage : calibLidarImage;
+      if (!img) return result;
+      var iw = img.width, ih = img.height;
+      for (var i = 0; i < pins.length; i++) {
+        var px = pins[i].px, py = pins[i].py;
+        if (panelType === 'satellite') {
+          // Satellite: 1280px image covers satExtentM meters, centered on design point
+          var mPerPx = satExtentM / iw;
+          result.push({ x: (px - iw / 2) * mPerPx, z: (py - ih / 2) * mPerPx });
+        } else {
+          // LiDAR/RGB: image covers lidarExtentM meters, centered on design point
+          var mPerPxX = lidarExtentMX / iw;
+          var mPerPxY = lidarExtentMY / ih;
+          result.push({ x: (px - iw / 2) * mPerPxX, z: (py - ih / 2) * mPerPxY });
+        }
+      }
+      return result;
+    }
+
+    function updateCalibUI() {
+      var nSat = calibPoints.satellite.length, nLidar = calibPoints.lidar.length, n = Math.min(nSat, nLidar);
+      var el = document.getElementById('calibPointCount');
+      if (el) el.textContent = n + ' point pair' + (n !== 1 ? 's' : '');
+      var sc = document.getElementById('calibSatCount'); if (sc) sc.textContent = nSat + ' pin' + (nSat !== 1 ? 's' : '');
+      var lc = document.getElementById('calibLidarCount'); if (lc) lc.textContent = nLidar + ' pin' + (nLidar !== 1 ? 's' : '');
+      var btn = document.getElementById('calibConfirm');
+      if (btn) {
+        if (n >= 4) { btn.disabled = false; btn.style.background = '#7c3aed'; btn.style.color = '#fff'; btn.style.cursor = 'pointer'; btn.textContent = 'Confirm (' + n + ' pairs)'; }
+        else { btn.disabled = true; btn.style.background = '#555'; btn.style.color = '#888'; btn.style.cursor = 'not-allowed'; btn.textContent = 'Confirm (need ' + (4 - n) + ' more)'; }
+      }
+    }
+
+    function solveSimilarityTransform(satPts, lidarPts) {
+      var n = Math.min(satPts.length, lidarPts.length); if (n < 2) return null;
+      var csx=0,csz=0,clx=0,clz=0;
+      for (var i=0;i<n;i++){csx+=satPts[i].x;csz+=satPts[i].z;clx+=lidarPts[i].x;clz+=lidarPts[i].z;}
+      csx/=n;csz/=n;clx/=n;clz/=n;
+      var Sxx=0,Sxz=0,Dx=0;
+      for(var i=0;i<n;i++){var sx=satPts[i].x-csx,sz=satPts[i].z-csz,lx=lidarPts[i].x-clx,lz=lidarPts[i].z-clz;Sxx+=sx*lx+sz*lz;Sxz+=sx*lz-sz*lx;Dx+=sx*sx+sz*sz;}
+      if(Dx<1e-12)return null;var a=Sxx/Dx,b=Sxz/Dx;
+      return{tx:clx-(a*csx-b*csz),tz:clz-(b*csx+a*csz),scale:Math.sqrt(a*a+b*b),rotation:Math.atan2(b,a)};
+    }
+
+    function applyCalibration(cal) {
+      if(!cal||!groundPlane3d)return; calibSavedTransform=cal;
+      // Reset ground plane to default position first, then apply calibration
+      groundPlane3d.position.x = cal.tx;
+      groundPlane3d.position.z = cal.tz;
+      groundPlane3d.position.y = -0.1; // default y
+      // No scale — both coordinate systems are in meters, scale is always 1.0
+      groundPlane3d.scale.set(1, 1, 1);
+      groundPlane3d.rotation.y = cal.rotation || 0;
+      console.log('Calibration applied: tx=' + cal.tx.toFixed(3) + ' tz=' + cal.tz.toFixed(3) + ' scale=' + (cal.scale||1).toFixed(4) + ' rotation=' + (cal.rotation||0).toFixed(4));
+    }
+
+    function openCalibration() {
+      calibrationActive=true;calibPoints={lidar:[],satellite:[]};
+      calibPanels.sat={zoom:1,panX:0,panY:0,dragging:false,didDrag:false,sx:0,sy:0,spx:0,spy:0};
+      calibPanels.lidar={zoom:1,panX:0,panY:0,dragging:false,didDrag:false,sx:0,sy:0,spx:0,spy:0};
+      calibSatImage=null;calibLidarImage=null;
+      document.getElementById('calibOverlay').style.display='block';
+      document.getElementById('calibSatLoading').style.display='flex';
+      document.getElementById('calibLidarLoading').style.display='flex';
+      requestAnimationFrame(function(){
+        var cS=document.getElementById('calibCanvasSat'),cL=document.getElementById('calibCanvasLidar');
+        var bE=document.getElementById('calibBody'),hw=Math.floor(bE.clientWidth/2),h=bE.clientHeight;
+        cS.width=hw;cS.height=h;cL.width=hw;cL.height=h;
+        loadCalibSatelliteImage(function(img){
+          calibSatImage=img;document.getElementById('calibSatLoading').style.display='none';
+          drawCalibPanel('calibCanvasSat',calibSatImage,calibPoints.satellite,'rgba(59,130,246,0.9)','sat');
+        });
+        loadCalibLidarImage(function(img){
+          calibLidarImage=img;
+          var el=document.getElementById('calibLidarLoading');
+          if(img){el.style.display='none';}
+          else{el.textContent='Aerial image unavailable';el.style.color='#f87171';}
+          drawCalibPanel('calibCanvasLidar',calibLidarImage,calibPoints.lidar,'rgba(234,88,12,0.9)','lidar');
+        });
+        updateCalibUI();
+      });
+    }
+    function closeCalibration(){calibrationActive=false;document.getElementById('calibOverlay').style.display='none';}
+
+    function setupCalibCanvas(canvasId,panelKey,pointsKey,color){
+      var canvas=document.getElementById(canvasId);if(!canvas)return;
+      canvas.addEventListener('click',function(e){
+        var p=calibPanels[panelKey];if(p.didDrag){p.didDrag=false;return;}
+        var img=(panelKey==='sat')?calibSatImage:calibLidarImage;if(!img)return;
+        var rect=canvas.getBoundingClientRect(),cx=e.clientX-rect.left,cy=e.clientY-rect.top;
+        var iw=img.width,ih=img.height,fitScale=Math.min(canvas.width/iw,canvas.height/ih)*0.85;
+        var imgPx=(cx-canvas.width/2)/(p.zoom*fitScale)-p.panX+iw/2;
+        var imgPy=(cy-canvas.height/2)/(p.zoom*fitScale)-p.panY+ih/2;
+        calibPoints[pointsKey].push({px:imgPx,py:imgPy});updateCalibUI();drawAllCalibPanels();
+      });
+      canvas.addEventListener('wheel',function(e){
+        e.preventDefault();var p=calibPanels[panelKey];
+        p.zoom=Math.max(0.2,Math.min(10,p.zoom*(e.deltaY>0?0.9:1.1)));
+        drawCalibPanel(canvasId,panelKey==='sat'?calibSatImage:calibLidarImage,calibPoints[pointsKey],color,panelKey);
+      },{passive:false});
+      canvas.addEventListener('mousedown',function(e){
+        if(e.button!==0)return;var p=calibPanels[panelKey];
+        p.dragging=true;p.didDrag=false;p.sx=e.clientX;p.sy=e.clientY;p.spx=p.panX;p.spy=p.panY;
+        canvas.style.cursor='grabbing';e.preventDefault();
+      });
+      document.addEventListener('mousemove',function(e){
+        var p=calibPanels[panelKey];if(!p.dragging)return;
+        var img=(panelKey==='sat')?calibSatImage:calibLidarImage;if(!img)return;
+        var fitScale=Math.min(canvas.width/img.width,canvas.height/img.height)*0.85;
+        var dx=e.clientX-p.sx,dy=e.clientY-p.sy;if(Math.abs(dx)>3||Math.abs(dy)>3)p.didDrag=true;
+        p.panX=p.spx+dx/(p.zoom*fitScale);p.panY=p.spy+dy/(p.zoom*fitScale);
+        drawCalibPanel(canvasId,panelKey==='sat'?calibSatImage:calibLidarImage,calibPoints[pointsKey],color,panelKey);
+      });
+      document.addEventListener('mouseup',function(){var p=calibPanels[panelKey];if(p.dragging){p.dragging=false;canvas.style.cursor='crosshair';}});
+    }
+    setupCalibCanvas('calibCanvasSat','sat','satellite','rgba(59,130,246,0.9)');
+    setupCalibCanvas('calibCanvasLidar','lidar','lidar','rgba(234,88,12,0.9)');
+
+    document.querySelectorAll('.calib-zoom-btn').forEach(function(b){b.addEventListener('click',function(){
+      var pnl=b.dataset.panel,act=b.dataset.action,p=calibPanels[pnl];
+      if(act==='in')p.zoom=Math.min(10,p.zoom*1.3);else if(act==='out')p.zoom=Math.max(0.2,p.zoom/1.3);
+      else if(act==='fit'){p.zoom=1;p.panX=0;p.panY=0;}drawAllCalibPanels();
+    });});
+    document.getElementById('calibClear').addEventListener('click',function(){calibPoints={lidar:[],satellite:[]};updateCalibUI();drawAllCalibPanels();});
+    document.getElementById('calibSkip').addEventListener('click',function(){closeCalibration();});
+    document.getElementById('calibConfirm').addEventListener('click',function(){
+      var n=Math.min(calibPoints.lidar.length,calibPoints.satellite.length);if(n<4)return;
+      var satW=calibPinsToWorld(calibPoints.satellite.slice(0,n),'satellite');
+      var lidW=calibPinsToWorld(calibPoints.lidar.slice(0,n),'lidar');
+      console.log('Calibration debug: satExtentM=' + satExtentM.toFixed(2) + ' lidarExtentMX=' + lidarExtentMX.toFixed(2) + ' lidarExtentMY=' + lidarExtentMY.toFixed(2));
+      console.log('Sat pins (meters):', JSON.stringify(satW));
+      console.log('LiDAR pins (meters):', JSON.stringify(lidW));
+      if(satW.length<4||lidW.length<4){alert('Not enough valid points');return;}
+      var transform=solveSimilarityTransform(satW,lidW);if(!transform){alert('Could not compute transform');return;}
+      console.log('Transform: tx=' + transform.tx.toFixed(3) + ' tz=' + transform.tz.toFixed(3) + ' scale=' + transform.scale.toFixed(4) + ' rotation=' + transform.rotation.toFixed(4));
+      transform.controlPoints=[];for(var i=0;i<n;i++)transform.controlPoints.push({sat:satW[i],lidar:lidW[i]});
+      fetch('/api/projects/'+projectId+'/calibration',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(transform)});
+      applyCalibration(transform);var btn=document.getElementById('btnCalibrate');if(btn){btn.classList.add('tb2-calibrated');}closeCalibration();
+    });
+
+    document.getElementById('btnCalibrate').addEventListener('click',function(){
+      if(calibrationActive){closeCalibration();return;}
+      openCalibration();
+    });
+
+    var _origBuildLidar=buildLidarPointCloud;
+    buildLidarPointCloud=function(points){
+      _origBuildLidar(points);
+      // Calibration auto-load disabled — use calibration tool for fresh alignment
+    };
+
   </script>
 
   <!-- Save changes modal -->
@@ -7494,6 +8146,46 @@ app.get("/sales", (req, res) => {
   const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
   const energyJSON = JSON.stringify(energyUsage.map(Number));
   const prodJSON = JSON.stringify(production);
+
+  // 25-year savings spreadsheet data
+  const marketIncrease = 0.05;
+  const solarEscalator = 1.0299;
+  const currentRate = avgRate || 0.217;
+  const annualConsumption = annualUsage || 7418;
+  const solarRate = 0.32;
+  const solarProd = annualProduction || 6100;
+  const leftoverConsumption = Math.max(0, annualConsumption - solarProd);
+  const coveragePct = ((solarProd / annualConsumption) * 100).toFixed(1);
+
+  let savingsRows = '';
+  let totalUtility25 = 0;
+  let totalSolar25 = 0;
+  let cumulativeSavings = 0;
+  for (let yr = 1; yr <= 25; yr++) {
+    const utilRate = currentRate * Math.pow(1 + marketIncrease, yr - 1);
+    const utilBill = (annualConsumption * utilRate) / 12;
+    const solarBill = (solarProd * solarRate * Math.pow(solarEscalator, yr - 1)) / 12;
+    const leftoverCost = (leftoverConsumption * utilRate) / 12;
+    const totalMonthlyCost = solarBill + leftoverCost;
+    const monthlySav = utilBill - totalMonthlyCost;
+    cumulativeSavings += monthlySav * 12;
+    totalUtility25 += utilBill * 12;
+    totalSolar25 += totalMonthlyCost * 12;
+
+    const fmtNum = (n) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const label = (yr % 5 === 0 || yr === 1) ? 'Year ' + yr : '';
+    const showCum = (yr % 5 === 0) ? '$' + fmtNum(cumulativeSavings) : '';
+    savingsRows += '<tr' + (yr % 5 === 0 ? ' class="yr-milestone"' : '') + '>'
+      + '<td class="yr-label">' + label + '</td>'
+      + '<td class="col-util">$' + fmtNum(utilBill) + '</td>'
+      + '<td class="col-solar">$' + fmtNum(solarBill) + '</td>'
+      + '<td class="col-left">$' + fmtNum(leftoverCost) + '</td>'
+      + '<td class="col-total">$' + fmtNum(totalMonthlyCost) + '</td>'
+      + '<td class="col-save">$' + fmtNum(monthlySav * 12) + '</td>'
+      + '<td class="col-cum">' + showCum + '</td>'
+      + '</tr>';
+  }
+  const fmtTotal = (n) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -7598,6 +8290,30 @@ app.get("/sales", (req, res) => {
     .cta-sub { font-size: 0.88rem; color: rgba(255,255,255,0.5); margin-bottom: 20px; line-height: 1.5; }
     .cta-btn { display: inline-block; padding: 14px 36px; border-radius: 12px; background: linear-gradient(135deg, #c084fc, #818cf8); color: #fff; font-size: 0.95rem; font-weight: 600; border: none; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
     .cta-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(192,132,252,0.3); }
+    /* 25-Year Savings Spreadsheet */
+    .ss-params { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+    .ss-param { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px; }
+    .ss-param-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.4); margin-bottom: 4px; }
+    .ss-param-val { font-size: 1.05rem; font-weight: 600; }
+    .ss-table-wrap { max-height: 420px; overflow-y: auto; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); }
+    .ss-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+    .ss-table thead { position: sticky; top: 0; z-index: 2; }
+    .ss-table th { background: rgba(192,132,252,0.15); color: #c084fc; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .ss-table th:first-child { text-align: left; }
+    .ss-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(255,255,255,0.7); }
+    .ss-table td:first-child { text-align: left; }
+    .ss-table .yr-label { font-weight: 600; color: rgba(255,255,255,0.5); min-width: 50px; }
+    .ss-table .col-util { color: #f87171; }
+    .ss-table .col-solar { color: #60a5fa; }
+    .ss-table .col-left { color: #fbbf24; }
+    .ss-table .col-total { color: #c084fc; }
+    .ss-table .col-save { color: #34d399; }
+    .ss-table .col-cum { color: #34d399; font-weight: 700; }
+    .ss-table .yr-milestone td { border-bottom: 1px solid rgba(255,255,255,0.12); }
+    .ss-totals { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .ss-total { border-radius: 10px; padding: 16px; text-align: center; }
+    .ss-total-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .ss-total-val { font-size: 1.4rem; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -7606,7 +8322,7 @@ app.get("/sales", (req, res) => {
       <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg> Exit
     </button>
     <div class="s-title" id="slideTitle">Welcome</div>
-    <div class="s-counter" id="slideCounter">1 / 6</div>
+    <div class="s-counter" id="slideCounter">1 / 7</div>
   </div>
   <div class="s-viewport">
     <!-- Slide 1: Welcome -->
@@ -7713,8 +8429,52 @@ app.get("/sales", (req, res) => {
         </div>
       </div>
     </div>
-    <!-- Slide 6: Next Steps -->
+    <!-- Slide 6: 25-Year Savings Breakdown -->
     <div class="slide" id="slide5">
+      <div class="slide-inner">
+        <div class="s-label">25-Year Projection</div>
+        <div class="s-heading">Savings Breakdown</div>
+        <div class="s-divider"></div>
+        <div class="ss-params" style="margin-top:20px">
+          <div class="ss-param"><div class="ss-param-label">Market Increase</div><div class="ss-param-val" style="color:#f87171">5.0%/yr</div></div>
+          <div class="ss-param"><div class="ss-param-label">Current Rate</div><div class="ss-param-val">$${currentRate.toFixed(4)}/kWh</div></div>
+          <div class="ss-param"><div class="ss-param-label">Annual Consumption</div><div class="ss-param-val">${annualConsumption.toLocaleString()} kWh</div></div>
+          <div class="ss-param"><div class="ss-param-label">Solar Rate</div><div class="ss-param-val" style="color:#60a5fa">$${solarRate.toFixed(3)}/kWh</div></div>
+          <div class="ss-param"><div class="ss-param-label">Production</div><div class="ss-param-val">${solarProd.toLocaleString()} kWh</div></div>
+          <div class="ss-param"><div class="ss-param-label">Coverage</div><div class="ss-param-val" style="color:#34d399">${coveragePct}%</div></div>
+        </div>
+        <div class="ss-table-wrap">
+          <table class="ss-table">
+            <thead><tr>
+              <th></th>
+              <th>Utility Bill</th>
+              <th>Solar Billing</th>
+              <th>Utility Leftover</th>
+              <th>Total Cost</th>
+              <th>Annual Savings</th>
+              <th>Cumulative</th>
+            </tr></thead>
+            <tbody>${savingsRows}</tbody>
+          </table>
+        </div>
+        <div class="ss-totals">
+          <div class="ss-total" style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);">
+            <div class="ss-total-label" style="color:#f87171">Total Utility (25yr)</div>
+            <div class="ss-total-val" style="color:#f87171">$${fmtTotal(totalUtility25)}</div>
+          </div>
+          <div class="ss-total" style="background:rgba(192,132,252,0.1);border:1px solid rgba(192,132,252,0.2);">
+            <div class="ss-total-label" style="color:#c084fc">Total Solar (25yr)</div>
+            <div class="ss-total-val" style="color:#c084fc">$${fmtTotal(totalSolar25)}</div>
+          </div>
+          <div class="ss-total" style="background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.2);">
+            <div class="ss-total-label" style="color:#34d399">Total Saved (25yr)</div>
+            <div class="ss-total-val" style="color:#34d399">$${fmtTotal(cumulativeSavings)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Slide 7: Next Steps -->
+    <div class="slide" id="slide6">
       <div class="slide-inner">
         <div class="s-label">Getting Started</div>
         <div class="s-heading">Next Steps</div>
@@ -7738,12 +8498,12 @@ app.get("/sales", (req, res) => {
   </div>
   <div class="s-nav">
     <button class="s-arrow" id="prevBtn" disabled><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></button>
-    <div class="s-dots"><button class="s-dot active"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button></div>
+    <div class="s-dots"><button class="s-dot active"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button><button class="s-dot"></button></div>
     <button class="s-arrow" id="nextBtn"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg></button>
   </div>
   <script>
-    var current = 0, total = 6;
-    var titles = ['Welcome','Your Home','Energy Profile','Solar Design','Your Savings','Next Steps'];
+    var current = 0, total = 7;
+    var titles = ['Welcome','Your Home','Energy Profile','Solar Design','Your Savings','25-Year Breakdown','Next Steps'];
     var slides = document.querySelectorAll('.slide');
     var dots = document.querySelectorAll('.s-dot');
     var prevBtn = document.getElementById('prevBtn');
@@ -7950,7 +8710,7 @@ app.get("/settings", (req, res) => {
 <body>
 
   <nav class="rail">
-    <div class="rail-logo">
+    <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer">
       <svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
       </svg>
@@ -7960,20 +8720,19 @@ app.get("/settings", (req, res) => {
         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
       </svg>
     </a>
-    <a class="rail-btn" href="/" title="List">
+    <a class="rail-btn" href="/database" title="Database">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/>
       </svg>
     </a>
-    <a class="rail-btn active" href="/settings" title="Settings" style="margin-top:auto;">
+    <a class="rail-btn active" href="/settings" title="Settings" >
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
       </svg>
     </a>
-    <a class="rail-btn" href="/settings" title="Account">
+    <a class="rail-btn" href="#" title="Partners">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
       </svg>
     </a>
   </nav>
@@ -7990,8 +8749,8 @@ app.get("/settings", (req, res) => {
       <div class="sidebar-group">
         <div class="sidebar-section-label">User management</div>
         <a class="sidebar-item" href="/settings/users">Users and licenses</a>
-        <a class="sidebar-item" href="/settings">Roles</a>
-        <a class="sidebar-item" href="/settings">Teams</a>
+        <a class="sidebar-item" href="/settings/roles">Roles</a>
+        <a class="sidebar-item" href="/settings/teams">Teams</a>
       </div>
 
       <div class="sidebar-group">
@@ -8234,9 +8993,11 @@ app.get("/settings/users", (req, res) => {
 </style>
 </head><body>
   <nav class="rail">
-    <div class="rail-logo"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
     <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
-    <a class="rail-btn active" href="/settings" title="Settings" style="margin-top:auto;"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="rail-btn active" href="/settings" title="Settings" ><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
   </nav>
   <div class="settings-shell">
     <aside class="settings-sidebar">
@@ -8247,8 +9008,8 @@ app.get("/settings/users", (req, res) => {
       </div>
       <div class="sidebar-group"><div class="sidebar-section-label">User management</div>
         <a class="sidebar-item active" href="/settings/users">Users and licenses</a>
-        <a class="sidebar-item" href="/settings">Roles</a>
-        <a class="sidebar-item" href="/settings">Teams</a>
+        <a class="sidebar-item" href="/settings/roles">Roles</a>
+        <a class="sidebar-item" href="/settings/teams">Teams</a>
       </div>
       <div class="sidebar-group"><div class="sidebar-section-label">Pricing &amp; financing</div>
         <a class="sidebar-item" href="/settings">Pricing defaults</a>
@@ -8353,6 +9114,531 @@ app.get("/settings/users", (req, res) => {
   }
   document.getElementById('userModal').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
   </script>
+</body></html>`);
+});
+
+// ── Teams page ───────────────────────────────────────────────────────────────
+app.get("/settings/teams", (req, res) => {
+  const users = loadUsers();
+  // Build teams from user data
+  const teamMap = {};
+  users.forEach(u => {
+    const t = u.team || "Unassigned";
+    if (!teamMap[t]) teamMap[t] = { name: t, count: 0, org: u.organization || "Team Sunshine" };
+    teamMap[t].count++;
+  });
+  const teams = Object.values(teamMap).filter(t => t.name !== "Unassigned").sort((a, b) => a.name.localeCompare(b.name));
+  const teamRows = teams.map(t => `
+    <tr class="tm-row">
+      <td style="font-weight:500">${esc(t.name)}</td>
+      <td>${t.count}</td>
+      <td>\u2014 (${esc(t.org)})</td>
+    </tr>`).join("");
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Teams \u2014 Solar CRM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#111;display:flex;height:100vh;overflow:hidden}
+  .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+  .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0}
+  .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+  .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+  .settings-shell{flex:1;display:flex;overflow:hidden}
+  .settings-sidebar{width:210px;flex-shrink:0;border-right:1px solid #e5e7eb;overflow-y:auto;padding:20px 0;background:#fafafa}
+  .sidebar-group{padding:0 12px;margin-bottom:4px}
+  .sidebar-group+.sidebar-group{margin-top:4px;padding-top:12px;border-top:1px solid #e5e7eb}
+  .sidebar-section-label{font-size:0.68rem;font-weight:700;color:#b0b7c3;text-transform:uppercase;letter-spacing:0.6px;padding:0 4px 6px}
+  .sidebar-item{display:block;padding:6px 8px;font-size:0.84rem;color:#4b5563;text-decoration:none;border-radius:6px;transition:background 0.1s,color 0.1s;margin-bottom:1px}
+  .sidebar-item:hover{background:#ede9f6;color:#1a0828}
+  .sidebar-item.active{background:#ede9f6;color:#1a0828;font-weight:600;position:relative}
+  .sidebar-item.active::before{content:'';position:absolute;left:-12px;top:6px;bottom:6px;width:3px;background:#7c3aed;border-radius:0 2px 2px 0}
+  .settings-main{flex:1;overflow-y:auto;padding:32px 40px}
+  .settings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+  .settings-header h1{font-size:1.6rem;font-weight:700;color:#111}
+  .btn-add{display:inline-flex;align-items:center;gap:7px;padding:8px 18px;background:#7c3aed;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:600;border:none;cursor:pointer;transition:background 0.15s}
+  .btn-add:hover{background:#6d28d9}
+  .tm-search{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+  .tm-search-input{display:flex;align-items:center;gap:8px;background:#f3f4f6;border-radius:8px;padding:8px 14px;width:300px}
+  .tm-search-input input{border:none;background:none;outline:none;font-size:0.88rem;width:100%;color:#111}
+  .tm-filter-btn{background:none;border:none;cursor:pointer;color:#6b7280;padding:4px}
+  .tm-filter-btn:hover{color:#111}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;padding:10px 12px;font-size:0.72rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;border-bottom:2px solid #e5e7eb;cursor:pointer}
+  th:hover{color:#111}
+  td{padding:12px;border-bottom:1px solid #f3f4f6;font-size:0.88rem;color:#374151}
+  .tm-row:hover{background:#f9fafb}
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;align-items:center;justify-content:center}
+  .modal-overlay.open{display:flex}
+  .modal{background:#fff;border-radius:14px;padding:28px 32px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,0.2)}
+  .modal h2{font-size:1.15rem;font-weight:700;margin-bottom:20px}
+  .modal label{display:block;font-size:0.78rem;font-weight:600;color:#374151;margin-bottom:3px}
+  .modal input{width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:7px;font-size:0.88rem;outline:none;margin-bottom:12px;transition:border-color 0.15s}
+  .modal input:focus{border-color:#7c3aed}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .modal-actions button{padding:8px 18px;border-radius:7px;font-size:0.85rem;font-weight:600;cursor:pointer;border:none;transition:background 0.15s}
+  .btn-cancel{background:#f3f4f6;color:#374151}.btn-cancel:hover{background:#e5e7eb}
+  .btn-save{background:#7c3aed;color:#fff}.btn-save:hover{background:#6d28d9}
+</style>
+</head><body>
+  <nav class="rail">
+    <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="rail-btn active" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+  </nav>
+  <div class="settings-shell">
+    <aside class="settings-sidebar">
+      <div class="sidebar-group"><div class="sidebar-section-label">Account</div>
+        <a class="sidebar-item" href="/settings">User profile</a>
+        <a class="sidebar-item" href="/settings">Organization profile</a>
+        <a class="sidebar-item" href="/settings">Apps</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">User management</div>
+        <a class="sidebar-item" href="/settings/users">Users and licenses</a>
+        <a class="sidebar-item" href="/settings/roles">Roles</a>
+        <a class="sidebar-item active" href="/settings/teams">Teams</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Pricing &amp; financing</div>
+        <a class="sidebar-item" href="/settings">Pricing defaults</a>
+        <a class="sidebar-item" href="/settings">Financing</a>
+        <a class="sidebar-item" href="/settings">Utility and tax rates</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Projects and designs</div>
+        <a class="sidebar-item" href="/settings">Statuses and warnings</a>
+        <a class="sidebar-item" href="/settings">Design</a>
+        <a class="sidebar-item" href="/settings">Financing integrations</a>
+        <a class="sidebar-item" href="/settings">Performance simulations</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">API</div>
+        <a class="sidebar-item" href="/settings">API tokens</a>
+        <a class="sidebar-item" href="/settings">Webhooks</a>
+      </div>
+      <div class="sidebar-group"><div class="sidebar-section-label">Plan sets</div>
+        <a class="sidebar-item" href="/settings">Contractor profiles</a>
+      </div>
+    </aside>
+    <main class="settings-main">
+      <div class="settings-header">
+        <h1>Teams</h1>
+        <button class="btn-add" onclick="openTeamModal()"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add team</button>
+      </div>
+      <div class="tm-search">
+        <div class="tm-search-input">
+          <svg width="15" height="15" fill="none" stroke="#9ca3af" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" placeholder="Search" id="teamSearch" oninput="filterTeams()"/>
+        </div>
+        <button class="tm-filter-btn" title="Filter">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="22,3 2,3 10,12.46 10,19 14,21 14,12.46"/></svg>
+        </button>
+      </div>
+      <table>
+        <thead><tr><th>Name \u2191</th><th>Users</th><th>Organization</th></tr></thead>
+        <tbody id="teamTableBody">${teamRows}</tbody>
+      </table>
+    </main>
+  </div>
+
+  <div class="modal-overlay" id="teamModal">
+    <div class="modal">
+      <h2>Add team</h2>
+      <label>Team name</label>
+      <input id="mTeamName" placeholder="Enter team name"/>
+      <label>Organization</label>
+      <input id="mTeamOrg" value="Team Sunshine"/>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeTeamModal()">Cancel</button>
+        <button class="btn-save" onclick="saveTeam()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function openTeamModal(){document.getElementById('teamModal').classList.add('open');document.getElementById('mTeamName').value='';document.getElementById('mTeamName').focus();}
+  function closeTeamModal(){document.getElementById('teamModal').classList.remove('open');}
+  document.getElementById('teamModal').addEventListener('click',function(e){if(e.target===this)closeTeamModal();});
+  function saveTeam(){
+    var name=document.getElementById('mTeamName').value.trim();
+    if(!name){alert('Team name is required');return;}
+    // For now just add to the table client-side
+    var tbody=document.getElementById('teamTableBody');
+    var org=document.getElementById('mTeamOrg').value.trim()||'Team Sunshine';
+    var tr=document.createElement('tr');tr.className='tm-row';
+    tr.innerHTML='<td style="font-weight:500">'+name+'</td><td>0</td><td>\\u2014 ('+org+')</td>';
+    tbody.appendChild(tr);closeTeamModal();
+  }
+  function filterTeams(){
+    var q=document.getElementById('teamSearch').value.toLowerCase();
+    var rows=document.querySelectorAll('.tm-row');
+    rows.forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)>=0?'':'none';});
+  }
+  </script>
+</body></html>`);
+});
+
+// ── Database page ─────────────────────────────────────────────────────────────
+app.get("/database", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Database — Solar CRM</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #fff; color: #111;
+      display: flex; height: 100vh; overflow: hidden;
+    }
+    .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+    .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0}
+    .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+    .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+
+    .db-topbar {
+      height: 48px; display: flex; align-items: center; justify-content: center;
+      border-bottom: 1px solid #e5e7eb; padding: 0 20px; flex-shrink: 0;
+      font-size: 0.9rem; font-weight: 600; color: #111; position: relative;
+    }
+    .db-topbar-right {
+      position: absolute; right: 20px; display: flex; align-items: center; gap: 14px;
+    }
+    .db-topbar-icon {
+      width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: #6b7280; transition: background 0.15s;
+    }
+    .db-topbar-icon:hover { background: #f3f4f6; }
+    .db-topbar-avatar {
+      width: 30px; height: 30px; border-radius: 50%; background: #7c3aed;
+      color: #fff; font-size: 0.7rem; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+    }
+
+    .db-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .db-body { flex: 1; display: flex; overflow: hidden; }
+
+    .db-sidebar {
+      width: 185px; flex-shrink: 0; border-right: 1px solid #e5e7eb;
+      overflow-y: auto; padding: 16px 0; background: #fafafa;
+      display: flex; flex-direction: column;
+    }
+    .db-sidebar-toggle {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 14px 14px; border-bottom: 1px solid #e5e7eb; margin-bottom: 6px;
+    }
+    .db-sidebar-toggle-label { font-size: 0.72rem; color: #6b7280; line-height: 1.3; }
+    .db-toggle {
+      width: 36px; height: 20px; background: #7c3aed; border-radius: 10px;
+      position: relative; cursor: pointer; border: none; flex-shrink: 0;
+    }
+    .db-toggle::after {
+      content: ''; position: absolute; top: 2px; left: 18px;
+      width: 16px; height: 16px; border-radius: 50%; background: #fff;
+      transition: left 0.15s;
+    }
+    .db-sidebar-group { padding: 0 10px; margin-bottom: 2px; }
+    .db-sidebar-group + .db-sidebar-group {
+      margin-top: 2px; padding-top: 10px; border-top: 1px solid #e5e7eb;
+    }
+    .db-sidebar-section {
+      font-size: 0.65rem; font-weight: 700; color: #b0b7c3;
+      text-transform: uppercase; letter-spacing: 0.6px; padding: 0 6px 5px;
+    }
+    .db-sidebar-item {
+      display: block; padding: 5px 8px; font-size: 0.82rem; color: #4b5563;
+      text-decoration: none; border-radius: 6px; cursor: pointer;
+      transition: background 0.1s, color 0.1s; margin-bottom: 1px;
+    }
+    .db-sidebar-item:hover { background: #ede9f6; color: #1a0828; }
+    .db-sidebar-item.active {
+      background: #ede9f6; color: #1a0828; font-weight: 600; position: relative;
+    }
+    .db-sidebar-item.active::before {
+      content: ''; position: absolute; left: -10px; top: 5px; bottom: 5px;
+      width: 3px; background: #7c3aed; border-radius: 0 2px 2px 0;
+    }
+    .db-sidebar-footer {
+      padding: 12px 16px; border-top: 1px solid #e5e7eb; margin-top: auto;
+    }
+    .db-sidebar-footer a { font-size: 0.8rem; color: #6b7280; text-decoration: none; }
+    .db-sidebar-footer a:hover { color: #7c3aed; }
+
+    .db-main { flex: 1; overflow-y: auto; padding: 28px 36px; }
+    .db-main-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px;
+    }
+    .db-main-header h1 { font-size: 1.5rem; font-weight: 700; }
+    .btn-request {
+      padding: 9px 18px; background: #111; color: #fff; border: none;
+      border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+    }
+    .btn-request:hover { background: #333; }
+
+    .db-search { width: 280px; padding: 9px 12px 9px 34px; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: #fafafa; outline: none; }
+    .db-search:focus { border-color: #7c3aed; background: #fff; }
+    .db-search-wrap { position: relative; margin-bottom: 18px; }
+    .db-search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; }
+
+    .db-tabs { display: flex; gap: 0; border-bottom: 1px solid #e5e7eb; margin-bottom: 18px; }
+    .db-tab {
+      padding: 10px 18px; font-size: 0.85rem; color: #6b7280; cursor: pointer;
+      border: none; background: none; font-weight: 500;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+    }
+    .db-tab:hover { color: #111; }
+    .db-tab.active { color: #111; font-weight: 700; border-bottom-color: #111; }
+
+    .db-empty { text-align: center; padding: 60px 20px; color: #9ca3af; }
+    .db-empty svg { margin-bottom: 12px; }
+    .db-empty-title { font-size: 1rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
+    .db-empty-sub { font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <nav class="rail">
+    <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="rail-btn active" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="rail-btn" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+  </nav>
+
+  <div class="db-shell">
+    <div class="db-topbar">
+      Database
+      <div class="db-topbar-right">
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="db-topbar-avatar">AB</div>
+      </div>
+    </div>
+
+    <div class="db-body">
+      <aside class="db-sidebar">
+        <div class="db-sidebar-toggle">
+          <div class="db-sidebar-toggle-label">Specify component<br/>availability</div>
+          <button class="db-toggle"></button>
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Components</div>
+          <a class="db-sidebar-item active">Modules</a>
+          <a class="db-sidebar-item">Inverters</a>
+          <a class="db-sidebar-item">DC optimizers</a>
+          <a class="db-sidebar-item">Combiner boxes</a>
+          <a class="db-sidebar-item">Load centers</a>
+          <a class="db-sidebar-item">Disconnects</a>
+          <a class="db-sidebar-item">Service panels</a>
+          <a class="db-sidebar-item">Meters</a>
+          <a class="db-sidebar-item">Batteries</a>
+          <a class="db-sidebar-item">Energy optimizations</a>
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Quoting</div>
+          <a class="db-sidebar-item">Proposal templates</a>
+          <a class="db-sidebar-item">Adders &amp; discounts</a>
+          <a class="db-sidebar-item">Financing products</a>
+          <a class="db-sidebar-item">Incentives</a>
+          <a class="db-sidebar-item">Utility rates</a>
+          <a class="db-sidebar-item">Agreement templates</a>
+          <a class="db-sidebar-item">Legacy agreement templates</a>
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Operations</div>
+          <a class="db-sidebar-item">Jurisdictions</a>
+          <a class="db-sidebar-item">Suppliers</a>
+          <a class="db-sidebar-item">Manufacturers</a>
+          <a class="db-sidebar-item">AHJ</a>
+        </div>
+        <div class="db-sidebar-footer"><a href="#">Contact support</a></div>
+      </aside>
+
+      <main class="db-main">
+        <div class="db-main-header">
+          <h1>Modules</h1>
+          <button class="btn-request">Request custom component</button>
+        </div>
+        <div class="db-search-wrap">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input class="db-search" type="text" placeholder="Search"/>
+        </div>
+        <div class="db-tabs">
+          <button class="db-tab active">All Modules</button>
+          <button class="db-tab">Enabled Modules</button>
+        </div>
+        <div class="db-empty">
+          <svg width="48" height="48" fill="none" stroke="#d1d5db" stroke-width="1.5" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+          <div class="db-empty-title">No modules yet</div>
+          <div class="db-empty-sub">Components will appear here once added.</div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>`);
+});
+
+// ── Roles settings page ──────────────────────────────────────────────────────
+app.get("/settings/roles", (req, res) => {
+  const ck = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#2d9d8f"/><path d="M8 12l3 3 5-5" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const dash = `<span style="color:#9ca3af;font-weight:600;">&mdash;</span>`;
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Roles &mdash; Solar CRM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#111;display:flex;height:100vh;overflow:hidden}
+  .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+  .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0}
+  .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+  .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+  .roles-shell{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  .roles-topbar{height:48px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e5e7eb;padding:0 40px;flex-shrink:0}
+  .roles-topbar-left{display:flex;align-items:center;gap:10px;font-size:0.9rem;font-weight:600}
+  .roles-topbar-left a{color:#6b7280;text-decoration:none;display:flex;align-items:center}
+  .roles-topbar-left a:hover{color:#111}
+  .roles-topbar-right{font-size:0.9rem;font-weight:600;color:#111}
+  .roles-main{flex:1;overflow-y:auto;padding:32px 60px 60px}
+  .role-title{display:flex;align-items:center;gap:12px;margin-bottom:32px}
+  .role-title h1{font-size:1.6rem;font-weight:700}
+  .role-badge{font-size:0.72rem;font-weight:600;border:1.5px solid #d1d5db;border-radius:4px;padding:2px 8px;color:#6b7280}
+  .perm-section-title{display:flex;align-items:center;gap:8px;font-size:0.95rem;font-weight:700;margin-bottom:20px}
+  .perm-group{margin-bottom:8px;border-bottom:1px solid #e5e7eb;padding-bottom:16px}
+  .perm-group:last-child{border-bottom:none}
+  .perm-group-header{display:flex;align-items:center;gap:6px;font-size:0.95rem;font-weight:700;cursor:default;padding:12px 0}
+  .perm-group-header svg{flex-shrink:0}
+  .pt-table{width:100%;border-collapse:collapse;margin-bottom:4px}
+  .pt-table th{text-align:left;padding:8px 12px;font-size:0.78rem;font-weight:600;color:#6b7280;background:#f9fafb;border-bottom:1px solid #e5e7eb}
+  .pt-table th.cc{text-align:center;width:90px}
+  .pt-table td{padding:12px;border-bottom:1px solid #f3f4f6;vertical-align:top}
+  .pt-table td.cc{text-align:center;vertical-align:middle}
+  .pt{font-weight:700;font-size:0.88rem;color:#111}
+  .pd{font-size:0.8rem;color:#6b7280;margin-top:2px;max-width:440px;line-height:1.4}
+  .pl{color:#2d9d8f;text-decoration:none;font-weight:500}
+  .pl:hover{text-decoration:underline}
+  .ps{padding-left:28px}
+  .perm-kv{display:flex;align-items:baseline;gap:24px;margin-bottom:6px}
+  .perm-kv-label{font-weight:700;font-size:0.88rem}
+  .perm-kv-val{font-size:0.88rem}
+  .perm-kv-desc{font-size:0.8rem;color:#6b7280;margin-bottom:12px}
+</style>
+</head><body>
+  <nav class="rail">
+    <div class="rail-logo"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="rail-btn active" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+  </nav>
+
+  <div class="roles-shell">
+    <div class="roles-topbar">
+      <div class="roles-topbar-left">
+        <a href="/settings"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></a>
+        Roles
+      </div>
+      <div class="roles-topbar-right">Admin</div>
+    </div>
+    <div class="roles-main">
+
+      <div class="role-title">
+        <h1>Admin</h1>
+        <span class="role-badge">Default</span>
+        <svg width="16" height="16" fill="none" stroke="#9ca3af" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      </div>
+
+      <div class="perm-section-title">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+        Permissions
+      </div>
+
+      <div class="perm-kv"><span class="perm-kv-label">Project access level</span><span class="perm-kv-val">All-access</span></div>
+      <div class="perm-kv-desc">Determines how users in this role can access projects in their teams and organizations.</div>
+
+      <table class="pt-table" style="margin-bottom:16px;">
+        <thead><tr><th>All-access</th><th class="cc">All partners</th><th class="cc">Tenant</th></tr></thead>
+        <tbody><tr><td>Users in this role have access to projects in...</td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr></tbody>
+      </table>
+
+      <!-- Services -->
+      <div class="perm-group">
+        <div class="perm-group-header">Services <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg></div>
+        <table class="pt-table">
+          <thead><tr><th>Feature access</th><th class="cc">Enabled</th></tr></thead>
+          <tbody><tr><td><div class="pt">EagleView Powered Models</div><div class="pd">Allow users in this role to request and accept EagleView Powered Models.</div></td><td class="cc">${ck}</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Project features and content -->
+      <div class="perm-group">
+        <div class="perm-group-header">Project features and content <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg></div>
+        <table class="pt-table">
+          <thead><tr><th>Project management</th><th class="cc">Create</th><th class="cc">(re)Assign</th><th class="cc">Edit</th><th class="cc">View</th></tr></thead>
+          <tbody><tr><td><div class="pt">Projects</div><div class="pd">Users in this role can edit <strong>all</strong> projects in teams and organizations.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr></tbody>
+        </table>
+        <table class="pt-table">
+          <thead><tr><th>Content access</th><th class="cc">Edit</th><th class="cc">View</th></tr></thead>
+          <tbody>
+            <tr><td><div class="pt">Pricing</div><div class="pd">Users in this role can view and edit pricing data shown in projects, Design Mode, and Sales Mode.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Financing settings</div><div class="pd">Users in this role can view and edit financing settings in Design Mode and Sales Mode.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Design Mode</div><div class="pd">Users in this role can view and edit designs in Design Mode. Users with edit access can view all site models in a project.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Site model</div><div class="pd">Users in this role can edit the site model in Design Mode.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Sales Mode site and system design</div><div class="pd">Users in this role can edit site and system designs in Sales Mode, including requesting an expert model, editing panels and ground mounts, toggling panels, and, if purchased, running Aurora AI.<br><br><span style="color:#6b7280">Users without edit access can still see and toggle the view layers of 3D designs in their proposal templates.</span></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Utility rate adjustments</div><div class="pd">Users in this role can adjust utility rates in projects, Design Mode, and Sales Mode.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Energy usage</div><div class="pd">Users in this role can adjust energy usage in Sales Mode.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Database -->
+      <div class="perm-group">
+        <div class="perm-group-header">Database <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg></div>
+        <table class="pt-table">
+          <thead><tr><th>Page access in Database</th><th class="cc">Edit</th><th class="cc">View</th></tr></thead>
+          <tbody>
+            <tr><td><div class="pt">Components</div><div class="pd">Components pages, including: Modules, Inverters, DC optimizers, Combiner boxes, Load centers, Disconnects, Service panels, Meters, Batteries, and Energy optimizations.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Quoting</div><div class="pd">Quoting pages: Adders and discounts, Financing products, and Utility rates.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Proposal templates</div></td><td class="cc">${dash}</td><td class="cc">${dash}</td></tr>
+            <tr><td class="ps"><div class="pt">Edit</div><div class="pd">Create and edit disabled proposal templates. (Only Account Admins can enable templates.)</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Set default</div><div class="pd">Set enabled templates as their organization's default proposal template.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Operations</div><div class="pd">Operations pages: Jurisdictions, Suppliers, Manufacturers, AHJ, and Utilities.</div></td><td class="cc">${dash}</td><td class="cc">${dash}</td></tr>
+            <tr><td class="ps"><div class="pt">AHJ</div><div class="pd">Users in this role can view AHJ data. Only Admins can edit AHJs and request changes. View <a class="pl" href="/database">AHJ</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Utilities</div><div class="pd">Users in this role can view Utilities data. Only Admins can edit Utilities and request changes. View <a class="pl" href="/database">Utilities</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Settings -->
+      <div class="perm-group">
+        <div class="perm-group-header">Settings <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg></div>
+        <table class="pt-table">
+          <thead><tr><th>Page access in Settings</th><th class="cc">Edit</th><th class="cc">View</th></tr></thead>
+          <tbody>
+            <tr><td><div class="pt">Account</div><div class="pd">Account pages: User profile, Organization profile, Billing, On-demand services, and Integrations.</div></td><td class="cc">${dash}</td><td class="cc">${dash}</td></tr>
+            <tr><td class="ps"><div class="pt">User profile</div><div class="pd">All users have access to their own user profile. Only Admins can set the license type and role of another user. View <a class="pl" href="/settings">User profile</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Organization profile</div><div class="pd">Only users in an Admin role can view and edit their Organization profile. View <a class="pl" href="/settings">Organization profile</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">User management</div><div class="pd">User management pages: Users and licenses, Roles, and Teams.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Users and licenses</div><div class="pd">Create and edit users. View <a class="pl" href="/settings/users">Users and licenses</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Roles</div><div class="pd">Create and edit user roles. View <a class="pl" href="/settings/roles">Roles</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Teams</div><div class="pd">Assign users to a team. View <a class="pl" href="/settings/teams">Teams</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Documents</div><div class="pd">Documents pages: Sales agreements and PDF proposals pages.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Pricing &amp; financing</div><div class="pd">Pricing and financing pages: Pricing defaults, Utility and tax rates, Financing defaults, and Financing integrations.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Projects and designs</div><div class="pd">Project and designs pages: Status and warnings, Design defaults, Performance simulations, and Sales Mode customization.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">API</div><div class="pd">API pages: API tokens and Webhooks.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td><div class="pt">Plan sets</div><div class="pd">Contractor profiles.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
 </body></html>`);
 });
 

@@ -49,7 +49,7 @@ The project needs a Google Maps API key to show satellite images.
 
 ```
 GOOGLE_API_KEY=your_google_maps_api_key_here
-PORT=3000
+PORT=3001
 ```
 
 Replace `your_google_maps_api_key_here` with your actual Google Maps API key.
@@ -57,7 +57,7 @@ Replace `your_google_maps_api_key_here` with your actual Google Maps API key.
 **How to get a Google Maps API key:**
 - Go to https://console.cloud.google.com
 - Create a project (or select an existing one)
-- Enable the **Maps JavaScript API** and **Maps Static API**
+- Enable the **Maps JavaScript API**, **Maps Static API**, and **Solar API**
 - Go to Credentials → Create credentials → API key
 - Copy the key into your `.env` file
 
@@ -80,7 +80,7 @@ npm start
 You should see output like:
 
 ```
-Server running on http://localhost:3000
+Server running on http://localhost:3001
 ```
 
 ---
@@ -90,10 +90,24 @@ Server running on http://localhost:3000
 Open your browser and go to:
 
 ```
-http://localhost:3000
+http://localhost:3001
 ```
 
-You should see the CRM home page.
+You should see the login page.
+
+---
+
+## 7. Log in
+
+Use one of these accounts:
+
+| Username | Password | Role |
+|---|---|---|
+| `admin` | `admin123` | Admin |
+| `juliana` | `juliana123` | Team Member |
+| `marcus` | `marcus123` | Team Member |
+
+Check "Remember me" to stay logged in for 30 days.
 
 ---
 
@@ -110,5 +124,5 @@ Press `Ctrl + C` in the terminal to stop the server.
 | `node: command not found` | Node.js is not installed — go to step 1 |
 | `Cannot find module 'express'` | Run `npm install` in the project folder |
 | Satellite images not loading | Check your `GOOGLE_API_KEY` in the `.env` file |
-| Port already in use | Change `PORT=3000` to `PORT=3001` in `.env` and visit `http://localhost:3001` |
+| Port already in use | Change `PORT=3001` to another port in `.env` and visit that port |
 | `.env` file not working | Make sure the file is named exactly `.env` (no `.txt` extension) |

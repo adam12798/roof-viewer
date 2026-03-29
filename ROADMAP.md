@@ -4,34 +4,349 @@
 
 ## Planned (Future)
 
-### 3D CAD & LiDAR (Phase 2-3)
-- **Per-pixel flux heatmap** — Render Google Solar flux GeoTIFF directly on the map as a true shade/sun overlay (currently using approximated polygons).
-- **LAZ file processing** — Server-side LAZ decoding for full USGS 3DEP point cloud support (currently limited to Entwine streaming).
-- **Snap-to-point roof tracing** — Trace ridge, hip, valley, eave lines by snapping to LiDAR building points.
-- **Auto-detect roof planes** — Algorithmically detect roof planes from point cloud geometry.
-- **Obstruction detection** — Auto-mark vents, chimneys, trees with real heights from LiDAR/DSM.
-- **Shadow simulation** — Animate shadows at any time/date using real tree/structure heights + sun position math.
-- **3D panel placement** — Place solar panels on the 3D roof model with snap-to-ridge alignment.
-- **Export measurements** — Export roof dimensions and CAD data for permit drawings.
+### Shading Engine (5 phases)
+
+**Phase 1 — Google Solar Production (quick win, ~1 session)**
+- Replace flat `kW × 1400 kWh` estimate with per-segment sunshine hours from Google Solar API
+- Match drawn panels to nearest roof segment by centroid proximity
+- Per-segment formula: `panelCount × 0.4kW × (segmentSunHours / 1000) × derateFactor`
+- Update monthly distribution from fixed percentages → Google's monthly flux ratios
+- Wire real numbers into Production Panel + Sales Mode
+
+**Phase 2 — PVWatts API (~1 session)**
+- Integrate NREL PVWatts API (free key from developer.nrel.gov)
+- New endpoint: `GET /api/pvwatts?lat=&lng=&systemSize=&tilt=&azimuth=`
+- Returns monthly AC output with real system losses, inverter efficiency, temperature derating, soiling
+- Use per-segment tilt/azimuth from drawn panels
+- Cache response per project to avoid redundant API calls
+- Industry-standard numbers that customers/installers trust
+
+**Phase 3 — Flux Map Heatmap Overlay (~2 sessions)**
+- Parse Google Solar monthly flux GeoTIFFs server-side (URLs already fetched via data-layers endpoint)
+- New endpoint: `GET /api/solar/flux?lat=&lng=` → per-pixel annual irradiance array + bbox
+- Render as colored texture on 3D ground plane (red=high sun, blue=low sun)
+- Toggle via existing "Annual flux" button in shade panel
+- Optional: month slider to animate Jan→Dec flux maps
+
+**Phase 4 — LiDAR Shadow Casting (~3-4 sessions)**
+- Sun position calculation from lat/lng + date/time (SunCalc.js or similar)
+- Ray-cast from each roof point toward sun through LiDAR point cloud
+- If ray hits tree/obstruction → roof point is shaded at that hour
+- Run for representative days (solstices + equinoxes) at hourly intervals
+- Generate annual shade map: % of year each point is shaded
+- Reduce panel production by per-panel shade percentage
+- Enables "remove tree" analysis (delete tree points → recalculate)
+
+**Phase 5 — Time-of-Day Shade Animation (~1 session)**
+- Time slider to scrub through hours of the day
+- Shadow polygons projected from obstructions onto ground/roof
+- Real-time sun position updates shadow direction
+- Monthly selector for seasonal variation
+
+### CAD Engine & Equipment Catalog (6 phases)
+
+**Phase 1 — Equipment Catalog & Database Page (~1 session)**
+- New `data/equipment.json` with real specs: modules, inverters, DC optimizers, batteries
+- Seed data: 8-12 modules (Canadian Solar, REC, Jinko, Trina, Q CELLS, SunPower, LONGi, 370W-450W range), 4-6 inverters (SolarEdge SE7600H/SE10000H, Enphase IQ8M/IQ8A, SMA Sunny Boy), 3 optimizers (SolarEdge P401/P505/P700), 4 batteries (Tesla Powerwall 3, Enphase IQ Battery 5P, LG ESS, SolarEdge Home Battery)
+- Module fields: manufacturer, model, wattage, width/height (m), efficiency, Vmp/Imp/Voc/Isc, tempCoeff, costPerWatt
+- Inverter fields: manufacturer, model, type (string/micro/hybrid), ratedPower, maxDcInput, MPPT channels, max string size, cost
+- CRUD endpoints: `GET/POST/PUT/DELETE /api/equipment/:category[/:id]`
+- Wire up existing `/database` page — render real data in tables, toggle enable/disable, search/filter
+
+**Phase 2 — Module Selection in Design Tool (~1 session)**
+- Module dropdown in right panel System tab (above Setbacks) showing enabled modules
+- Replace hardcoded `1.0m × 1.7m / 400W / $2,300/kW` with selected module specs
+- `fillPanels3d()` uses `currentModule.width/height/wattage` dynamically
+- Panel count, system kW, and cost recalculate on module change
+- Save `moduleId` with design — load correct module on design open
+- Portrait/landscape orientation toggle swaps width/height
+
+**Phase 3 — Inverter, Optimizer & Stringing (~2 sessions)**
+- Inverter + optimizer dropdowns in System tab (below Module)
+- String sizing logic: max panels per string from `inverter.maxInputVoltage / module.Vmp` (temperature-adjusted via ASHRAE min temp + tempCoeff)
+- DC/AC ratio validation (warn if too high)
+- AutoStringer: auto-assign panels to strings, color-code by string in 3D view
+- Manual string: click panels to assign to active string
+- String summary in right panel: per-string panel count, voltage, power
+- Save `inverterId`, `optimizerId`, `strings[]` with design
+
+**Phase 4 — Obstruction & Tree Tools (~1 session)**
+- Wire up existing obstruction submenu items (rectangle, circle, polygon, chimney, vent, skylight, etc.)
+- Drawing modes: click-drag for rect/circle, click-to-place for polygon
+- Preset shapes with default dimensions (chimney 0.6m², vent 0.3m diameter, etc.)
+- Panel exclusion: `fillPanels3d()` skips panels overlapping obstructions (with setback buffer)
+- Tree tool: circular obstruction with canopy radius + height (shade casting connects to Shading Engine Phase 4)
+- Save `obstructions[]` with design
+
+**Phase 5 — Roof Modeling Improvements (~1-2 sessions)**
+- Roof face properties panel on segment select: editable tilt, azimuth, area, roof type label
+- 3D tilt rendering: rotate segment group by pitch angle in Three.js
+- Snap-to-point: click near LiDAR building points to snap vertices to real roof edges
+- SmartRoof (stretch): basic RANSAC plane detection on building-classified LiDAR points → auto-create segments
+- LAZ file processing for full USGS 3DEP point cloud support
+
+**Phase 6 — BOM Generation (~1 session)**
+- `generateBOM()` computes full bill of materials from design equipment + panel count
+- Includes: modules × count, inverters × computed quantity, optimizers × count (if applicable), racking estimate, wiring, disconnects
+- New endpoint: `GET /api/projects/:id/designs/:designId/bom`
+- BOM tab in production panel dropdown (alongside Production + Bill Savings)
+- Table: component, manufacturer, model, qty, unit cost, line total + grand total
+- Export CSV button
+- New Sales Mode slide: "System Components" showing BOM table
+- System cost derived from BOM total (replaces hardcoded `kW × $2,300`)
+
+**Dependency chain:**
+```
+Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM)
+                                       → Phase 4 (Obstructions) — independent
+                                       → Phase 5 (Roof Modeling) — independent
+```
+
+### Other CAD Features
+- **3D panel placement** — Place solar panels on the 3D roof model with snap-to-ridge alignment
+- **Export measurements** — Export roof dimensions and CAD data for permit drawings
+- **Setbacks — live enforcement** — Apply setback values from System settings to roof segment drawing in real time
 
 ### Design Tool
-- **Production panel — live data** — Wire panel count, annual energy, and energy offset to live system calculations (currently mock data). Depends on shading engine.
 - **Bill savings tab** — Build out the Bill savings view in the production panel dropdown.
-- **Flyout submenus — functionality** — Connect Panels (Modules, Ground mounts) and String/connect (AutoStringer, Manual string) flyout items to actual design actions.
-- **Setbacks — live enforcement** — Apply setback values from the System settings panel to roof segment drawing in real time.
 - **Simulate system** — Connect the Simulate system button to a real simulation backend.
 
 ### Settings
 - **Edit mode** — Hook up the Edit button on the User Profile settings page to persist real profile updates.
-- **Organization profile, Apps, Users & licenses, Roles, Teams** — Build out remaining sidebar settings pages.
+- **Organization profile, Apps** — Build out remaining sidebar settings pages (Roles done in Session 14, Teams done in Session 19).
 - **API tokens & Webhooks** — Implement token management and webhook configuration.
 
 ### Routing & Navigation
-- **70 non-functional clickable elements identified** — Full audit in `ROUTING.md`. Includes dead `href="#"` links, buttons with no onclick handlers, placeholder alerts, broken redirects (`/crm` → should be `/`), styled dropdowns with no logic, and editable inputs that never save. Covers nav drawer, left rail, CRM context menu, project detail (all tabs), sales mode CTA, and settings sidebar.
+- **53 non-functional clickable elements remain** (18 of 71 fixed) — Full audit in `ROUTING.md`. Nav drawer fully fixed. Remaining: dead `href="#"` links, buttons with no onclick handlers, placeholder alerts, styled dropdowns with no logic, and editable inputs that never save. Covers left rail, CRM context menu, project detail (most tabs), sales mode CTA, and settings sidebar.
 
 ### CRM / Projects
 - **Project pipeline stages** — Move projects through stages beyond "Remote Assessment".
 - **Milestone timeline** — Build out the milestones/timeline system accessible from the design tool right panel.
+- **Customer profile editing** — Save edits from the customer profile tab back to project data.
+- **Assignee management** — Assign team members to projects (currently hardcoded to "Juliana Imeraj"). CRM Reassign has API but frontend still placeholder.
+- **AHJ lookup** — Wire up real city/county Authority Having Jurisdiction lookup.
+- **Activity log** — Timeline of changes on each project.
+
+### Sales Mode
+- **Proposal PDF export** — Generate a printable proposal from a design.
+- **Financing options** — Show loan, lease, PPA payment estimates.
+- **Bill comparison chart** — Current bill vs. projected bill with solar.
+
+### Documents
+- **File upload/download** — Upload and manage permits, contracts, proposals on the Documents tab.
+
+### Infrastructure
+- **Persistent storage** — Migrate from JSON files to SQLite or Postgres.
+- **File storage** — For drone images, documents, proposal PDFs.
+
+### Polish / UX
+- **Mobile responsiveness** — App is desktop-only.
+- **Empty states** — Design cards with `$0.00` need helpful messaging.
+- **Loading / error states** — Map load, API failures, bad addresses.
+- **Undo / Redo** — Toolbar buttons exist in design tool but need history stack.
+
+---
+
+## Completed — 2026-03-28 (Session 19)
+
+### Calibrate Icon Fix
+- Calibrate button no longer starts green on page load — only turns green after user actively completes calibration in-session
+- Removed server-side `tb2-calibrated` class from initial render
+- Removed green class application from `applyCalibration()` (which fires on saved data load)
+- Green class now only applied in the save handler when user confirms calibration points
+
+### ViewCube Reorientation
+- Front face (default visible): TOP (was S)
+- Back face: BOT (was B)
+- Top face: N (was TOP)
+- Bottom face: S (was BOT)
+
+### Settings — Teams Page
+- New `/settings/teams` route with dedicated Teams page
+- "Add team" button (purple, top right) matching Users page pattern
+- Teams table built dynamically from user data (team assignments)
+- Search bar and filter icon
+- Add team modal with name and organization fields
+- All sidebar "Teams" links updated to `/settings/teams`
+
+### LiDAR Viewer Cleanup
+- Removed LiDAR legend overlay (ground/building/vegetation/high point color key)
+
+---
+
+## Completed — 2026-03-28 (Session 18)
+
+### Calibration System — Restored
+- Calibration code lost due to accidental `git checkout -- server.js` (uncommitted work from Sessions 13/15)
+- Rebuilt: full-screen calibration overlay (LiDAR/Satellite/Side-by-Side tabs), zoom/pan, control point placement
+- Rebuilt: `GET/PUT /api/projects/:id/calibration` endpoints
+- Rebuilt: auto-prompt on first LiDAR load, silent apply on revisit, green icon indicator
+- Rebuilt: 4-DOF similarity transform solver (least-squares), applied to ground plane alignment
+- Calibrate button added to drawing toolbar (next to LiDAR)
+
+---
+
+## Completed — 2026-03-28 (Session 17)
+
+### Roles — Full Permission Profiles
+- Added Proposal Manager, Sales Manager, Sales Rep, Team Manager permission profiles
+- Each role has distinct access levels (Assigned-only vs Assigned and team-enabled)
+- All 8 roles now have complete permission matrices
+
+### LiDAR Viewer — Height-Based Colors & Near-Orthographic Camera
+- Aurora-style height gradient: dark blue (ground) → teal → green → yellow → red (tallest), 0-45ft range
+- Switched to narrow FOV (5°) PerspectiveCamera at 800 units — near-orthographic eliminates parallax shift
+- Points render in screen-space pixels (`sizeAttenuation: false`) for consistent visibility at any camera distance
+- LiDAR opens top-down by default; user can still tilt via ViewCube
+
+### Missing API Routes
+- Added `GET /api/geocode` and `GET /api/satellite` — were referenced by client code but never defined as Express routes
+
+---
+
+## Completed — 2026-03-28 (Session 16)
+
+### Tree Placement Tool
+- Trees menu item in left panel Site tab activates tree placement mode (click or press T)
+- Click ground plane to place tree center, drag outward to set canopy radius
+- On release, tree height auto-snaps to LiDAR DSM elevation data (samples max elevation in canopy radius)
+- Tree rendered as brown cylinder trunk (bottom 30%) + green sphere canopy (top 70%)
+- Escape key or re-clicking Trees exits tree mode
+- Elevation grid stored globally from LiDAR load for height queries
+- OrbitControls disabled during tree mode to prevent pan conflicts
+
+### ViewCube Labels
+- Bottom face label changed from "BTM" to "BOT"
+- Cardinal directions reoriented: front=S, back=N, left=W, right=E (die-on-table perspective)
+
+### Known Issue — Pan Sensitivity
+- Left-click pan (OrbitControls) sensitivity does not respond to `panSpeed` changes
+- Root cause: camera uses FOV 50 at Y=80 but OrbitControls pan math may be dominated by internal distance calculations or the pan handler may not be the one actually executing (multiple overlapping mousedown listeners on canvas)
+- `panSpeed` was tested at values from 0.01 to 4.0 with no visible effect
+- Spacebar+drag custom pan has separate scale factor (`dist / 60000`) — also needs tuning
+- **Needs investigation**: check if OrbitControls is actually handling the pan (vs one of the custom mousedown handlers intercepting first), check Three.js version's pan implementation, consider replacing OrbitControls pan entirely with a from-scratch raycaster-based pan
+
+---
+
+## Completed — 2026-03-28 (Session 15)
+
+### Calibration UX Overhaul
+- Full-screen single-image calibration view replacing cramped side-by-side layout
+- Tab switcher: LiDAR Image / Satellite Image / Side by Side — each view fills available space
+- Zoom: scroll wheel (gentle sensitivity), +/− buttons, Fit reset, up to 10x magnification
+- Pan: Space+drag to pan around zoomed image, cursor changes to grab hand
+- Crosshair overlay for precise point placement
+- Unlimited calibration points (minimum 4) — more points = better least-squares accuracy
+- Dynamic UI shows point count, target matching, and confirm button with pair count
+- Markers and connecting lines scale inversely with zoom to stay readable at any level
+- Auto-switches to Satellite tab after 4 LiDAR points; designer can freely switch back to add more
+- Polygon closes at 3+ points for visual feedback
+
+### Calibration Workflow Improvements
+- Auto-loads LiDAR on design page entry — no need to click LiDAR button first
+- Auto-prompts calibration if no saved calibration exists for the project
+- Saved calibrations silently applied on subsequent visits (no re-prompt)
+- Calibrate button moved from drawing toolbar to top toolbar (next to LiDAR button)
+- Calibrate icon turns green when calibration is active/applied
+
+### Layout
+- ViewCube moved from bottom-left to bottom-right
+
+---
+
+## Completed — 2026-03-28 (Session 14)
+
+### LiDAR Viewer — Aurora-Style Restyle
+- Teal/cyan/blue color palette replacing height-based rainbow (matches Aurora Solar look)
+- Round circle sprite points with dynamic world-space sizing based on camera distance
+- Reduced point density for cleaner appearance; removed legend overlay
+
+### Nav Rail Redesign
+- Rail matches expanded drawer: logo (opens drawer), Projects, Database, Settings, Partners
+- Consistent across all pages
+
+### Partners Section
+- `/partners` list page with 14 sample partners, search, type/status columns
+- `/partners/new` 3-step wizard (Create org → Customize settings → Add users/teams)
+
+### Settings — Users & Roles
+- `/settings/users/:uid` user detail page with real data from users.json
+- `/settings/roles` list page with 8 roles and metadata columns
+- `/settings/roles/:roleName` detail page with full permissions matrix (Y/N/D indicators, collapsible sections)
+- Permission profiles for Admin, Team Member, Limited Team Member, Commercial Partner
+
+### Misc Fixes
+- Design page nav submenu persistence fix (closeAllSubmenus on tab switch)
+- Removed top bar `···` menu button on project profile (kept sidebar one)
+
+---
+
+## Completed — 2026-03-28 (Session 13)
+
+### Satellite/LiDAR Alignment — Projection & Calibration
+- Web Mercator projection replaces equirectangular approximation in `geoToLocal`/`localToGeo`
+- Ground plane sizing fixed (removed `cos(lat)` factor causing scale mismatch)
+- Texture swap on existing plane (no replacement) — eliminates 20ft positional shift bug
+- `computeAlignmentUVs` rewritten for Mercator-consistent UV mapping; NCC search window widened to ±32px
+- `/api/imagery/info` returns `projection` field per provider (webmercator, ortho)
+
+### Manual 2D Calibration System
+- Mandatory calibration overlay on first LiDAR load (skipped if saved calibration exists)
+- Side-by-side canvases: Google Maps satellite + Solar API co-registered RGB
+- User marks 4+ matching house corners — numbered markers with connecting lines
+- Auto-detected roof corners from LiDAR (convex hull of building-class points, angle filtering)
+- Similarity transform solver (4-DOF: translation + scale + rotation) via least-squares
+- Transform applied to ground plane for pixel-perfect alignment
+- Re-calibrate toolbar button for adjustments
+- Calibration persisted per project via `GET/PUT /api/projects/:id/calibration`
+
+---
+
+## Completed — 2026-03-28 (Session 12)
+
+### 3D Viewer — Navigation & Alignment
+- ViewCube tilt bug fixed (heading locked at 0° tilt)
+- Spacebar + drag pans camera parallel to ground plane
+- High-res satellite imagery aligned to LiDAR via analytical UV mapping + NCC cross-correlation refinement
+- Ground plane sized to LiDAR bbox with custom UVs — no more independent size calculations drifting apart
+- Solar API co-registered RGB used as ground truth for sub-pixel alignment correction
+- Server uses actual GeoTIFF resolution instead of hardcoded 0.5m pixel assumption
+- Provider-agnostic: alignment works with any imagery source (Google, Nearmap, EagleView)
+
+---
+
+## Completed — 2026-03-28 (Session 10)
+
+### LiDAR Viewer — Major UX Overhaul
+- Point cloud density 2-3x increased via sub-pixel interpolation and reduced ground thinning
+- Height-based color scale: blue → green → orange → red (with ft thresholds at 40/80/90 ft)
+- ViewCube fully integrated in LiDAR mode — same drag/click/slider behavior as 2D map
+- All navigation through ViewCube (disabled direct canvas OrbitControls for consistent UX)
+- Camera syncs from 2D map perspective on LiDAR open (tilt, heading, zoom)
+- Loading overlay with blur + spinner replaces blank blue screen during data fetch
+- Satellite ground plane matches viewer aspect ratio at zoom 20 (high-res, same as 2D map)
+- LiDAR button moved to top-left nav menu (removed from bottom toolbar)
+- Scroll-to-zoom on 3D canvas
+
+---
+
+## Completed — 2026-03-27 (Session 9)
+
+### Authentication & Users
+- **Login system** — Login page at `/login`, session cookie auth (persisted to `data/sessions.json`), 30-day remember-me, `/logout` route
+- **User data model** — `data/users.json` with 6 users (admin, juliana, marcus, sarah, derek, lisa) — username/password/role/team/license/status
+- **Users & Licenses settings page** — `/settings/users` with user table, summary stats, Add/Edit modal with full CRUD via `/api/users` endpoints
+- **Profile uses logged-in user** — Settings user profile page dynamically shows the authenticated user's data
+- **Nav drawer & design tool dropdowns** — "My profile" → `/settings`, "Logout" → `/logout` wired up
+
+### UI Improvements
+- **Rename modal** — CRM row menu and project detail sidebar rename now open a centered modal (matching Aurora UI) instead of browser `prompt()`
+- **ViewCube face labels fixed** — Swapped N/S/E/W to match actual rotation heading; removed CSS transition that caused spinning correction
+- **Design tool Site tab** — New Site tab (default) with Roof, Obstructions, Trees, Components menu items and flyout submenus; house icon; System tab unchanged
+- **Routing audit** — `ROUTING.md` created with 70 non-functional clickable elements catalogued across all pages
+
+### Settings
+- **Users & licenses sidebar link** — Now routes to `/settings/users` instead of dead `/settings` link
 
 ---
 
