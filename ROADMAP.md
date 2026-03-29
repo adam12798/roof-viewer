@@ -139,11 +139,79 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - **Persistent storage** — Migrate from JSON files to SQLite or Postgres.
 - **File storage** — For drone images, documents, proposal PDFs.
 
+### Theme Redesign — "Solar Warmth" (full reskin)
+
+**Color palette overhaul:**
+- Primary: burnt orange `#e8682a` replacing purple `#7c3aed`
+- Secondary: teal `#0ea5a0` replacing blue `#4a90e2`
+- Sidebar/rail: warm charcoal `#1c1917` replacing cold purple `#1a0828`
+- Logo gradient: orange→amber (`#e8682a` → `#f59e0b`) replacing purple→indigo
+- Page backgrounds: warm off-white `#fafaf9`, warm dark `#171412`
+- Borders/text: warm stone tones replacing cool grays
+- CSS custom properties (`:root` vars) for single source of truth
+
+**Fun personality (Claude-style):**
+- 20 solar-themed loading quips rotating randomly ("Soaking up some sunshine...", "Consulting the sun gods...", "Convincing electrons to cooperate...", etc.)
+- Playful micro-copy: "Welcome back" login, "Let's go" button, fun empty states ("Every solar journey starts with a single rooftop")
+- No search results: "No matches -- try casting a wider net"
+
+**Typography:**
+- Inter font (Google Fonts) replacing system font stack
+- Bolder heading weights (800), tighter letter-spacing
+
+**Animations:**
+- `fadeUp` on page content load (opacity + translateY)
+- Button `:active` scale(0.97) for tactile feel
+- Sidebar logo hover scale(1.08)
+- Pulsing dot animation for loading states
+
+**Visual refinements:**
+- Warmer shadows: `rgba(28,25,23,...)` replacing `rgba(0,0,0,...)`
+- Standardized border-radius: 6/8/12/16px tiers
+- Card hover borders shift to brand orange
+- Focus rings use warm orange glow
+
+**Scope:** All 8 pages (login, dashboard, new project, project detail, design mode, sales slideshow, settings + sub-pages, database). Layout stays the same — colors, typography, copy, and animations only.
+
 ### Polish / UX
 - **Mobile responsiveness** — App is desktop-only.
 - **Empty states** — Design cards with `$0.00` need helpful messaging.
 - **Loading / error states** — Map load, API failures, bad addresses.
 - **Undo / Redo** — Toolbar buttons exist in design tool but need history stack.
+
+---
+
+## Completed — 2026-03-29 (Session 20)
+
+### LiDAR Calibration — Complete Rewrite
+- **Root cause fix**: calibration was computing transforms in raw pixel space then applying to meter-space 3D scene, causing ~100x scale distortion
+- Pixel-to-meter conversion in `calibPinsToWorld` now uses `satExtentM` and `rgbBbox` for correct coordinate mapping
+- Fixed DSM vs RGB bbox mismatch: server now computes separate `rgbBbox` from RGB GeoTIFF dimensions
+- Calibration now moves the LiDAR point cloud (not the satellite ground plane) — satellite stays fixed as reference frame
+- Replaced similarity transform with translation-only offset (both systems already in meters, scale/rotation unnecessary)
+- Added `version: 2` field to calibration data; auto-load ignores old corrupt pixel-space calibrations
+- Cleared all legacy corrupt calibration data from projects.json
+
+### Cache Busting
+- `BUILD_VERSION = Date.now()` constant at server start
+- `/api/version` endpoint returns current server version
+- Design page JS auto-reloads if page version doesn't match server version (eliminates stale cached code)
+- Aggressive cache headers: `no-store, no-cache, must-revalidate` + `Pragma: no-cache` + `Expires: 0`
+
+### LiDAR Point Cloud Improvements
+- Grid density increased from 121×121 (14.6k points) to 161×161 (25.9k points)
+- Point size increased from 2.0 to 4.5 for better visibility when zoomed out
+- Ground plane lowered to Y=-0.5 to prevent z-fighting without visible gap from side views
+
+### 3D ViewCube — Fully Functional
+- **Draggable orbiting**: click-drag on the cube orbits the 3D camera (horizontal=rotate, vertical=tilt)
+- Drag sensitivity matched to 2D map viewcube: horizontal 0.6 deg/px, vertical 0.3 deg/px
+- Tilt range 0-80° matching 2D cube
+- Face clicks: side views keep current tilt (bump to 30° if near flat), top resets to top-down, bottom goes to 80°
+- Double-click resets to top-down view
+- `stopPropagation` on all mouse/pointer events prevents OrbitControls interference
+- Drag vs click distinguished by 3px movement threshold
+- Repositioned above zoom controls (bottom: 120px) with z-index: 50
 
 ---
 

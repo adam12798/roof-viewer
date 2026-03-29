@@ -5,6 +5,33 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-29 (Session 21)
+
+### LiDAR Calibration Rewrite
+- [x] Fixed pixel-to-meter conversion in `calibPinsToWorld` — was computing in pixel space, causing 100x scale blowup
+- [x] Fixed DSM vs RGB bbox mismatch — server returns separate `rgbBbox` from RGB GeoTIFF dimensions
+- [x] Calibration now moves LiDAR point cloud instead of satellite ground plane
+- [x] Replaced similarity transform with translation-only offset (no scale/rotation needed)
+- [x] Added `version: 2` calibration format; auto-load ignores old corrupt data
+- [x] Cleared all legacy pixel-space calibration data from projects.json
+
+### Cache Busting
+- [x] `BUILD_VERSION` timestamp + `/api/version` endpoint + auto-reload on stale page
+- [x] Aggressive no-cache headers on design page
+
+### LiDAR Point Cloud
+- [x] Grid density: 121×121 → 161×161 (14.6k → 25.9k points)
+- [x] Point size: 2.0 → 4.5 for better zoomed-out visibility
+- [x] Ground plane lowered to Y=-0.5 to prevent z-fighting
+
+### 3D ViewCube — Fully Functional
+- [x] Draggable orbiting: click-drag orbits camera (matches 2D viewcube sensitivity)
+- [x] Face clicks: snap to preset views, keep tilt for side views
+- [x] Double-click: reset to top-down
+- [x] Repositioned above zoom controls, z-index 50, stopPropagation for event isolation
+
+---
+
 ## Completed — 2026-03-28 (Session 20)
 
 ### UI Cleanup & Navigation

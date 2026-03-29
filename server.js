@@ -7,8 +7,10 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.GOOGLE_API_KEY;
+const BUILD_VERSION = Date.now();
 
 app.use(express.json());
+app.get("/api/version", (req, res) => res.json({ version: BUILD_VERSION }));
 
 const PIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 48" width="32" height="48"><path d="M16 0C7.163 0 0 7.163 0 16c0 12 16 32 16 32s16-20 16-32C32 7.163 24.837 0 16 0z" fill="#4a90e2" stroke="white" stroke-width="2"/><circle cx="16" cy="16" r="7" fill="white"/></svg>`;
 const PIN_URL = "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(PIN_SVG);
@@ -1822,6 +1824,43 @@ app.patch("/api/projects/:id/designs/active", (req, res) => {
   res.json({ ok: true, design });
 });
 
+// Delete a design
+app.delete("/api/projects/:id/designs/:designId", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  if (project.designs.length <= 1) return res.status(400).json({ error: "Cannot delete the only design" });
+  const idx = project.designs.findIndex(d => d.id === req.params.designId);
+  if (idx === -1) return res.status(404).json({ error: "Design not found" });
+  project.designs.splice(idx, 1);
+  if (project.activeDesignId === req.params.designId) {
+    project.activeDesignId = project.designs[0].id;
+  }
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// Duplicate a design
+app.post("/api/projects/:id/designs/:designId/duplicate", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  const source = project.designs.find(d => d.id === req.params.designId);
+  if (!source) return res.status(404).json({ error: "Design not found" });
+  const copy = {
+    id: newId(),
+    name: source.name + " (copy)",
+    createdAt: new Date().toISOString(),
+    segments: JSON.parse(JSON.stringify(source.segments || [])),
+    stats: { ...source.stats }
+  };
+  project.designs.push(copy);
+  saveProjects(projects);
+  res.json(copy);
+});
+
 // ── Google Solar API ──────────────────────────────────────────────────────────
 app.get("/api/solar/building-insights", async (req, res) => {
   const { lat, lng } = req.query;
@@ -1958,6 +1997,7 @@ app.get("/api/solar/dsm-elevation", async (req, res) => {
 
     // Parse RGB satellite image if available
     let satelliteDataUrl = null;
+    let rgbBbox = null;
     if (rgbResp && rgbResp.ok) {
       try {
         const { PNG } = require("pngjs");
@@ -1968,6 +2008,13 @@ app.get("/api/solar/dsm-elevation", async (req, res) => {
         const rgbW = rgbImage.getWidth();
         const rgbH = rgbImage.getHeight();
         const rBand = rgbRasters[0], gBand = rgbRasters[1], bBand = rgbRasters[2];
+
+        // Compute RGB-specific bbox from RGB image dimensions (may differ from DSM)
+        const rgbHalfW = (rgbW * pixelSizeM) / 2;
+        const rgbHalfH = (rgbH * pixelSizeM) / 2;
+        const rgbDLat = rgbHalfH / 111320;
+        const rgbDLng = rgbHalfW / (111320 * Math.cos(latF * Math.PI / 180));
+        rgbBbox = [lngF - rgbDLng, latF - rgbDLat, lngF + rgbDLng, latF + rgbDLat];
 
         const png = new PNG({ width: rgbW, height: rgbH });
         for (let i = 0; i < rgbW * rgbH; i++) {
@@ -1983,7 +2030,7 @@ app.get("/api/solar/dsm-elevation", async (req, res) => {
       }
     }
 
-    res.json({ error: null, width, height, elevData, satelliteDataUrl, bbox });
+    res.json({ error: null, width, height, elevData, satelliteDataUrl, bbox, rgbBbox });
   } catch (e) {
     res.status(500).json({ error: "DSM parse failed: " + e.message });
   }
@@ -1995,7 +2042,7 @@ app.get("/api/lidar/points", async (req, res) => {
   if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
-  const gridSize = 121;       // 121×121 = 14,641 points
+  const gridSize = 161;       // 161×161 = 25,921 points
   const halfExtent = 35;      // 35 meters from pin in each direction (~70m × 70m, matches satellite image)
 
   try {
@@ -2590,7 +2637,23 @@ app.get("/project/:id", (req, res) => {
                   <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                   Sales Mode
                 </span>
-                <button class="db-more-btn" onclick="event.stopPropagation()">···</button>
+                <div style="position:relative;display:inline-block">
+                  <button class="db-more-btn" onclick="event.stopPropagation(); toggleDesignDropdown('${d.id}')">···</button>
+                  <div class="db-dropdown" id="dd-${d.id}">
+                    <button onclick="event.stopPropagation(); renameDesignFromDash('${project.id}','${d.id}')">
+                      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+                      Rename
+                    </button>
+                    <button onclick="event.stopPropagation(); duplicateDesignFromDash('${project.id}','${d.id}')">
+                      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                      Duplicate
+                    </button>
+                    <button class="db-dropdown-danger" onclick="event.stopPropagation(); deleteDesignFromDash('${project.id}','${d.id}','${esc(d.name)}')">
+                      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                      Delete
+                    </button>
+                  </div>
+                </div>
               </td>
             </tr>
             `).join('')}
@@ -3371,6 +3434,20 @@ app.get("/project/:id", (req, res) => {
       letter-spacing: 1px;
     }
     .db-more-btn:hover { color: #374151; background: #f3f4f6; }
+    .db-dropdown {
+      display: none; position: absolute; right: 0; top: 100%; z-index: 50;
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 160px; padding: 4px 0;
+    }
+    .db-dropdown.open { display: block; }
+    .db-dropdown button {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 8px 14px; border: none; background: none; cursor: pointer;
+      font-size: 0.85rem; color: #374151; text-align: left;
+    }
+    .db-dropdown button:hover { background: #f3f4f6; }
+    .db-dropdown-danger { color: #dc2626 !important; }
+    .db-dropdown-danger:hover { background: #fef2f2 !important; }
 
     /* Inline sections (body text left, button right) */
     .db-inline-section {
@@ -3641,6 +3718,50 @@ app.get("/project/:id", (req, res) => {
       }).then(function(r) { return r.json(); }).then(function(design) {
         var designUrl = '/design?lat=${project.lat}&lng=${project.lng}&address=${encodeURIComponent(project.address)}&projectId=${project.id}&designId=' + design.id;
         location.href = designUrl;
+      });
+    }
+
+    /* ── Design dropdown actions ── */
+    function toggleDesignDropdown(designId) {
+      document.querySelectorAll('.db-dropdown.open').forEach(function(m) { if (m.id !== 'dd-' + designId) m.classList.remove('open'); });
+      document.getElementById('dd-' + designId).classList.toggle('open');
+    }
+    document.addEventListener('click', function() { document.querySelectorAll('.db-dropdown.open').forEach(function(m) { m.classList.remove('open'); }); });
+
+    function renameDesignFromDash(projectId, designId) {
+      document.querySelectorAll('.db-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
+      var row = document.querySelector('[data-design-id="' + designId + '"]') || document.getElementById('dd-' + designId).closest('tr');
+      var nameCell = row.querySelector('.db-td-name');
+      var current = nameCell.textContent.trim();
+      var newName = prompt('Rename design:', current);
+      if (!newName || newName === current) return;
+      fetch('/api/projects/' + projectId + '/designs/' + designId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.ok) nameCell.textContent = newName;
+      });
+    }
+
+    function duplicateDesignFromDash(projectId, designId) {
+      document.querySelectorAll('.db-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
+      fetch('/api/projects/' + projectId + '/designs/' + designId + '/duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function(r) { return r.json(); }).then(function() {
+        location.reload();
+      });
+    }
+
+    function deleteDesignFromDash(projectId, designId, name) {
+      document.querySelectorAll('.db-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
+      if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+      fetch('/api/projects/' + projectId + '/designs/' + designId, {
+        method: 'DELETE'
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.ok) location.reload();
+        else alert(data.error || 'Could not delete design');
       });
     }
 
@@ -4091,7 +4212,9 @@ app.get("/project/:id", (req, res) => {
 
 // ── Design / Pin screen ────────────────────────────────────────────────────────
 app.get("/design", (req, res) => {
-  res.set('Cache-Control', 'no-store');
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   const { lat, lng, address, customer, projectId } = req.query;
   if (!lat || !lng) return res.redirect("/");
   const safeAddress = (address || "Selected Location").replace(/`/g, "'").replace(/</g, "&lt;");
@@ -4632,12 +4755,14 @@ app.get("/design", (req, res) => {
       left: 50%;
       transform: translate(-50%, -50%);
       perspective: 200px;
+      pointer-events: all;
     }
     .viewcube {
       width: 50px;
       height: 50px;
       position: relative;
       transform-style: preserve-3d;
+      pointer-events: all;
     }
     .vc-face {
       position: absolute;
@@ -4652,6 +4777,7 @@ app.get("/design", (req, res) => {
       font-weight: 700;
       color: #555;
       backface-visibility: visible;
+      pointer-events: all;
     }
     .vc-face:hover { background: rgba(180,180,180,0.85); cursor: pointer; }
     .vc-face.vc-top { transform: rotateX(90deg) translateZ(25px); background: rgba(245,245,245,0.95); }
@@ -5728,8 +5854,8 @@ app.get("/design", (req, res) => {
           </div>
         </div>
         <style>@keyframes lidarSpin{to{transform:rotate(360deg)}}</style>
-        <!-- 3D ViewCube — bottom right -->
-        <div class="map-controls-bl" id="viewcube3dControls" style="bottom:14px;right:14px;z-index:40;pointer-events:all;">
+        <!-- 3D ViewCube — bottom right, above zoom controls -->
+        <div id="viewcube3dControls" style="position:absolute;bottom:120px;right:14px;z-index:50;pointer-events:all;">
           <div class="viewcube-wrap" id="viewcubeWrap3d">
             <div class="viewcube-ring"></div>
             <div class="viewcube-compass" id="vcCompass3d">
@@ -6283,6 +6409,10 @@ app.get("/design", (req, res) => {
   </div>
 
   <script>
+    var PAGE_VERSION = ${BUILD_VERSION};
+    fetch('/api/version').then(function(r){return r.json()}).then(function(d){
+      if(d.version!==PAGE_VERSION){console.log('Page stale, reloading...');location.reload(true);}
+    }).catch(function(){});
     var designLat = ${parseFloat(lat)};
     var designLng = ${parseFloat(lng)};
     var map, marker, drawingManager;
@@ -7565,35 +7695,116 @@ app.get("/design", (req, res) => {
       vcCompass3d.style.transform = 'rotate(' + azimuthDeg + 'deg)';
     }
 
-    // 3D viewcube face clicks — snap the Three.js camera
+    // 3D viewcube — face clicks snap to views, drag orbits camera
     (function() {
       var wrap3d = document.getElementById('viewcubeWrap3d');
       if (!wrap3d) return;
-      wrap3d.querySelectorAll('.vc-face').forEach(function(face) {
-        face.addEventListener('click', function() {
-          if (!camera3d || !controls3d) return;
-          var view = this.dataset.view;
-          var dist = camera3d.position.distanceTo(controls3d.target);
-          var t = controls3d.target.clone();
-          if (view === 'top') camera3d.position.set(t.x, t.y + dist, t.z);
-          else if (view === 'bottom') camera3d.position.set(t.x, t.y + dist * 0.05, t.z);
-          else if (view === 'front') camera3d.position.set(t.x, t.y + dist * 0.5, t.z + dist * 0.87);
-          else if (view === 'back') camera3d.position.set(t.x, t.y + dist * 0.5, t.z - dist * 0.87);
-          else if (view === 'left') camera3d.position.set(t.x - dist * 0.87, t.y + dist * 0.5, t.z);
-          else if (view === 'right') camera3d.position.set(t.x + dist * 0.87, t.y + dist * 0.5, t.z);
-          camera3d.lookAt(t);
-          controls3d.update();
-        });
+
+      // Stop events from reaching OrbitControls canvas underneath
+      ['mousedown','mouseup','mousemove','click','dblclick','wheel','pointerdown','pointerup','pointermove'].forEach(function(evt) {
+        wrap3d.addEventListener(evt, function(e) { e.stopPropagation(); });
       });
-      // Double-click reset to dice-on-table (30° tilt from above, front-facing)
-      wrap3d.addEventListener('dblclick', function() {
-        if (!camera3d || !controls3d) return;
-        var dist = camera3d.position.distanceTo(controls3d.target);
-        var t = controls3d.target.clone();
-        // Top-down default
-        camera3d.position.set(t.x, t.y + dist, t.z + 0.001);
+
+      // ── Drag-to-orbit state (matches 2D viewcube controls) ──
+      var vcDragging3d = false, vcDidDrag3d = false;
+      var vcStartX3d = 0, vcStartY3d = 0;
+      var vcStartAzimuth3d = 0, vcStartPolar3d = 0;
+      var DEG = Math.PI / 180;
+
+      function getCameraSpherical() {
+        var dx = camera3d.position.x - controls3d.target.x;
+        var dy = camera3d.position.y - controls3d.target.y;
+        var dz = camera3d.position.z - controls3d.target.z;
+        var r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        var polar = Math.acos(Math.max(-1, Math.min(1, dy / r)));
+        var azimuth = Math.atan2(dx, dz);
+        return { r: r, polar: polar, azimuth: azimuth };
+      }
+
+      function setCameraFromSpherical(r, polar, azimuth) {
+        var t = controls3d.target;
+        camera3d.position.set(
+          t.x + r * Math.sin(polar) * Math.sin(azimuth),
+          t.y + r * Math.cos(polar),
+          t.z + r * Math.sin(polar) * Math.cos(azimuth)
+        );
         camera3d.lookAt(t);
         controls3d.update();
+      }
+
+      // Drag: horizontal 0.6 deg/px, vertical 0.3 deg/px (matches 2D cube)
+      wrap3d.addEventListener('mousedown', function(e) {
+        if (!camera3d || !controls3d) return;
+        vcDragging3d = true;
+        vcDidDrag3d = false;
+        vcStartX3d = e.clientX;
+        vcStartY3d = e.clientY;
+        var s = getCameraSpherical();
+        vcStartAzimuth3d = s.azimuth;
+        vcStartPolar3d = s.polar;
+        wrap3d.style.cursor = 'grabbing';
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!vcDragging3d) return;
+        var dx = e.clientX - vcStartX3d;
+        var dy = e.clientY - vcStartY3d;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) vcDidDrag3d = true;
+        if (!vcDidDrag3d) return;
+
+        var s = getCameraSpherical();
+        var newAzimuth = vcStartAzimuth3d - dx * 0.6 * DEG;
+        var newPolar = vcStartPolar3d + dy * 0.3 * DEG;
+        // Clamp polar: 0° (top-down) to 80° (near ground) — matches 2D cube range
+        newPolar = Math.max(0.1 * DEG, Math.min(80 * DEG, newPolar));
+        setCameraFromSpherical(s.r, newPolar, newAzimuth);
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (vcDragging3d) {
+          vcDragging3d = false;
+          wrap3d.style.cursor = 'grab';
+        }
+      });
+
+      // ── Face clicks — keep current tilt for sides, reset for top/bottom (matches 2D cube) ──
+      function handleFaceClick3d(view) {
+        if (!camera3d || !controls3d) return;
+        var s = getCameraSpherical();
+        var r = s.r;
+        var polar = s.polar;
+        var azimuth = s.azimuth;
+
+        if (view === 'top') {
+          polar = 0.1 * DEG; azimuth = 0;
+        } else if (view === 'bottom') {
+          polar = 80 * DEG;
+        } else {
+          // Keep current tilt; if near flat, bump to 30°
+          if (polar < 10 * DEG) polar = 30 * DEG;
+          if (view === 'front') azimuth = 0;
+          else if (view === 'back') azimuth = Math.PI;
+          else if (view === 'left') azimuth = -Math.PI / 2;
+          else if (view === 'right') azimuth = Math.PI / 2;
+        }
+        setCameraFromSpherical(r, polar, azimuth);
+      }
+
+      wrap3d.querySelectorAll('.vc-face').forEach(function(face) {
+        face.addEventListener('click', function(e) {
+          e.stopPropagation();
+          if (vcDidDrag3d) { vcDidDrag3d = false; return; }
+          handleFaceClick3d(this.dataset.view);
+        });
+      });
+
+      // Double-click reset to top-down
+      wrap3d.addEventListener('dblclick', function(e) {
+        e.stopPropagation();
+        if (!camera3d || !controls3d) return;
+        var s = getCameraSpherical();
+        setCameraFromSpherical(s.r, 0.1 * DEG, 0);
       });
     })();
 
@@ -7632,7 +7843,7 @@ app.get("/design", (req, res) => {
         texture.needsUpdate = true;
         var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
         groundPlane3d = new THREE.Mesh(geo, mat);
-        groundPlane3d.position.set(0, -0.1, 0);
+        groundPlane3d.position.set(0, -0.5, 0);
         scene3d.add(groundPlane3d);
 
         // Frame camera to see the ground plane
@@ -7773,7 +7984,7 @@ app.get("/design", (req, res) => {
       ptTexture.needsUpdate = true;
 
       var mat = new THREE.PointsMaterial({
-        size: 2.0,
+        size: 4.5,
         map: ptTexture,
         vertexColors: true,
         sizeAttenuation: true,
@@ -7875,11 +8086,12 @@ app.get("/design", (req, res) => {
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (!data.satelliteDataUrl) { callback(null); return; }
-          // Compute LiDAR image extent in meters from bbox
-          if (data.bbox) {
+          // Compute LiDAR image extent in meters from RGB-specific bbox (or fallback to DSM bbox)
+          var useBbox = data.rgbBbox || data.bbox;
+          if (useBbox) {
             var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
-            lidarExtentMX = (data.bbox[2] - data.bbox[0]) * mPerDegLng;
-            lidarExtentMY = (data.bbox[3] - data.bbox[1]) * 111320;
+            lidarExtentMX = (useBbox[2] - useBbox[0]) * mPerDegLng;
+            lidarExtentMY = (useBbox[3] - useBbox[1]) * 111320;
           }
           var img = new Image();
           img.crossOrigin = 'anonymous';
@@ -7983,16 +8195,22 @@ app.get("/design", (req, res) => {
       return{tx:clx-(a*csx-b*csz),tz:clz-(b*csx+a*csz),scale:Math.sqrt(a*a+b*b),rotation:Math.atan2(b,a)};
     }
 
+    var pendingCalibration = null; // stored if LiDAR not yet loaded
     function applyCalibration(cal) {
-      if(!cal||!groundPlane3d)return; calibSavedTransform=cal;
-      // Reset ground plane to default position first, then apply calibration
-      groundPlane3d.position.x = cal.tx;
-      groundPlane3d.position.z = cal.tz;
-      groundPlane3d.position.y = -0.1; // default y
-      // No scale — both coordinate systems are in meters, scale is always 1.0
-      groundPlane3d.scale.set(1, 1, 1);
-      groundPlane3d.rotation.y = cal.rotation || 0;
-      console.log('Calibration applied: tx=' + cal.tx.toFixed(3) + ' tz=' + cal.tz.toFixed(3) + ' scale=' + (cal.scale||1).toFixed(4) + ' rotation=' + (cal.rotation||0).toFixed(4));
+      if (!cal) return;
+      calibSavedTransform = cal;
+      if (!lidarPoints) {
+        // LiDAR not loaded yet — store and apply when it builds
+        pendingCalibration = cal;
+        console.log('Calibration stored (LiDAR not yet loaded): tx=' + cal.tx.toFixed(3) + ' tz=' + cal.tz.toFixed(3));
+        return;
+      }
+      // Move LiDAR point cloud (satellite ground plane stays fixed as reference)
+      // Auto-align already set lidarPoints.position — add calibration offset on top
+      lidarPoints.position.x += cal.tx;
+      lidarPoints.position.z += cal.tz;
+      pendingCalibration = null;
+      console.log('Calibration applied to LiDAR: tx=' + cal.tx.toFixed(3) + ' tz=' + cal.tz.toFixed(3));
     }
 
     function openCalibration() {
@@ -8072,11 +8290,29 @@ app.get("/design", (req, res) => {
       console.log('Sat pins (meters):', JSON.stringify(satW));
       console.log('LiDAR pins (meters):', JSON.stringify(lidW));
       if(satW.length<4||lidW.length<4){alert('Not enough valid points');return;}
-      var transform=solveSimilarityTransform(satW,lidW);if(!transform){alert('Could not compute transform');return;}
-      console.log('Transform: tx=' + transform.tx.toFixed(3) + ' tz=' + transform.tz.toFixed(3) + ' scale=' + transform.scale.toFixed(4) + ' rotation=' + transform.rotation.toFixed(4));
-      transform.controlPoints=[];for(var i=0;i<n;i++)transform.controlPoints.push({sat:satW[i],lidar:lidW[i]});
+
+      // Translation-only: average offset to shift LiDAR toward satellite positions
+      var tx = 0, tz = 0;
+      for (var i = 0; i < n; i++) {
+        tx += satW[i].x - lidW[i].x;
+        tz += satW[i].z - lidW[i].z;
+      }
+      tx /= n; tz /= n;
+      console.log('Calibration offset: tx=' + tx.toFixed(3) + 'm, tz=' + tz.toFixed(3) + 'm');
+
+      // Sanity check
+      if (Math.abs(tx) > 20 || Math.abs(tz) > 20) {
+        if (!confirm('Calibration offset is large (' + tx.toFixed(1) + 'm, ' + tz.toFixed(1) + 'm). This may indicate mismatched pins. Apply anyway?')) return;
+      }
+
+      var transform = { tx: tx, tz: tz, version: 2 };
+      transform.controlPoints = [];
+      for (var i = 0; i < n; i++) transform.controlPoints.push({sat: satW[i], lidar: lidW[i]});
+
       fetch('/api/projects/'+projectId+'/calibration',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(transform)});
-      applyCalibration(transform);var btn=document.getElementById('btnCalibrate');if(btn){btn.classList.add('tb2-calibrated');}closeCalibration();
+      applyCalibration(transform);
+      var btn=document.getElementById('btnCalibrate');if(btn){btn.classList.add('tb2-calibrated');}
+      closeCalibration();
     });
 
     document.getElementById('btnCalibrate').addEventListener('click',function(){
@@ -8087,7 +8323,22 @@ app.get("/design", (req, res) => {
     var _origBuildLidar=buildLidarPointCloud;
     buildLidarPointCloud=function(points){
       _origBuildLidar(points);
-      // Calibration auto-load disabled — use calibration tool for fresh alignment
+      // Apply pending calibration (set before LiDAR loaded)
+      if (pendingCalibration) {
+        applyCalibration(pendingCalibration);
+        return;
+      }
+      // Auto-load saved calibration (version 2+ only, ignore old pixel-space data)
+      fetch('/api/projects/'+projectId+'/calibration')
+        .then(function(r){return r.json();})
+        .then(function(cal){
+          if(cal && cal.version >= 2 && cal.tx !== undefined){
+            applyCalibration(cal);
+            var btn=document.getElementById('btnCalibrate');
+            if(btn) btn.classList.add('tb2-calibrated');
+          }
+        })
+        .catch(function(){});
     };
 
   </script>
