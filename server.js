@@ -1865,6 +1865,7 @@ app.put("/api/projects/:id/designs/:designId", (req, res) => {
   if (req.body.segments !== undefined) design.segments = req.body.segments;
   if (req.body.stats) design.stats = req.body.stats;
   if (req.body.trees !== undefined) design.trees = req.body.trees;
+  if (req.body.roofFaces !== undefined) design.roofFaces = req.body.roofFaces;
   if (req.body.name) design.name = req.body.name;
   design.updatedAt = new Date().toISOString();
   saveProjects(projects);
@@ -2142,12 +2143,24 @@ app.get("/api/solar/dsm-elevation", async (req, res) => {
         const rgbH = rgbImage.getHeight();
         const rBand = rgbRasters[0], gBand = rgbRasters[1], bBand = rgbRasters[2];
 
-        // Compute RGB-specific bbox from RGB image dimensions (may differ from DSM)
-        const rgbHalfW = (rgbW * pixelSizeM) / 2;
-        const rgbHalfH = (rgbH * pixelSizeM) / 2;
-        const rgbDLat = rgbHalfH / 111320;
-        const rgbDLng = rgbHalfW / (111320 * Math.cos(latF * Math.PI / 180));
-        rgbBbox = [lngF - rgbDLng, latF - rgbDLat, lngF + rgbDLng, latF + rgbDLat];
+        // Compute RGB bbox from actual GeoTIFF metadata (not assumed center)
+        const rgbGeoBbox = rgbImage.getBoundingBox(); // [minX, minY, maxX, maxY]
+        const rgbIsGeo = Math.abs(rgbGeoBbox[2]) <= 360 && Math.abs(rgbGeoBbox[3]) <= 360;
+        if (rgbIsGeo) {
+          rgbBbox = [rgbGeoBbox[0], rgbGeoBbox[1], rgbGeoBbox[2], rgbGeoBbox[3]];
+        } else {
+          // Projected (UTM) — convert using design point as reference
+          const mPerDegLat_ = 111320;
+          const mPerDegLng_ = 111320 * Math.cos(latF * Math.PI / 180);
+          const rgbHalfW = (rgbGeoBbox[2] - rgbGeoBbox[0]) / 2;
+          const rgbHalfH = (rgbGeoBbox[3] - rgbGeoBbox[1]) / 2;
+          rgbBbox = [
+            lngF - rgbHalfW / mPerDegLng_,
+            latF - rgbHalfH / mPerDegLat_,
+            lngF + rgbHalfW / mPerDegLng_,
+            latF + rgbHalfH / mPerDegLat_
+          ];
+        }
 
         const png = new PNG({ width: rgbW, height: rgbH });
         for (let i = 0; i < rgbW * rgbH; i++) {
@@ -4739,18 +4752,16 @@ app.get("/design", (req, res) => {
     .lp-item-wrap { position: relative; }
     .lp-submenu {
       display: none;
-      position: absolute;
-      top: 0;
-      left: calc(100% + 6px);
+      position: fixed;
       background: #fff;
       border-radius: 10px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.16), 0 1px 4px rgba(0,0,0,0.08);
       min-width: 220px;
-      z-index: 100;
+      z-index: 9999;
       overflow: hidden;
       padding: 4px 0;
     }
-    .lp-item-wrap.open .lp-submenu { display: block; }
+    .lp-submenu.flyout-visible { display: block; }
     .lp-subitem {
       display: flex; align-items: center;
       justify-content: space-between;
@@ -5057,6 +5068,120 @@ app.get("/design", (req, res) => {
       pointer-events: none;
       transform: translateX(12px);
     }
+
+    /* ── TREE PROPERTIES PANEL ── */
+    .tree-panel {
+      width: 300px;
+      background: #fff;
+      border-radius: 10px 0 0 10px;
+      box-shadow: -4px 0 16px rgba(0,0,0,0.10);
+      display: flex;
+      flex-direction: column;
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      z-index: 35;
+      color: #111;
+      overflow-y: auto;
+      transition: opacity 0.2s, transform 0.2s;
+      border-left: 3px solid #22c55e;
+    }
+    .tree-panel.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(12px);
+    }
+    .tp-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .tp-title { font-size: 0.95rem; font-weight: 600; }
+    .tp-actions { display: flex; gap: 6px; }
+    .tp-action-btn {
+      background: none; border: none; cursor: pointer;
+      color: #888; padding: 4px; border-radius: 5px;
+    }
+    .tp-action-btn:hover { background: #f0f0f0; color: #333; }
+    .tp-body { padding: 12px 16px; }
+    .tp-fit-btn {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 16px;
+      color: #111;
+    }
+    .tp-fit-btn:hover { background: #f9fafb; }
+    .tp-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-top: 1px solid #f5f5f5;
+    }
+    .tp-row:first-child { border-top: none; }
+    .tp-label { font-size: 0.83rem; color: #555; }
+    .tp-input-wrap {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .tp-input {
+      width: 70px;
+      padding: 7px 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      text-align: right;
+      color: #111;
+      background: #f9fafb;
+      outline: none;
+    }
+    .tp-input:focus { border-color: #9ca3af; background: #fff; }
+    .tp-unit { font-size: 0.78rem; color: #999; }
+    .tp-type-toggle {
+      display: flex; gap: 2px;
+      background: #f3f4f6;
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .tp-type-btn {
+      padding: 5px 8px;
+      border: none; border-radius: 5px;
+      background: none; cursor: pointer;
+      color: #888; display: flex; align-items: center; justify-content: center;
+    }
+    .tp-type-btn.active { background: #111; color: #fff; }
+    .tp-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-top: 1px solid #f5f5f5;
+    }
+    .tp-toggle-label { font-size: 0.83rem; color: #555; }
+    .tp-switch {
+      position: relative; width: 38px; height: 22px;
+      background: #d1d5db; border-radius: 11px;
+      cursor: pointer; transition: background 0.2s;
+      border: none;
+    }
+    .tp-switch.on { background: #22c55e; }
+    .tp-switch::after {
+      content: ''; position: absolute;
+      top: 2px; left: 2px;
+      width: 18px; height: 18px;
+      background: #fff; border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    }
+    .tp-switch.on::after { transform: translateX(16px); }
 
     /* ── PRODUCTION BOTTOM DRAWER ── */
     .prod-drawer {
@@ -5793,15 +5918,15 @@ app.get("/design", (req, res) => {
             <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
           </div>
           <div class="lp-submenu" id="roofSubmenu">
-            <div class="lp-subitem"><div class="lp-subitem-left">
+            <div class="lp-subitem" id="btnSmartRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
               Smart roof</div><span class="lp-subitem-key">R</span>
             </div>
-            <div class="lp-subitem"><div class="lp-subitem-left">
+            <div class="lp-subitem" id="btnManualRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
               Manual roof face</div>
             </div>
-            <div class="lp-subitem"><div class="lp-subitem-left">
+            <div class="lp-subitem" id="btnFlatRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
               Flat roof</div>
             </div>
@@ -6025,6 +6150,11 @@ app.get("/design", (req, res) => {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
           Tree Mode — Click to place center, move to set radius, click to confirm
         </div>
+        <!-- Roof drawing banner -->
+        <div id="roofModeBanner" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#f59e0b;color:#000;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
+          Edit SmartRoof — Click to place vertices, double-click or Enter to complete. Esc to cancel.
+        </div>
         <!-- Status -->
         <div id="lidarStatus" style="position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.85rem;font-weight:600;z-index:20;"></div>
         <!-- LiDAR loading overlay -->
@@ -6037,7 +6167,7 @@ app.get("/design", (req, res) => {
         </div>
         <style>@keyframes lidarSpin{to{transform:rotate(360deg)}}</style>
         <!-- 3D ViewCube — bottom right, above zoom controls -->
-        <div id="viewcube3dControls" style="position:absolute;bottom:120px;right:14px;z-index:50;pointer-events:all;">
+        <div id="viewcube3dControls" style="position:absolute;bottom:120px;right:396px;z-index:50;pointer-events:all;">
           <div class="viewcube-wrap" id="viewcubeWrap3d">
             <div class="viewcube-ring"></div>
             <div class="viewcube-compass" id="vcCompass3d">
@@ -6224,6 +6354,70 @@ app.get("/design", (req, res) => {
       </div>
     </div>
 
+    <!-- TREE PROPERTIES PANEL -->
+    <div class="tree-panel hidden" id="treePanel">
+      <div class="tp-header">
+        <span class="tp-title">Tree</span>
+        <div class="tp-actions">
+          <button class="tp-action-btn" id="tpDuplicate" title="Duplicate tree">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+          <button class="tp-action-btn" id="tpDelete" title="Delete tree">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+          </button>
+          <button class="tp-action-btn" id="tpClose" title="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tp-body">
+        <button class="tp-fit-btn" id="tpFitLidar">Fit to LIDAR</button>
+        <div class="tp-row">
+          <span class="tp-label">Type</span>
+          <div class="tp-type-toggle">
+            <button class="tp-type-btn active" id="tpTypeDeciduous" title="Deciduous">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="6"/><rect x="11" y="14" width="2" height="6"/></svg>
+            </button>
+            <button class="tp-type-btn" id="tpTypeConifer" title="Conifer">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l6 10H6z"/><path d="M12 8l5 8H7z"/><rect x="11" y="16" width="2" height="4" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Height</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="tpHeight" type="number" step="0.1" min="1">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Crown height</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="tpCrownHeight" type="number" step="0.1" min="0.5">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Crown diameter</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="tpCrownDiam" type="number" step="0.1" min="1">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Trunk diameter</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="tpTrunkDiam" type="number" step="0.1" min="0.1">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-toggle-row">
+          <span class="tp-toggle-label">Remove trunk</span>
+          <button class="tp-switch" id="tpRemoveTrunk"></button>
+        </div>
+      </div>
+    </div>
+
     <!-- RIGHT PANEL -->
     <div class="right-panel hidden" id="rightPanel">
       <div class="rp-header">
@@ -6238,6 +6432,43 @@ app.get("/design", (req, res) => {
         <button class="rp-tab" id="rpTabSimulation">Simulation</button>
       </div>
       <div class="rp-body" id="rpBody">
+
+        <!-- Edge & Face Properties (shown when roof face selected) -->
+        <div class="rp-section" id="roofPropsSection" style="display:none;">
+          <div class="rp-section-title" style="color:#00e5ff;">Edge & Face</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+            <div>
+              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Pitch</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <input class="rp-input" type="number" id="roofPropPitch" value="0" step="1" min="0" max="90" style="width:100%;"/>
+                <span style="font-size:0.75rem;color:#888;">deg</span>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Azimuth</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <input class="rp-input" type="number" id="roofPropAzimuth" value="180" step="1" min="0" max="360" style="width:100%;"/>
+                <span style="font-size:0.75rem;color:#888;">deg</span>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Eave Height</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <input class="rp-input" type="number" id="roofPropHeight" value="0" step="0.5" min="0" style="width:100%;"/>
+                <span style="font-size:0.75rem;color:#888;">ft</span>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Area</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <input class="rp-input" type="number" id="roofPropArea" readonly style="width:100%;background:rgba(255,255,255,0.03);"/>
+                <span style="font-size:0.75rem;color:#888;">ft&sup2;</span>
+              </div>
+            </div>
+          </div>
+          <div id="roofEdgeLengthsList" style="margin-top:8px;"></div>
+          <button id="btnDeleteRoofFace" style="margin-top:10px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;">Delete Face</button>
+        </div>
 
         <!-- Setbacks -->
         <div class="rp-section">
@@ -6592,6 +6823,17 @@ app.get("/design", (req, res) => {
     var treePreviewMesh = null;
     var space3dHeld = false;
 
+    /* ── Roof face drawing state ── */
+    var roofFaces3d = [];
+    var roofDrawingMode = false;
+    var roofDetectMode = false;
+    var roofTempVertices = [];
+    var roofTempHandles = [];
+    var roofTempLines = null;
+    var roofSelectedFace = -1;
+    var roofDraggingHandle = -1;
+    var roofDraggingFaceIdx = -1;
+
     /* ── Production bottom drawer ── */
     var prodDrawer = document.getElementById('prodDrawer');
     var prodExpand = document.querySelector('.tb-stats-expand');
@@ -6741,45 +6983,59 @@ app.get("/design", (req, res) => {
     document.getElementById('rpTabSystem').addEventListener('click', function() { switchRpTab('rpTabSystem'); });
     document.getElementById('rpTabSimulation').addEventListener('click', function() { switchRpTab('rpTabSimulation'); });
 
+    /* ── Move submenus to body so they escape overflow:hidden ── */
+    document.querySelectorAll('.lp-submenu').forEach(function(el) {
+      document.body.appendChild(el);
+    });
+
     /* ── Submenu flyout toggle ── */
     var submenus = [
-      { wrap: 'wrapRoof',           item: 'menuRoof' },
-      { wrap: 'wrapObstructions',   item: 'menuObstructions' },
-      { wrap: 'wrapSiteComponents', item: 'menuSiteComponents' },
-      { wrap: 'wrapFire',           item: 'menuFire' },
-      { wrap: 'menuPanelsWrap',     item: 'menuPanels' },
-      { wrap: 'wrapComponents',     item: 'menuComponents' },
-      { wrap: 'menuStringWrap',     item: 'menuString' }
+      { wrap: 'wrapRoof',           item: 'menuRoof',           sub: 'roofSubmenu' },
+      { wrap: 'wrapObstructions',   item: 'menuObstructions',   sub: 'obstructionsSubmenu' },
+      { wrap: 'wrapSiteComponents', item: 'menuSiteComponents', sub: 'siteComponentsSubmenu' },
+      { wrap: 'wrapFire',           item: 'menuFire',           sub: 'fireSubmenu' },
+      { wrap: 'menuPanelsWrap',     item: 'menuPanels',         sub: 'panelsSubmenu' },
+      { wrap: 'wrapComponents',     item: 'menuComponents',     sub: 'componentsSubmenu' },
+      { wrap: 'menuStringWrap',     item: 'menuString',         sub: 'stringSubmenu' }
     ];
+    function closeAllSubmenus() {
+      submenus.forEach(function(x) {
+        var w = document.getElementById(x.wrap);
+        var i = document.getElementById(x.item);
+        var sm = document.getElementById(x.sub);
+        if (w) w.classList.remove('open');
+        if (i) i.classList.remove('active');
+        if (sm) sm.classList.remove('flyout-visible');
+      });
+    }
+    function positionSubmenu(itemEl, submenuEl) {
+      var panel = document.getElementById('leftPanel');
+      var panelRect = panel.getBoundingClientRect();
+      var itemRect = itemEl.getBoundingClientRect();
+      submenuEl.style.left = (panelRect.right + 6) + 'px';
+      submenuEl.style.top = itemRect.top + 'px';
+    }
     submenus.forEach(function(s) {
       var wrap = document.getElementById(s.wrap);
       var item = document.getElementById(s.item);
-      if (!wrap || !item) return;
+      var sub = document.getElementById(s.sub);
+      if (!wrap || !item || !sub) return;
       item.addEventListener('click', function(e) {
         e.stopPropagation();
         var isOpen = wrap.classList.contains('open');
-        // close all
-        submenus.forEach(function(x) {
-          var w = document.getElementById(x.wrap);
-          var i = document.getElementById(x.item);
-          if (w) w.classList.remove('open');
-          if (i) i.classList.remove('active');
-        });
+        closeAllSubmenus();
         if (!isOpen) {
           wrap.classList.add('open');
           item.classList.add('active');
+          positionSubmenu(item, sub);
+          sub.classList.add('flyout-visible');
         }
       });
     });
     // close submenus when clicking outside
     document.addEventListener('click', function(e) {
-      if (!e.target.closest('.lp-item-wrap')) {
-        submenus.forEach(function(s) {
-          var w = document.getElementById(s.wrap);
-          var i = document.getElementById(s.item);
-          if (w) w.classList.remove('open');
-          if (i) i.classList.remove('active');
-        });
+      if (!e.target.closest('.lp-item-wrap') && !e.target.closest('.lp-submenu')) {
+        closeAllSubmenus();
       }
     });
 
@@ -7440,7 +7696,7 @@ app.get("/design", (req, res) => {
 
     function saveCurrentDesign(callback) {
       if (!projectId || !currentDesignId) { if (callback) callback(); return; }
-      var data = { segments: serializeSegments(), stats: getCurrentStats(), trees: serializeTrees() };
+      var data = { segments: serializeSegments(), stats: getCurrentStats(), trees: serializeTrees(), roofFaces: serializeRoofFaces() };
       fetch('/api/projects/' + projectId + '/designs/' + currentDesignId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -7580,6 +7836,14 @@ app.get("/design", (req, res) => {
               lat: td.lat,
               lng: td.lng
             });
+          });
+        }
+
+        /* Restore roof faces in 3D view */
+        if (typeof clearAllRoofFaces === 'function') clearAllRoofFaces();
+        if (design.roofFaces && design.roofFaces.length > 0 && typeof THREE !== 'undefined' && typeof finalizeRoofFace === 'function') {
+          design.roofFaces.forEach(function(rf) {
+            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height);
           });
         }
       });
@@ -7830,6 +8094,7 @@ app.get("/design", (req, res) => {
     var lidarActive = true;
     var satExtentM = 0; // satellite ground plane extent in meters
     var lidarExtentMX = 0, lidarExtentMY = 0; // LiDAR/RGB image extent in meters
+    var lidarCenterOffX = 0, lidarCenterOffZ = 0; // RGB image center offset from design point (meters)
 
     // Geo-to-local: meters offset from design center
     var metersPerDegLat = 111320;
@@ -7968,6 +8233,10 @@ app.get("/design", (req, res) => {
       if (!scene3d) {
         init3dViewer();
         setTimeout(function() { resize3d(); buildGroundPlane(); }, 60);
+      }
+      // Load initial design data (segments, trees, roof faces)
+      if (currentDesignId) {
+        setTimeout(function() { loadDesign(currentDesignId); }, 200);
       }
     }, 100);
 
@@ -8254,7 +8523,10 @@ app.get("/design", (req, res) => {
     }
 
     /* ── Build LiDAR point cloud (the "stuff in the glass") ── */
+    var lidarRawPoints = null;
+
     function buildLidarPointCloud(points) {
+      lidarRawPoints = points; // store for roof detection
       if (lidarPoints) { scene3d.remove(lidarPoints); lidarPoints = null; }
 
       var minZ = Infinity, maxZ = -Infinity;
@@ -8487,16 +8759,18 @@ app.get("/design", (req, res) => {
       var trunkH = sceneHeight * 0.35;
       var opacity = isPreview ? 0.4 : 0.85;
 
+      var canopyY = sceneHeight * 0.7;
+      var canopyBottom = canopyY - radius;
       var trunkGeo = new THREE.CylinderGeometry(trunkR, trunkR * 1.2, trunkH, 8);
       var trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, transparent: isPreview, opacity: isPreview ? 0.3 : 1.0 });
       var trunk = new THREE.Mesh(trunkGeo, trunkMat);
-      trunk.position.set(center.x, trunkH / 2, center.z);
+      trunk.position.set(center.x, canopyBottom - trunkH / 2, center.z);
       group.add(trunk);
 
       var canopyGeo = new THREE.SphereGeometry(radius, 16, 12);
       var canopyMat = new THREE.MeshLambertMaterial({ color: 0x228B22, transparent: true, opacity: opacity });
       var canopy = new THREE.Mesh(canopyGeo, canopyMat);
-      canopy.position.set(center.x, sceneHeight * 0.7, center.z);
+      canopy.position.set(center.x, canopyY, center.z);
       group.add(canopy);
 
       return group;
@@ -8528,6 +8802,12 @@ app.get("/design", (req, res) => {
     function serializeTrees() {
       return trees3d.map(function(t) {
         return { lat: t.lat, lng: t.lng, radius: t.radius, height: t.height };
+      });
+    }
+
+    function serializeRoofFaces() {
+      return roofFaces3d.map(function(f) {
+        return { vertices: f.vertices, pitch: f.pitch, azimuth: f.azimuth, height: f.height, color: f.color };
       });
     }
 
@@ -8580,9 +8860,49 @@ app.get("/design", (req, res) => {
       var canvas = document.getElementById('canvas3d');
       if (!canvas) return;
 
+      var draggingTreeIdx = -1;
+      var isDragging = false;
+      var dragStartPos = null;
+
+      canvas.addEventListener('mousedown', function(e) {
+        if (!treePlacingMode || !camera3d || space3dHeld || treePlaceStep !== 0) return;
+        if (e.button !== 0) return; // left click only
+        if (hoveredTreeIdx >= 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          draggingTreeIdx = hoveredTreeIdx;
+          isDragging = false;
+          var hit = raycastGroundPlane(e);
+          dragStartPos = hit ? { x: hit.x, z: hit.z } : null;
+          canvas.style.cursor = 'grabbing';
+          if (controls3d) controls3d.enabled = false;
+        }
+      }, true);
+
+      document.addEventListener('mouseup', function(e) {
+        if (draggingTreeIdx >= 0) {
+          if (isDragging) {
+            // Finish drag — update lat/lng
+            var t = trees3d[draggingTreeIdx];
+            var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
+            t.lng = t.center.x / mPerDegLng + designLng;
+            t.lat = -(t.center.z / metersPerDegLat) + designLat;
+            markDirty();
+            if (selectedTreeIdx === draggingTreeIdx) selectTree(draggingTreeIdx);
+          }
+          canvas.style.cursor = hoveredTreeIdx >= 0 ? 'grab' : 'crosshair';
+          draggingTreeIdx = -1;
+          isDragging = false;
+          dragStartPos = null;
+          if (controls3d) controls3d.enabled = true;
+        }
+      });
+
       canvas.addEventListener('click', function(e) {
         if (!treePlacingMode || !camera3d || space3dHeld) return;
-        // If hovering over existing tree and not mid-placement, ignore click (don't place on top)
+        // If we just finished dragging, don't process as a click
+        if (isDragging) return;
+        // If hovering over existing tree and not mid-placement, ignore click for placement (select instead)
         if (treePlaceStep === 0 && hoveredTreeIdx >= 0) return;
         var hit = raycastGroundPlane(e);
         if (!hit) return;
@@ -8610,6 +8930,30 @@ app.get("/design", (req, res) => {
       canvas.addEventListener('mousemove', function(e) {
         if (!camera3d || space3dHeld) return;
 
+        // Tree dragging
+        if (draggingTreeIdx >= 0 && dragStartPos) {
+          e.preventDefault();
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+          var dx = hit.x - dragStartPos.x;
+          var dz = hit.z - dragStartPos.z;
+          if (!isDragging && (Math.abs(dx) > 0.05 || Math.abs(dz) > 0.05)) isDragging = true;
+          if (isDragging) {
+            var t = trees3d[draggingTreeIdx];
+            t.center.x += dx;
+            t.center.z += dz;
+            if (t.mesh) {
+              t.mesh.children.forEach(function(child) {
+                child.position.x += dx;
+                child.position.z += dz;
+              });
+            }
+            dragStartPos = { x: hit.x, z: hit.z };
+            canvas.style.cursor = 'grabbing';
+          }
+          return;
+        }
+
         // Tree hover highlight (active in tree mode when not mid-placement)
         if (treePlacingMode && treePlaceStep === 0) {
           var idx = findTreeUnderCursor(e);
@@ -8618,7 +8962,7 @@ app.get("/design", (req, res) => {
             hoveredTreeIdx = idx;
             if (hoveredTreeIdx >= 0) {
               setTreeHighlight(hoveredTreeIdx, true);
-              canvas.style.cursor = 'pointer';
+              canvas.style.cursor = 'grab';
             } else {
               canvas.style.cursor = 'crosshair';
             }
@@ -8639,11 +8983,1179 @@ app.get("/design", (req, res) => {
       });
 
       // Delete/Backspace to remove hovered tree
+      var copiedTree = null;
       document.addEventListener('keydown', function(e) {
-        if ((e.key === 'Delete' || e.key === 'Backspace') && treePlacingMode && hoveredTreeIdx >= 0 && !e.target.matches('input,textarea,select')) {
+        if (e.target.matches('input,textarea,select')) return;
+        if ((e.key === 'Delete' || e.key === 'Backspace') && treePlacingMode && hoveredTreeIdx >= 0) {
           e.preventDefault();
           deleteTree(hoveredTreeIdx);
+          closeTreePanel();
         }
+        // Cmd/Ctrl+C — copy selected or hovered tree
+        if ((e.metaKey || e.ctrlKey) && e.key === 'c' && treePlacingMode) {
+          var idx = selectedTreeIdx >= 0 ? selectedTreeIdx : hoveredTreeIdx;
+          if (idx >= 0 && idx < trees3d.length) {
+            var t = trees3d[idx];
+            copiedTree = { radius: t.radius, height: t.height, removeTrunk: t.removeTrunk || false, trunkDiam: t.trunkDiam };
+          }
+        }
+        // Cmd/Ctrl+V — paste tree at slight offset from source or center
+        if ((e.metaKey || e.ctrlKey) && e.key === 'v' && treePlacingMode && copiedTree) {
+          e.preventDefault();
+          var sourceIdx = selectedTreeIdx >= 0 ? selectedTreeIdx : hoveredTreeIdx;
+          var baseCenter;
+          if (sourceIdx >= 0 && sourceIdx < trees3d.length) {
+            baseCenter = { x: trees3d[sourceIdx].center.x + copiedTree.radius * 2.5, z: trees3d[sourceIdx].center.z };
+          } else {
+            // Paste near camera target
+            baseCenter = { x: (controls3d ? controls3d.target.x : 0) + copiedTree.radius * 2, z: (controls3d ? controls3d.target.z : 0) };
+          }
+          var sceneH = copiedTree.height * vertExag;
+          var mesh = buildTreeGroup(baseCenter, copiedTree.radius, sceneH, false);
+          if (copiedTree.removeTrunk && mesh.children.length > 0) mesh.children[0].visible = false;
+          scene3d.add(mesh);
+          var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
+          trees3d.push({
+            center: baseCenter,
+            radius: copiedTree.radius,
+            height: copiedTree.height,
+            mesh: mesh,
+            lat: -(baseCenter.z / metersPerDegLat) + designLat,
+            lng: baseCenter.x / mPerDegLng + designLng,
+            removeTrunk: copiedTree.removeTrunk,
+            trunkDiam: copiedTree.trunkDiam
+          });
+          markDirty();
+          selectTree(trees3d.length - 1);
+        }
+      });
+
+      // Click existing tree to select & show panel
+      canvas.addEventListener('click', function(e) {
+        if (!treePlacingMode || treePlaceStep !== 0) return;
+        var idx = findTreeUnderCursor(e);
+        if (idx >= 0) { selectTree(idx); }
+      });
+    })();
+
+    /* ── Tree Properties Panel Logic ── */
+    var selectedTreeIdx = -1;
+    var M_TO_FT = 3.28084;
+    var FT_TO_M = 1 / M_TO_FT;
+
+    function selectTree(idx) {
+      selectedTreeIdx = idx;
+      var t = trees3d[idx];
+      var sceneHeight = t.height * vertExag;
+      var crownH = sceneHeight * 0.7; // canopyY = sceneHeight * 0.7, canopy center
+      var crownDiam = t.radius * 2;
+      var trunkDiam = t.radius * 0.15 * 2;
+      var removeTrunk = t.removeTrunk || false;
+
+      document.getElementById('tpHeight').value = (t.height * M_TO_FT).toFixed(1);
+      document.getElementById('tpCrownHeight').value = (crownH / vertExag * M_TO_FT).toFixed(1);
+      document.getElementById('tpCrownDiam').value = (crownDiam * M_TO_FT).toFixed(1);
+      document.getElementById('tpTrunkDiam').value = (trunkDiam * M_TO_FT).toFixed(1);
+      var sw = document.getElementById('tpRemoveTrunk');
+      sw.classList.toggle('on', removeTrunk);
+
+      document.getElementById('treePanel').classList.remove('hidden');
+      // hide right panel if showing
+      document.getElementById('rightPanel').classList.add('hidden');
+    }
+
+    function closeTreePanel() {
+      selectedTreeIdx = -1;
+      document.getElementById('treePanel').classList.add('hidden');
+    }
+
+    function rebuildSelectedTree() {
+      if (selectedTreeIdx < 0 || selectedTreeIdx >= trees3d.length) return;
+      var t = trees3d[selectedTreeIdx];
+      if (t.mesh) scene3d.remove(t.mesh);
+
+      var sceneHeight = t.height * vertExag;
+      t.mesh = buildTreeGroup(t.center, t.radius, sceneHeight, false);
+
+      // Handle trunk removal
+      if (t.removeTrunk && t.mesh.children.length > 0) {
+        t.mesh.children[0].visible = false;
+      }
+
+      scene3d.add(t.mesh);
+      markDirty();
+    }
+
+    // Close button
+    document.getElementById('tpClose').addEventListener('click', closeTreePanel);
+
+    // Delete button
+    document.getElementById('tpDelete').addEventListener('click', function() {
+      if (selectedTreeIdx >= 0) {
+        deleteTree(selectedTreeIdx);
+        closeTreePanel();
+      }
+    });
+
+    // Duplicate button
+    document.getElementById('tpDuplicate').addEventListener('click', function() {
+      if (selectedTreeIdx < 0) return;
+      var t = trees3d[selectedTreeIdx];
+      var offset = t.radius * 2.5;
+      var newCenter = { x: t.center.x + offset, z: t.center.z };
+      var sceneHeight = t.height * vertExag;
+      var mesh = buildTreeGroup(newCenter, t.radius, sceneHeight, false);
+      scene3d.add(mesh);
+      var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
+      trees3d.push({
+        center: newCenter,
+        radius: t.radius,
+        height: t.height,
+        mesh: mesh,
+        lat: -(newCenter.z / metersPerDegLat) + designLat,
+        lng: newCenter.x / mPerDegLng + designLng,
+        removeTrunk: t.removeTrunk || false
+      });
+      markDirty();
+      selectTree(trees3d.length - 1);
+    });
+
+    // Fit to LIDAR
+    document.getElementById('tpFitLidar').addEventListener('click', function() {
+      if (selectedTreeIdx < 0) return;
+      var t = trees3d[selectedTreeIdx];
+      var lidarH = getTreeHeightFromLidar(t.center.x, t.center.z, t.radius);
+      t.height = lidarH / vertExag;
+      rebuildSelectedTree();
+      selectTree(selectedTreeIdx);
+    });
+
+    // Input change handlers — use 'input' for live updates as user types
+    document.getElementById('tpHeight').addEventListener('input', function() {
+      if (selectedTreeIdx < 0 || !this.value) return;
+      trees3d[selectedTreeIdx].height = parseFloat(this.value) * FT_TO_M;
+      rebuildSelectedTree();
+    });
+    document.getElementById('tpCrownDiam').addEventListener('input', function() {
+      if (selectedTreeIdx < 0 || !this.value) return;
+      trees3d[selectedTreeIdx].radius = (parseFloat(this.value) * FT_TO_M) / 2;
+      rebuildSelectedTree();
+      document.getElementById('tpTrunkDiam').value = (trees3d[selectedTreeIdx].radius * 0.15 * 2 * M_TO_FT).toFixed(1);
+    });
+    document.getElementById('tpCrownHeight').addEventListener('input', function() {
+      if (selectedTreeIdx < 0 || !this.value) return;
+      var crownHM = parseFloat(this.value) * FT_TO_M;
+      trees3d[selectedTreeIdx].height = (crownHM / 0.7);
+      rebuildSelectedTree();
+      document.getElementById('tpHeight').value = (trees3d[selectedTreeIdx].height * M_TO_FT).toFixed(1);
+    });
+    document.getElementById('tpTrunkDiam').addEventListener('input', function() {
+      if (selectedTreeIdx < 0 || !this.value) return;
+      trees3d[selectedTreeIdx].trunkDiam = parseFloat(this.value) * FT_TO_M;
+      rebuildSelectedTree();
+    });
+
+    // Remove trunk toggle
+    document.getElementById('tpRemoveTrunk').addEventListener('click', function() {
+      if (selectedTreeIdx < 0) return;
+      this.classList.toggle('on');
+      trees3d[selectedTreeIdx].removeTrunk = this.classList.contains('on');
+      rebuildSelectedTree();
+    });
+
+    // Escape closes panel
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && selectedTreeIdx >= 0) {
+        closeTreePanel();
+      }
+    });
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       ROOF FACE DRAWING & CAD MODELING ENGINE
+       Aurora-style SmartRoof: click to place vertices, polygon roof faces,
+       draggable handles, edge measurements, pitch/azimuth properties.
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    /* ── Helper: Shoelace area (m²) ── */
+    function calcPolygonArea(verts) {
+      var n = verts.length, area = 0;
+      for (var i = 0; i < n; i++) {
+        var j = (i + 1) % n;
+        area += verts[i].x * verts[j].z;
+        area -= verts[j].x * verts[i].z;
+      }
+      return Math.abs(area) / 2;
+    }
+
+    /* ── Text sprite for edge labels ── */
+    function makeTextSprite(text) {
+      var canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 64;
+      var ctx = canvas.getContext('2d');
+      ctx.font = 'Bold 26px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
+      ctx.strokeText(text, 128, 32);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(text, 128, 32);
+      var tex = new THREE.CanvasTexture(canvas);
+      var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+      var sprite = new THREE.Sprite(mat);
+      sprite.scale.set(3.5, 0.875, 1);
+      return sprite;
+    }
+
+    /* ── Build edge measurement labels ── */
+    function buildEdgeLabels(verts) {
+      var labels = [];
+      for (var i = 0; i < verts.length; i++) {
+        var a = verts[i], b = verts[(i + 1) % verts.length];
+        var dx = b.x - a.x, dz = b.z - a.z;
+        var lengthFt = (Math.sqrt(dx * dx + dz * dz) * 3.28084).toFixed(1);
+        var sprite = makeTextSprite(lengthFt + ' ft');
+        sprite.position.set((a.x + b.x) / 2, 0.6, (a.z + b.z) / 2);
+        scene3d.add(sprite);
+        labels.push(sprite);
+      }
+      return labels;
+    }
+
+    /* ── Build semi-transparent face mesh ── */
+    function buildRoofFaceMesh(verts, color) {
+      var shape = new THREE.Shape();
+      shape.moveTo(verts[0].x, verts[0].z);
+      for (var i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, verts[i].z);
+      shape.closePath();
+      var geo = new THREE.ShapeGeometry(shape);
+      geo.rotateX(-Math.PI / 2);
+      var mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color),
+        transparent: true, opacity: 0.22,
+        side: THREE.DoubleSide, depthWrite: false
+      });
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.position.y = 0.05;
+      return mesh;
+    }
+
+    /* ── Build edge outline lines ── */
+    function buildRoofEdgeLines(verts, color) {
+      var positions = [];
+      for (var i = 0; i < verts.length; i++) {
+        var a = verts[i], b = verts[(i + 1) % verts.length];
+        positions.push(a.x, 0.12, a.z, b.x, 0.12, b.z);
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: color, linewidth: 2 }));
+    }
+
+    /* ── Build vertex handle spheres ── */
+    function buildRoofHandles(verts) {
+      var handles = [];
+      verts.forEach(function(v) {
+        var sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.35, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        sphere.position.set(v.x, 0.18, v.z);
+        scene3d.add(sphere);
+        handles.push(sphere);
+      });
+      return handles;
+    }
+
+    /* ── Finalize a roof face (add to scene + array) ── */
+    function finalizeRoofFace(verts, pitch, azimuth, height) {
+      var face = {
+        id: 'rf_' + Date.now().toString(36) + '_' + roofFaces3d.length,
+        vertices: verts,
+        pitch: pitch || 0,
+        azimuth: azimuth || 180,
+        height: height || 0,
+        color: '#f5a623',
+        mesh: null, edgeLines: null,
+        handleMeshes: [], labelSprites: [],
+        selected: false
+      };
+      face.mesh = buildRoofFaceMesh(verts, face.color);
+      scene3d.add(face.mesh);
+      face.edgeLines = buildRoofEdgeLines(verts, '#ffffff');
+      scene3d.add(face.edgeLines);
+      face.handleMeshes = buildRoofHandles(verts);
+      face.labelSprites = buildEdgeLabels(verts);
+      roofFaces3d.push(face);
+      markDirty();
+      return roofFaces3d.length - 1;
+    }
+
+    /* ── Rebuild a face after vertex edit ── */
+    function rebuildRoofFace(idx) {
+      var face = roofFaces3d[idx];
+      if (face.mesh) scene3d.remove(face.mesh);
+      if (face.edgeLines) scene3d.remove(face.edgeLines);
+      face.labelSprites.forEach(function(s) { scene3d.remove(s); });
+
+      var col = face.selected ? '#00e5ff' : face.color;
+      face.mesh = buildRoofFaceMesh(face.vertices, col);
+      scene3d.add(face.mesh);
+      face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff');
+      scene3d.add(face.edgeLines);
+      face.labelSprites = buildEdgeLabels(face.vertices);
+
+      face.vertices.forEach(function(v, i) {
+        face.handleMeshes[i].position.set(v.x, 0.18, v.z);
+      });
+      markDirty();
+    }
+
+    /* ── Remove all roof faces ── */
+    function clearAllRoofFaces() {
+      roofFaces3d.forEach(function(face) {
+        if (face.mesh) scene3d.remove(face.mesh);
+        if (face.edgeLines) scene3d.remove(face.edgeLines);
+        face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+        face.labelSprites.forEach(function(s) { scene3d.remove(s); });
+      });
+      roofFaces3d = [];
+      roofSelectedFace = -1;
+      // Remove outline reference lines
+      var toRemove = [];
+      scene3d.traverse(function(obj) { if (obj.userData && obj.userData.roofOutline) toRemove.push(obj); });
+      toRemove.forEach(function(obj) { scene3d.remove(obj); });
+    }
+
+    /* ── Delete a single roof face ── */
+    function deleteRoofFace(idx) {
+      if (idx < 0 || idx >= roofFaces3d.length) return;
+      var face = roofFaces3d[idx];
+      if (face.mesh) scene3d.remove(face.mesh);
+      if (face.edgeLines) scene3d.remove(face.edgeLines);
+      face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+      face.labelSprites.forEach(function(s) { scene3d.remove(s); });
+      roofFaces3d.splice(idx, 1);
+      if (roofSelectedFace === idx) roofSelectedFace = -1;
+      else if (roofSelectedFace > idx) roofSelectedFace--;
+      updateRoofPropsPanel();
+      markDirty();
+    }
+
+    /* ── Select / Deselect face ── */
+    function selectRoofFace(idx) {
+      if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
+        var old = roofFaces3d[roofSelectedFace];
+        old.selected = false;
+        rebuildRoofFace(roofSelectedFace);
+      }
+      roofSelectedFace = idx;
+      var face = roofFaces3d[idx];
+      face.selected = true;
+      rebuildRoofFace(idx);
+      updateRoofPropsPanel();
+    }
+
+    function deselectRoofFace() {
+      if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
+        var old = roofFaces3d[roofSelectedFace];
+        old.selected = false;
+        rebuildRoofFace(roofSelectedFace);
+      }
+      roofSelectedFace = -1;
+      updateRoofPropsPanel();
+    }
+
+    /* ── Update properties panel ── */
+    function updateRoofPropsPanel() {
+      var section = document.getElementById('roofPropsSection');
+      if (!section) return;
+      if (roofSelectedFace < 0 || roofSelectedFace >= roofFaces3d.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      var face = roofFaces3d[roofSelectedFace];
+      document.getElementById('roofPropPitch').value = face.pitch;
+      document.getElementById('roofPropAzimuth').value = face.azimuth;
+      document.getElementById('roofPropHeight').value = (face.height * 3.28084).toFixed(1);
+      var areaFt2 = (calcPolygonArea(face.vertices) * 10.7639).toFixed(0);
+      document.getElementById('roofPropArea').value = areaFt2;
+
+      var edgeList = document.getElementById('roofEdgeLengthsList');
+      if (edgeList) {
+        var html = '<div style="font-size:0.75rem;color:#999;margin-top:8px;font-weight:600;">Edge Lengths</div>';
+        for (var i = 0; i < face.vertices.length; i++) {
+          var a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.length];
+          var dx = b.x - a.x, dz = b.z - a.z;
+          var ft = (Math.sqrt(dx * dx + dz * dz) * 3.28084).toFixed(1);
+          html += '<div style="font-size:0.8rem;color:#ccc;padding:2px 0;">Edge ' + (i + 1) + ': ' + ft + ' ft</div>';
+        }
+        edgeList.innerHTML = html;
+      }
+    }
+
+    /* ── Find handle under cursor ── */
+    function findHandleUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var hits = raycaster3d.intersectObjects(roofFaces3d[fi].handleMeshes);
+        if (hits.length > 0) {
+          var handleIdx = roofFaces3d[fi].handleMeshes.indexOf(hits[0].object);
+          return { faceIdx: fi, vertexIdx: handleIdx };
+        }
+      }
+      return null;
+    }
+
+    /* ── Find face mesh under cursor ── */
+    function findRoofFaceUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      var meshes = roofFaces3d.map(function(f) { return f.mesh; }).filter(Boolean);
+      var hits = raycaster3d.intersectObjects(meshes);
+      if (hits.length > 0) {
+        for (var i = 0; i < roofFaces3d.length; i++) {
+          if (roofFaces3d[i].mesh === hits[0].object) return i;
+        }
+      }
+      return -1;
+    }
+
+    /* ── Drawing mode toggle ── */
+    function toggleRoofDrawingMode() {
+      if (treePlacingMode) toggleTreeMode();
+      roofDrawingMode = !roofDrawingMode;
+      var canvas = document.getElementById('canvas3d');
+      var banner = document.getElementById('roofModeBanner');
+      if (roofDrawingMode) {
+        canvas.style.cursor = 'crosshair';
+        roofTempVertices = [];
+        clearRoofPreview();
+        if (banner) banner.style.display = 'flex';
+      } else {
+        canvas.style.cursor = '';
+        clearRoofPreview();
+        roofTempVertices = [];
+        if (banner) banner.style.display = 'none';
+      }
+    }
+
+    /* ── Preview helpers ── */
+    function addRoofPreviewHandle(x, z) {
+      var sphere = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 10, 10),
+        new THREE.MeshBasicMaterial({ color: 0xf5a623 })
+      );
+      sphere.position.set(x, 0.2, z);
+      scene3d.add(sphere);
+      roofTempHandles.push(sphere);
+    }
+
+    function updateRoofPreviewLines() {
+      if (roofTempLines) { scene3d.remove(roofTempLines); roofTempLines = null; }
+      if (roofTempVertices.length < 2) return;
+      var positions = [];
+      for (var i = 0; i < roofTempVertices.length; i++) {
+        var a = roofTempVertices[i];
+        var b = roofTempVertices[(i + 1) % roofTempVertices.length];
+        positions.push(a.x, 0.15, a.z, b.x, 0.15, b.z);
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      roofTempLines = new THREE.LineSegments(geo, new THREE.LineDashedMaterial({
+        color: 0xf5a623, dashSize: 0.5, gapSize: 0.3, linewidth: 2
+      }));
+      roofTempLines.computeLineDistances();
+      scene3d.add(roofTempLines);
+    }
+
+    function clearRoofPreview() {
+      roofTempHandles.forEach(function(h) { scene3d.remove(h); });
+      roofTempHandles = [];
+      if (roofTempLines) { scene3d.remove(roofTempLines); roofTempLines = null; }
+    }
+
+    /* ── Smart Roof auto-generate from Solar API ── */
+    /* ── ROOF DETECTION ALGORITHMS ── */
+
+    /* Douglas-Peucker line simplification */
+    function douglasPeucker(pts, tol) {
+      if (pts.length <= 2) return pts;
+      var maxDist = 0, maxIdx = 0;
+      var a = pts[0], b = pts[pts.length - 1];
+      var dx = b.x - a.x, dz = b.z - a.z;
+      var lenSq = dx * dx + dz * dz;
+      for (var i = 1; i < pts.length - 1; i++) {
+        var t = lenSq > 0 ? Math.max(0, Math.min(1, ((pts[i].x - a.x) * dx + (pts[i].z - a.z) * dz) / lenSq)) : 0;
+        var px = a.x + t * dx, pz = a.z + t * dz;
+        var d = Math.sqrt((pts[i].x - px) * (pts[i].x - px) + (pts[i].z - pz) * (pts[i].z - pz));
+        if (d > maxDist) { maxDist = d; maxIdx = i; }
+      }
+      if (maxDist > tol) {
+        var left = douglasPeucker(pts.slice(0, maxIdx + 1), tol);
+        var right = douglasPeucker(pts.slice(maxIdx), tol);
+        return left.slice(0, -1).concat(right);
+      }
+      return [pts[0], pts[pts.length - 1]];
+    }
+
+    /* Extract building points from raw LiDAR */
+    function extractBuildingPoints(rawPoints) {
+      if (!rawPoints || rawPoints.length === 0) return { pts3d: [], pts2d: [], grid: null, gridSize: 0, minX: 0, minZ: 0, step: 0 };
+      var minElev = Infinity;
+      for (var i = 0; i < rawPoints.length; i++) {
+        if (rawPoints[i][2] < minElev) minElev = rawPoints[i][2];
+      }
+      var threshold = minElev + 1.0;
+
+      // Convert all points to local coords and build grid
+      var allLocal = [];
+      var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (var i = 0; i < rawPoints.length; i++) {
+        var p = rawPoints[i];
+        var loc = geoToLocal(p[1], p[0]);
+        allLocal.push({ x: loc.x, z: loc.z, elev: p[2] });
+        if (loc.x < minX) minX = loc.x;
+        if (loc.x > maxX) maxX = loc.x;
+        if (loc.z < minZ) minZ = loc.z;
+        if (loc.z > maxZ) maxZ = loc.z;
+      }
+
+      // Build binary grid
+      var gridSize = 177;
+      var stepX = (maxX - minX) / (gridSize - 1);
+      var stepZ = (maxZ - minZ) / (gridSize - 1);
+      var step = Math.max(stepX, stepZ) || 0.4;
+      var grid = [];
+      for (var r = 0; r < gridSize; r++) {
+        grid[r] = [];
+        for (var c = 0; c < gridSize; c++) grid[r][c] = 0;
+      }
+
+      var pts3d = []; // {x, z, elev} building points
+      for (var i = 0; i < allLocal.length; i++) {
+        var p = allLocal[i];
+        var col = Math.round((p.x - minX) / step);
+        var row = Math.round((p.z - minZ) / step);
+        if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
+          if (p.elev > threshold) {
+            grid[row][col] = 1;
+            pts3d.push(p);
+          }
+        }
+      }
+
+      return { pts3d: pts3d, grid: grid, gridSize: gridSize, minX: minX, minZ: minZ, step: step, threshold: threshold };
+    }
+
+    /* Marching squares contour tracing on binary grid → boundary points */
+    function traceContour(grid, gridSize, minX, minZ, step) {
+      // Find a starting edge cell
+      var startR = -1, startC = -1;
+      for (var r = 0; r < gridSize - 1 && startR < 0; r++) {
+        for (var c = 0; c < gridSize - 1; c++) {
+          var val = (grid[r][c] ? 8 : 0) | (grid[r][c + 1] ? 4 : 0) |
+                    (grid[r + 1][c + 1] ? 2 : 0) | (grid[r + 1][c] ? 1 : 0);
+          if (val > 0 && val < 15) { startR = r; startC = c; break; }
+        }
+      }
+      if (startR < 0) return [];
+
+      // Walk the contour
+      var boundary = [];
+      var visited = {};
+      var r = startR, c = startC;
+      var maxIter = gridSize * gridSize;
+
+      for (var iter = 0; iter < maxIter; iter++) {
+        var key = r + ',' + c;
+        if (visited[key] && iter > 2) break;
+        visited[key] = true;
+
+        var tl = (r >= 0 && c >= 0 && r < gridSize && c < gridSize) ? grid[r][c] : 0;
+        var tr = (r >= 0 && c + 1 < gridSize) ? grid[r][c + 1] : 0;
+        var br = (r + 1 < gridSize && c + 1 < gridSize) ? grid[r + 1][c + 1] : 0;
+        var bl = (r + 1 < gridSize && c >= 0) ? grid[r + 1][c] : 0;
+        var val = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+
+        // Emit midpoint of the cell
+        var cx = minX + (c + 0.5) * step;
+        var cz = minZ + (r + 0.5) * step;
+        boundary.push({ x: cx, z: cz });
+
+        // March direction based on case
+        if (val === 1 || val === 5 || val === 13) { r++; }
+        else if (val === 2 || val === 3 || val === 7) { c++; }
+        else if (val === 4 || val === 10 || val === 14) { r--; }
+        else if (val === 8 || val === 12 || val === 11) { c--; }
+        else if (val === 6) { c++; }
+        else if (val === 9) { r++; }
+        else break;
+
+        if (r < -1 || r >= gridSize || c < -1 || c >= gridSize) break;
+      }
+
+      return boundary;
+    }
+
+    /* Orthogonalize: snap near-90° angles to exact right angles */
+    function orthogonalize(pts) {
+      if (pts.length < 4) return pts;
+      var result = pts.slice();
+      for (var pass = 0; pass < 3; pass++) {
+        for (var i = 0; i < result.length; i++) {
+          var prev = result[(i - 1 + result.length) % result.length];
+          var curr = result[i];
+          var next = result[(i + 1) % result.length];
+          var dx1 = curr.x - prev.x, dz1 = curr.z - prev.z;
+          var dx2 = next.x - curr.x, dz2 = next.z - curr.z;
+          var angle = Math.abs(Math.atan2(dx1 * dz2 - dz1 * dx2, dx1 * dx2 + dz1 * dz2));
+          // If angle is close to 90° (within 15°), snap
+          if (Math.abs(angle - Math.PI / 2) < 0.26) {
+            // Project next edge to be perpendicular to prev edge
+            var len1 = Math.sqrt(dx1 * dx1 + dz1 * dz1) || 1;
+            var nx = -dz1 / len1, nz = dx1 / len1; // perpendicular
+            var dot = (next.x - curr.x) * nx + (next.z - curr.z) * nz;
+            result[(i + 1) % result.length] = { x: curr.x + nx * dot, z: curr.z + nz * dot };
+          }
+        }
+      }
+      return result;
+    }
+
+    /* RANSAC plane fitting on 3D building points */
+    function ransacPlanes(pts3d, maxPlanes) {
+      var planes = [];
+      var remaining = pts3d.slice();
+      var minInliers = Math.max(20, remaining.length * 0.05);
+
+      for (var p = 0; p < maxPlanes && remaining.length > minInliers; p++) {
+        var bestPlane = null, bestInliers = [], bestCount = 0;
+        var iterations = Math.min(200, remaining.length * 2);
+
+        for (var iter = 0; iter < iterations; iter++) {
+          // Pick 3 random points
+          var i0 = Math.floor(Math.random() * remaining.length);
+          var i1 = Math.floor(Math.random() * remaining.length);
+          var i2 = Math.floor(Math.random() * remaining.length);
+          if (i0 === i1 || i1 === i2 || i0 === i2) continue;
+
+          var p0 = remaining[i0], p1 = remaining[i1], p2 = remaining[i2];
+          // Compute plane normal via cross product
+          var ux = p1.x - p0.x, uy = p1.elev - p0.elev, uz = p1.z - p0.z;
+          var vx = p2.x - p0.x, vy = p2.elev - p0.elev, vz = p2.z - p0.z;
+          var nx = uy * vz - uz * vy;
+          var ny = uz * vx - ux * vz;
+          var nz = ux * vy - uy * vx;
+          var len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+          if (len < 0.001) continue;
+          nx /= len; ny /= len; nz /= len;
+          var d = -(nx * p0.x + ny * p0.elev + nz * p0.z);
+
+          // Count inliers (within 0.3m of plane)
+          var inliers = [];
+          for (var j = 0; j < remaining.length; j++) {
+            var dist = Math.abs(nx * remaining[j].x + ny * remaining[j].elev + nz * remaining[j].z + d);
+            if (dist < 0.3) inliers.push(j);
+          }
+
+          if (inliers.length > bestCount) {
+            bestCount = inliers.length;
+            bestPlane = { nx: nx, ny: ny, nz: nz, d: d };
+            bestInliers = inliers;
+          }
+        }
+
+        if (bestCount < minInliers) break;
+
+        // Extract inlier points
+        var planePoints = bestInliers.map(function(idx) { return remaining[idx]; });
+        // Compute pitch and azimuth from normal
+        var pitch = Math.acos(Math.abs(bestPlane.ny)) * 180 / Math.PI;
+        var azimuth = Math.atan2(bestPlane.nx, bestPlane.nz) * 180 / Math.PI;
+        if (azimuth < 0) azimuth += 360;
+
+        planes.push({ normal: bestPlane, points: planePoints, pitch: pitch, azimuth: azimuth });
+
+        // Remove inliers from remaining (reverse order to preserve indices)
+        bestInliers.sort(function(a, b) { return b - a; });
+        for (var k = 0; k < bestInliers.length; k++) remaining.splice(bestInliers[k], 1);
+      }
+
+      return planes;
+    }
+
+    /* Compute concave hull of 2D points (simplified: convex hull + refine) */
+    function convexHull2d(pts) {
+      if (pts.length < 3) return pts;
+      // Graham scan
+      pts = pts.slice().sort(function(a, b) { return a.x - b.x || a.z - b.z; });
+      var lower = [];
+      for (var i = 0; i < pts.length; i++) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0) lower.pop();
+        lower.push(pts[i]);
+      }
+      var upper = [];
+      for (var i = pts.length - 1; i >= 0; i--) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) upper.pop();
+        upper.push(pts[i]);
+      }
+      return lower.slice(0, -1).concat(upper.slice(0, -1));
+    }
+    function cross(o, a, b) { return (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x); }
+
+    /* Build face boundaries from RANSAC planes */
+    function planesToFaces(planes) {
+      var faces = [];
+      var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+      for (var i = 0; i < planes.length; i++) {
+        var plane = planes[i];
+        var pts2d = plane.points.map(function(p) { return { x: p.x, z: p.z }; });
+        if (pts2d.length < 3) continue;
+
+        // Get boundary of this face's points
+        var hull = convexHull2d(pts2d);
+        if (hull.length < 3) continue;
+
+        // Simplify
+        hull = douglasPeucker(hull, 0.4);
+        if (hull.length < 3) continue;
+
+        faces.push({
+          vertices: hull,
+          pitch: plane.pitch,
+          azimuth: plane.azimuth,
+          color: faceColors[i % faceColors.length]
+        });
+      }
+      return faces;
+    }
+
+    /* ══ ELEVATION FLOOD-FILL ROOF DETECTION ══
+       1. Click → find nearest DSM grid cell
+       2. Flood-fill to adjacent cells within ±1m elevation of neighbor
+       3. Trace boundary of flood-filled region = building footprint
+       4. Split into faces using Solar API segment centroids (Voronoi)
+       ═══════════════════════════════════════════ */
+
+    /* Build a local elevation grid from raw LiDAR points */
+    function buildElevGrid(rawPoints) {
+      var minElev = Infinity, minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      for (var i = 0; i < rawPoints.length; i++) {
+        var p = rawPoints[i];
+        if (p[2] < minElev) minElev = p[2];
+        if (p[1] < minLat) minLat = p[1];
+        if (p[1] > maxLat) maxLat = p[1];
+        if (p[0] < minLng) minLng = p[0];
+        if (p[0] > maxLng) maxLng = p[0];
+      }
+
+      // Build grid in local XZ coords
+      var allLocal = [];
+      var lMinX = Infinity, lMaxX = -Infinity, lMinZ = Infinity, lMaxZ = -Infinity;
+      for (var i = 0; i < rawPoints.length; i++) {
+        var p = rawPoints[i];
+        var loc = geoToLocal(p[1], p[0]);
+        allLocal.push({ x: loc.x, z: loc.z, elev: p[2] });
+        if (loc.x < lMinX) lMinX = loc.x;
+        if (loc.x > lMaxX) lMaxX = loc.x;
+        if (loc.z < lMinZ) lMinZ = loc.z;
+        if (loc.z > lMaxZ) lMaxZ = loc.z;
+      }
+
+      var cellSize = 0.4; // ~matches DSM grid spacing
+      var cols = Math.ceil((lMaxX - lMinX) / cellSize) + 1;
+      var rows = Math.ceil((lMaxZ - lMinZ) / cellSize) + 1;
+      var elev = [];
+      for (var r = 0; r < rows; r++) {
+        elev[r] = [];
+        for (var c = 0; c < cols; c++) elev[r][c] = -9999;
+      }
+
+      for (var i = 0; i < allLocal.length; i++) {
+        var p = allLocal[i];
+        var c = Math.round((p.x - lMinX) / cellSize);
+        var r = Math.round((p.z - lMinZ) / cellSize);
+        if (r >= 0 && r < rows && c >= 0 && c < cols) {
+          if (p.elev > elev[r][c]) elev[r][c] = p.elev; // keep max elevation per cell
+        }
+      }
+
+      return { elev: elev, rows: rows, cols: cols, minX: lMinX, minZ: lMinZ, cellSize: cellSize, groundElev: minElev };
+    }
+
+    /* Flood-fill from a grid cell: spread to neighbors within elevation tolerance */
+    function floodFillRoof(grid, startRow, startCol, elevTol) {
+      var rows = grid.rows, cols = grid.cols, elev = grid.elev;
+      if (startRow < 0 || startRow >= rows || startCol < 0 || startCol >= cols) return [];
+      if (elev[startRow][startCol] <= grid.groundElev + 1.0) return [];
+
+      var visited = [];
+      for (var r = 0; r < rows; r++) {
+        visited[r] = [];
+        for (var c = 0; c < cols; c++) visited[r][c] = false;
+      }
+
+      var queue = [{ r: startRow, c: startCol }];
+      visited[startRow][startCol] = true;
+      var filled = [];
+      var dirs = [[-1,0],[1,0],[0,-1],[0,1]]; // 4-connected
+
+      while (queue.length > 0) {
+        var cell = queue.shift();
+        var cellElev = elev[cell.r][cell.c];
+        if (cellElev <= grid.groundElev + 1.0) continue; // below building threshold
+        filled.push(cell);
+
+        for (var d = 0; d < 4; d++) {
+          var nr = cell.r + dirs[d][0], nc = cell.c + dirs[d][1];
+          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+          if (visited[nr][nc]) continue;
+          visited[nr][nc] = true;
+          var neighborElev = elev[nr][nc];
+          if (neighborElev <= grid.groundElev + 1.0) continue; // ground
+          if (Math.abs(neighborElev - cellElev) > elevTol) continue; // elevation jump = edge
+          queue.push({ r: nr, c: nc });
+        }
+      }
+      return filled;
+    }
+
+    /* Convert flood-fill cells to a boundary polygon */
+    function cellsToBoundary(cells, grid) {
+      if (cells.length < 3) return [];
+
+      // Build binary grid from filled cells
+      var rows = grid.rows, cols = grid.cols;
+      var binary = [];
+      for (var r = 0; r < rows; r++) {
+        binary[r] = [];
+        for (var c = 0; c < cols; c++) binary[r][c] = 0;
+      }
+      for (var i = 0; i < cells.length; i++) {
+        binary[cells[i].r][cells[i].c] = 1;
+      }
+
+      // Trace contour
+      var boundary = traceContour(binary, rows, grid.minX, grid.minZ, grid.cellSize);
+      return boundary;
+    }
+
+    /* Split a footprint polygon into faces using Solar API segment centroids */
+    function splitBySegments(footprintVerts, segs) {
+      if (!segs || segs.length <= 1) {
+        // Single face — use the whole footprint
+        var pitch = segs && segs.length === 1 ? (segs[0].pitchDegrees || 0) : 0;
+        var az = segs && segs.length === 1 ? (segs[0].azimuthDegrees || 180) : 180;
+        return [{ vertices: footprintVerts, pitch: pitch, azimuth: az }];
+      }
+
+      // Convert segment centers to local coords
+      var segLocal = segs.map(function(seg) {
+        var loc = geoToLocal(seg.center.latitude, seg.center.longitude);
+        return { x: loc.x, z: loc.z, pitch: seg.pitchDegrees || 0, azimuth: seg.azimuthDegrees || 180, area: (seg.stats && seg.stats.areaMeters2) || 50 };
+      });
+
+      // Sample many points inside the footprint, assign each to nearest segment
+      var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (var i = 0; i < footprintVerts.length; i++) {
+        if (footprintVerts[i].x < minX) minX = footprintVerts[i].x;
+        if (footprintVerts[i].x > maxX) maxX = footprintVerts[i].x;
+        if (footprintVerts[i].z < minZ) minZ = footprintVerts[i].z;
+        if (footprintVerts[i].z > maxZ) maxZ = footprintVerts[i].z;
+      }
+
+      // Point-in-polygon test (ray casting)
+      function pointInPoly(px, pz, poly) {
+        var inside = false;
+        for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          var xi = poly[i].x, zi = poly[i].z, xj = poly[j].x, zj = poly[j].z;
+          if ((zi > pz) !== (zj > pz) && px < (xj - xi) * (pz - zi) / (zj - zi) + xi) inside = !inside;
+        }
+        return inside;
+      }
+
+      // Assign grid points to segments (Voronoi-like)
+      var segPoints = [];
+      for (var s = 0; s < segLocal.length; s++) segPoints[s] = [];
+
+      var step = 0.3;
+      for (var x = minX; x <= maxX; x += step) {
+        for (var z = minZ; z <= maxZ; z += step) {
+          if (!pointInPoly(x, z, footprintVerts)) continue;
+          // Find nearest segment center
+          var bestSeg = 0, bestDist = Infinity;
+          for (var s = 0; s < segLocal.length; s++) {
+            var dx = x - segLocal[s].x, dz = z - segLocal[s].z;
+            var dist = dx * dx + dz * dz;
+            if (dist < bestDist) { bestDist = dist; bestSeg = s; }
+          }
+          segPoints[bestSeg].push({ x: x, z: z });
+        }
+      }
+
+      // Build face polygon for each segment that has enough points
+      var faces = [];
+      for (var s = 0; s < segLocal.length; s++) {
+        if (segPoints[s].length < 5) continue;
+        var hull = convexHull2d(segPoints[s]);
+        if (hull.length < 3) continue;
+        hull = douglasPeucker(hull, 0.3);
+        if (hull.length < 3) continue;
+        faces.push({ vertices: hull, pitch: segLocal[s].pitch, azimuth: segLocal[s].azimuth });
+      }
+
+      // If no segment splitting worked, return whole footprint as one face
+      if (faces.length === 0) {
+        return [{ vertices: footprintVerts, pitch: segs[0].pitchDegrees || 0, azimuth: segs[0].azimuthDegrees || 180 }];
+      }
+      return faces;
+    }
+
+    /* ── Detect roof at clicked point: flood-fill + segment split ── */
+    function detectRoofAtPoint(worldX, worldZ) {
+      if (!lidarRawPoints || lidarRawPoints.length === 0) return;
+
+      // Build elevation grid
+      var grid = buildElevGrid(lidarRawPoints);
+
+      // Find grid cell nearest to click
+      var clickCol = Math.round((worldX - grid.minX) / grid.cellSize);
+      var clickRow = Math.round((worldZ - grid.minZ) / grid.cellSize);
+
+      // Flood-fill from click: follow roof surface, stop at edges
+      var filled = floodFillRoof(grid, clickRow, clickCol, 1.0);
+
+      if (filled.length < 8) {
+        var banner = document.getElementById('roofModeBanner');
+        if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> No building found at click. Try clicking directly on the roof.';
+        return;
+      }
+
+      // Trace the boundary of the flood-filled region
+      var boundary = cellsToBoundary(filled, grid);
+      if (boundary.length < 3) return;
+      boundary = douglasPeucker(boundary, 0.4);
+      boundary = orthogonalize(boundary);
+      if (boundary.length < 3) return;
+
+      // Split by Solar API segments
+      var segs = solarData ? ((solarData.solarPotential || {}).roofSegmentStats || []) : [];
+      var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+      var faces = splitBySegments(boundary, segs);
+      var facesFound = 0;
+
+      faces.forEach(function(face, i) {
+        var idx = finalizeRoofFace(face.vertices, face.pitch, face.azimuth, 0);
+        roofFaces3d[idx].color = faceColors[i % faceColors.length];
+        rebuildRoofFace(idx);
+        facesFound++;
+      });
+
+      var banner = document.getElementById('roofModeBanner');
+      if (banner) {
+        banner.innerHTML = facesFound > 0
+          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Detected ' + facesFound + ' roof face' + (facesFound > 1 ? 's' : '') + '. Click another building or Esc to finish.'
+          : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> No roof planes found. Try clicking directly on the building.';
+      }
+    }
+
+    /* ── Smart Roof: enters detect mode, waits for click ── */
+    function autoGenerateRoof() {
+      if (!lidarRawPoints || lidarRawPoints.length === 0) {
+        alert('LiDAR data not loaded yet. Toggle LiDAR (L) first, then try Smart Roof.');
+        return;
+      }
+      if (!solarData) {
+        fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
+          .then(function(r) { return r.json(); })
+          .then(function(data) { solarData = data; });
+      }
+      if (roofDrawingMode) toggleRoofDrawingMode();
+      if (treePlacingMode) toggleTreeMode();
+      roofDetectMode = true;
+      var canvas = document.getElementById('canvas3d');
+      canvas.style.cursor = 'crosshair';
+      var banner = document.getElementById('roofModeBanner');
+      if (banner) {
+        banner.style.display = 'flex';
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Click on the building to detect roof faces. Esc to cancel.';
+      }
+    }
+
+    /* ── Roof face canvas event handlers ── */
+    (function() {
+      var canvas = document.getElementById('canvas3d');
+      if (!canvas) return;
+
+      // Click: place vertex, detect roof, or select face
+      canvas.addEventListener('click', function(e) {
+        if (space3dHeld) return;
+        if (treePlacingMode) return;
+
+        if (roofDetectMode) {
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+          detectRoofAtPoint(hit.x, hit.z);
+          return;
+        }
+
+        if (roofDrawingMode) {
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+          roofTempVertices.push({ x: hit.x, z: hit.z });
+          addRoofPreviewHandle(hit.x, hit.z);
+          updateRoofPreviewLines();
+          return;
+        }
+
+        // Not in drawing mode — check for face selection
+        if (roofDraggingHandle >= 0) return; // was dragging, ignore click
+        var faceIdx = findRoofFaceUnderCursor(e);
+        if (faceIdx >= 0) {
+          selectRoofFace(faceIdx);
+        } else if (roofSelectedFace >= 0) {
+          deselectRoofFace();
+        }
+      });
+
+      // Double-click: complete polygon
+      canvas.addEventListener('dblclick', function(e) {
+        if (!roofDrawingMode || roofTempVertices.length < 3) return;
+        // dblclick fires two clicks, remove the duplicate last vertex
+        roofTempVertices.pop();
+        if (roofTempHandles.length > 0) {
+          scene3d.remove(roofTempHandles.pop());
+        }
+        finalizeRoofFace(roofTempVertices.slice(), 0, 180, 0);
+        clearRoofPreview();
+        roofTempVertices = [];
+      });
+
+      // Mousedown: start dragging handle
+      canvas.addEventListener('mousedown', function(e) {
+        if (roofDrawingMode || treePlacingMode || space3dHeld) return;
+        var found = findHandleUnderCursor(e);
+        if (found) {
+          roofDraggingFaceIdx = found.faceIdx;
+          roofDraggingHandle = found.vertexIdx;
+          if (controls3d) controls3d.enabled = false;
+          canvas.style.cursor = 'grabbing';
+          e.preventDefault();
+        }
+      });
+
+      // Mousemove: drag handle
+      canvas.addEventListener('mousemove', function(e) {
+        if (roofDraggingHandle < 0) return;
+        var hit = raycastGroundPlane(e);
+        if (!hit) return;
+        var face = roofFaces3d[roofDraggingFaceIdx];
+        face.vertices[roofDraggingHandle] = { x: hit.x, z: hit.z };
+        rebuildRoofFace(roofDraggingFaceIdx);
+        if (roofSelectedFace === roofDraggingFaceIdx) updateRoofPropsPanel();
+      });
+
+      // Mouseup: end drag
+      canvas.addEventListener('mouseup', function(e) {
+        if (roofDraggingHandle >= 0) {
+          roofDraggingHandle = -1;
+          roofDraggingFaceIdx = -1;
+          if (controls3d) controls3d.enabled = true;
+          canvas.style.cursor = '';
+        }
+      });
+
+      // Keyboard: Enter to complete, Escape to cancel, Delete to remove face
+      document.addEventListener('keydown', function(e) {
+        if (e.target.matches('input,textarea,select')) return;
+
+        if (e.key === 'Enter' && roofDrawingMode && roofTempVertices.length >= 3) {
+          e.preventDefault();
+          finalizeRoofFace(roofTempVertices.slice(), 0, 180, 0);
+          clearRoofPreview();
+          roofTempVertices = [];
+          return;
+        }
+
+        if (e.key === 'Escape') {
+          if (roofDetectMode) {
+            e.preventDefault();
+            roofDetectMode = false;
+            var canvas = document.getElementById('canvas3d');
+            canvas.style.cursor = '';
+            var banner = document.getElementById('roofModeBanner');
+            if (banner) banner.style.display = 'none';
+            return;
+          }
+          if (roofDrawingMode) {
+            e.preventDefault();
+            clearRoofPreview();
+            roofTempVertices = [];
+            toggleRoofDrawingMode();
+            return;
+          }
+          if (roofSelectedFace >= 0) {
+            e.preventDefault();
+            deselectRoofFace();
+            return;
+          }
+        }
+
+        if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
+          e.preventDefault();
+          deleteRoofFace(roofSelectedFace);
+          return;
+        }
+      });
+
+      // Wire up menu items
+      var btnManual = document.getElementById('btnManualRoof');
+      var btnSmart = document.getElementById('btnSmartRoof');
+      var btnFlat = document.getElementById('btnFlatRoof');
+      if (btnManual) btnManual.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleRoofDrawingMode();
+      });
+      if (btnSmart) btnSmart.addEventListener('click', function(e) {
+        e.stopPropagation();
+        autoGenerateRoof();
+      });
+      if (btnFlat) btnFlat.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleRoofDrawingMode(); // same as manual, pitch defaults to 0
+      });
+
+      // Props panel input listeners
+      var pitchInput = document.getElementById('roofPropPitch');
+      var azInput = document.getElementById('roofPropAzimuth');
+      var heightInput = document.getElementById('roofPropHeight');
+      if (pitchInput) pitchInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].pitch = parseFloat(this.value) || 0;
+        markDirty();
+      });
+      if (azInput) azInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        markDirty();
+      });
+      if (heightInput) heightInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+        markDirty();
+      });
+
+      // Delete face button
+      var btnDel = document.getElementById('btnDeleteRoofFace');
+      if (btnDel) btnDel.addEventListener('click', function() {
+        if (roofSelectedFace >= 0) deleteRoofFace(roofSelectedFace);
       });
     })();
 
@@ -8755,10 +10267,10 @@ app.get("/design", (req, res) => {
           var mPerPx = satExtentM / iw;
           result.push({ x: (px - iw / 2) * mPerPx, z: (py - ih / 2) * mPerPx });
         } else {
-          // LiDAR/RGB: image covers lidarExtentM meters, centered on design point
+          // LiDAR/RGB: image covers lidarExtentM meters — add center offset to align with design point
           var mPerPxX = lidarExtentMX / iw;
           var mPerPxY = lidarExtentMY / ih;
-          result.push({ x: (px - iw / 2) * mPerPxX, z: (py - ih / 2) * mPerPxY });
+          result.push({ x: (px - iw / 2) * mPerPxX + lidarCenterOffX, z: (py - ih / 2) * mPerPxY + lidarCenterOffZ });
         }
       }
       return result;
@@ -8799,9 +10311,9 @@ app.get("/design", (req, res) => {
         return;
       }
       // Move LiDAR point cloud (satellite ground plane stays fixed as reference)
-      // Auto-align already set lidarPoints.position — add calibration offset on top
-      lidarPoints.position.x += cal.tx;
-      lidarPoints.position.z += cal.tz;
+      // SET position (not +=) — calibration is the total offset, replaces auto-align
+      lidarPoints.position.x = cal.tx;
+      lidarPoints.position.z = cal.tz;
       pendingCalibration = null;
       console.log('Calibration applied to LiDAR: tx=' + cal.tx.toFixed(3) + ' tz=' + cal.tz.toFixed(3));
     }
