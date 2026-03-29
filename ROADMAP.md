@@ -108,6 +108,7 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - **Setbacks — live enforcement** — Apply setback values from System settings to roof segment drawing in real time
 
 ### Design Tool
+- **Remove 2D map view** — The 2D CSS-transform map view is obsolete and should be removed. The 3D LiDAR/Three.js viewer is the primary interface going forward.
 - **Bill savings tab** — Build out the Bill savings view in the production panel dropdown.
 - **Simulate system** — Connect the Simulate system button to a real simulation backend.
 

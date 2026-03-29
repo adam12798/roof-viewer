@@ -20,15 +20,23 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 - [x] Aggressive no-cache headers on design page
 
 ### LiDAR Point Cloud
-- [x] Grid density: 121×121 → 161×161 (14.6k → 25.9k points)
-- [x] Point size: 2.0 → 4.5 for better zoomed-out visibility
-- [x] Ground plane lowered to Y=-0.5 to prevent z-fighting
+- [x] Grid density: 121×121 → 177×177 (14.6k → 31.3k points)
+- [x] Point size: 2.0 → 6.6 with sizeAttenuation (world-space, grows on zoom)
+- [x] Ground plane at Y=-0.5 to prevent z-fighting
+- [x] Ground point filter: removes points within 1m of minimum elevation
+- [x] Aurora-style color gradient: cyan → green → yellow → orange → red (height-based)
+- [x] Solid circle texture with alphaTest cutout
+- [x] Starting camera zoom increased 50% (closer default view)
 
 ### 3D ViewCube — Fully Functional
-- [x] Draggable orbiting: click-drag orbits camera (matches 2D viewcube sensitivity)
+- [x] Draggable orbiting: pointer capture for responsive drag even over cube faces
 - [x] Face clicks: snap to preset views, keep tilt for side views
 - [x] Double-click: reset to top-down
 - [x] Repositioned above zoom controls, z-index 50, stopPropagation for event isolation
+- [x] Fixed vertical drag direction (was inverted vs 2D cube)
+- [x] Fixed left/right face click azimuths (were swapped vs 2D cube)
+- [x] Fixed compass ring: N at top, S at bottom
+- [x] Tilt range: 0°–90° in 2D design mode, 0°–80° in 3D LiDAR mode
 
 ---
 

@@ -1,0 +1,39 @@
+{
+  "modules": [
+    {
+      "id": "qcells-qtron-blk-430",
+      "name": "Q.TRON BLK M-G2.C1+/AC 430",
+      "manufacturer": "Qcells",
+      "type": "Default",
+      "componentType": "Mono Si",
+      "wattage": 430,
+      "cellQuantity": 54,
+      "efficiency": 22.0,
+      "description": "108 Half-cut monocrystalline Q.ANTUM NEO cells",
+      "microinverter": true,
+      "microinverterManufacturer": "Qcells",
+      "submoduleSimulation": true,
+      "regions": "All regions",
+      "domesticContent": false,
+      "dimensions": { "lengthMm": 1722, "widthMm": 1134, "heightMm": 40 },
+      "weightKg": 22.95,
+      "mechanical": {
+        "staticLoadWind": 3600,
+        "staticLoadSnow": 5400
+      },
+      "miscellaneous": {
+        "annualDegradation": 0.33,
+        "lightInducedDegradation": 1.17,
+        "connectorType": "Stäubli MC4",
+        "workWarrantyYears": 25,
+        "productWarrantyYears": 25,
+        "frameType": "Black anodized aluminum",
+        "frameColor": "Black",
+        "backsheetColor": null
+      },
+      "createdAt": "2026-03-29T00:00:00.000Z"
+    }
+  ],
+  "inverters": [],
+  "racking": []
+}

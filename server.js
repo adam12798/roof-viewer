@@ -1655,7 +1655,7 @@ app.post("/api/projects", (req, res) => {
   const project = {
     id: newId(),
     createdAt: new Date().toISOString(),
-    projectName: projectName || "",
+    projectName: projectName || customer?.name || "",
     propertyType: propertyType || "residential",
     address,
     lat,
@@ -1690,6 +1690,20 @@ app.patch("/api/projects/:id/rename", (req, res) => {
   const project = projects.find(p => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: "Not found" });
   project.projectName = req.body.name || project.projectName;
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// ── Update customer profile ───────────────────────────────────────────────────
+app.patch("/api/projects/:id/customer", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  if (!project.customer) project.customer = {};
+  const { name, email, phone } = req.body;
+  if (name !== undefined) project.customer.name = name;
+  if (email !== undefined) project.customer.email = email;
+  if (phone !== undefined) project.customer.phone = phone;
   saveProjects(projects);
   res.json({ ok: true });
 });
@@ -1734,6 +1748,71 @@ app.patch("/api/projects/:id/notes", (req, res) => {
   if (!project) return res.status(404).json({ error: "Not found" });
   project.notes = req.body.notes || "";
   saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// ── Equipment API ─────────────────────────────────────────────────────────
+function loadEquipment() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/equipment.json"), "utf8")); }
+  catch { return { modules: [], inverters: [], racking: [] }; }
+}
+function saveEquipment(eq) {
+  fs.writeFileSync(path.join(__dirname, "data/equipment.json"), JSON.stringify(eq, null, 2));
+}
+
+// List all equipment
+app.get("/api/equipment", (req, res) => {
+  res.json(loadEquipment());
+});
+
+// List modules
+app.get("/api/equipment/modules", (req, res) => {
+  res.json(loadEquipment().modules);
+});
+
+// Add a module
+app.post("/api/equipment/modules", (req, res) => {
+  const eq = loadEquipment();
+  const mod = {
+    id: newId(),
+    name: req.body.name || "Unnamed Module",
+    manufacturer: req.body.manufacturer || "",
+    type: req.body.type || "Default",
+    componentType: req.body.componentType || "",
+    wattage: req.body.wattage || 0,
+    cellQuantity: req.body.cellQuantity || 0,
+    efficiency: req.body.efficiency || 0,
+    description: req.body.description || "",
+    microinverter: req.body.microinverter || false,
+    microinverterManufacturer: req.body.microinverterManufacturer || "",
+    submoduleSimulation: req.body.submoduleSimulation || false,
+    regions: req.body.regions || "All regions",
+    domesticContent: req.body.domesticContent || false,
+    dimensions: req.body.dimensions || { lengthMm: null, widthMm: null },
+    createdAt: new Date().toISOString()
+  };
+  eq.modules.push(mod);
+  saveEquipment(eq);
+  res.json(mod);
+});
+
+// Update a module
+app.put("/api/equipment/modules/:id", (req, res) => {
+  const eq = loadEquipment();
+  const mod = eq.modules.find(m => m.id === req.params.id);
+  if (!mod) return res.status(404).json({ error: "Module not found" });
+  Object.assign(mod, req.body, { id: mod.id });
+  saveEquipment(eq);
+  res.json(mod);
+});
+
+// Delete a module
+app.delete("/api/equipment/modules/:id", (req, res) => {
+  const eq = loadEquipment();
+  const idx = eq.modules.findIndex(m => m.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Module not found" });
+  eq.modules.splice(idx, 1);
+  saveEquipment(eq);
   res.json({ ok: true });
 });
 
@@ -1785,6 +1864,7 @@ app.put("/api/projects/:id/designs/:designId", (req, res) => {
   if (!design) return res.status(404).json({ error: "Design not found" });
   if (req.body.segments !== undefined) design.segments = req.body.segments;
   if (req.body.stats) design.stats = req.body.stats;
+  if (req.body.trees !== undefined) design.trees = req.body.trees;
   if (req.body.name) design.name = req.body.name;
   design.updatedAt = new Date().toISOString();
   saveProjects(projects);
@@ -1854,7 +1934,8 @@ app.post("/api/projects/:id/designs/:designId/duplicate", (req, res) => {
     name: source.name + " (copy)",
     createdAt: new Date().toISOString(),
     segments: JSON.parse(JSON.stringify(source.segments || [])),
-    stats: { ...source.stats }
+    stats: { ...source.stats },
+    trees: JSON.parse(JSON.stringify(source.trees || []))
   };
   project.designs.push(copy);
   saveProjects(projects);
@@ -1920,24 +2001,76 @@ app.get("/api/solar/geotiff", async (req, res) => {
   }
 });
 
-// ── Satellite imagery proxy (Google Maps Static API) ────────────────────────
+// ── Satellite imagery providers ──────────────────────────────────────────────
+const IMAGERY_PROVIDERS = {
+  google: {
+    name: "Google Maps",
+    available: () => !!(process.env.GOOGLE_MAPS_KEY || API_KEY),
+    fetchImage: async (lat, lng, zoom, dims) => {
+      const key = process.env.GOOGLE_MAPS_KEY || API_KEY;
+      const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${zoom}&size=${dims}&scale=2&maptype=satellite&key=${key}`;
+      return fetch(url);
+    }
+  },
+  nearmap: {
+    name: "Nearmap",
+    available: () => !!process.env.NEARMAP_API_KEY,
+    fetchImage: async (lat, lng, zoom, dims) => {
+      const key = process.env.NEARMAP_API_KEY;
+      const [w, h] = dims.split("x").map(Number);
+      // Nearmap Tile API — vertical imagery at high resolution
+      // Docs: https://docs.nearmap.com/display/ND/Tile+API
+      const url = `https://api.nearmap.com/staticmap/v3/staticimage?center=${lat},${lng}&zoom=${zoom}&size=${w}x${h}&maptype=Vert&apikey=${key}`;
+      return fetch(url);
+    }
+  },
+  eagleview: {
+    name: "EagleView",
+    available: () => !!(process.env.EAGLEVIEW_API_KEY && process.env.EAGLEVIEW_CLIENT_ID),
+    fetchImage: async (lat, lng, zoom, dims) => {
+      const apiKey = process.env.EAGLEVIEW_API_KEY;
+      const clientId = process.env.EAGLEVIEW_CLIENT_ID;
+      // EagleView Reveal API — high-res ortho imagery
+      // Replace with actual endpoint when API access is provisioned
+      const url = `https://api.eagleview.com/imagery/v1/ortho?lat=${lat}&lng=${lng}&zoom=${zoom}&client_id=${clientId}&apikey=${apiKey}`;
+      return fetch(url);
+    }
+  }
+};
+
+// List available imagery providers
+app.get("/api/imagery/providers", (req, res) => {
+  const providers = Object.entries(IMAGERY_PROVIDERS).map(([id, p]) => ({
+    id, name: p.name, available: p.available()
+  }));
+  res.json({ providers, default: providers.find(p => p.available)?.id || null });
+});
+
+// Satellite imagery proxy — supports provider query param
 app.get("/api/satellite", async (req, res) => {
-  const { lat, lng, zoom, size } = req.query;
+  const { lat, lng, zoom, size, provider: providerParam } = req.query;
   if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
-  const mapsKey = process.env.GOOGLE_MAPS_KEY || API_KEY;
-  if (!mapsKey) return res.status(500).json({ error: "No Google Maps API key configured" });
+
+  // Pick provider: explicit param → first available
+  const providerId = providerParam && IMAGERY_PROVIDERS[providerParam]?.available()
+    ? providerParam
+    : Object.keys(IMAGERY_PROVIDERS).find(k => IMAGERY_PROVIDERS[k].available());
+
+  if (!providerId) return res.status(500).json({ error: "No imagery API key configured" });
+
   const z = zoom || 20;
   const s = size || "640x640";
   const dims = s.includes("x") ? s : `${s}x${s}`;
+
   try {
-    const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${dims}&scale=2&maptype=satellite&key=${mapsKey}`;
-    const resp = await fetch(url);
+    const resp = await IMAGERY_PROVIDERS[providerId].fetchImage(lat, lng, z, dims);
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "Unknown error");
-      return res.status(resp.status).json({ error: "Static Maps API error: " + errText.slice(0, 200) });
+      return res.status(resp.status).json({ error: `${IMAGERY_PROVIDERS[providerId].name} error: ${errText.slice(0, 200)}` });
     }
     res.set("Content-Type", resp.headers.get("content-type") || "image/png");
     res.set("Cache-Control", "public, max-age=86400");
+    res.set("X-Imagery-Provider", providerId);
     resp.body.pipe(res);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2042,7 +2175,7 @@ app.get("/api/lidar/points", async (req, res) => {
   if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
-  const gridSize = 161;       // 161×161 = 25,921 points
+  const gridSize = 177;       // 177×177 = 31,329 points
   const halfExtent = 35;      // 35 meters from pin in each direction (~70m × 70m, matches satellite image)
 
   try {
@@ -2756,11 +2889,11 @@ app.get("/project/:id", (req, res) => {
           <div class="cp-row">
             <div class="cp-field">
               <label class="cp-label">First name</label>
-              <input class="cp-input" type="text" placeholder="first name" value="${firstName}"/>
+              <input class="cp-input" id="cpFirstName" type="text" placeholder="first name" value="${firstName}"/>
             </div>
             <div class="cp-field">
               <label class="cp-label">Last name</label>
-              <input class="cp-input" type="text" placeholder="last name" value="${lastName}"/>
+              <input class="cp-input" id="cpLastName" type="text" placeholder="last name" value="${lastName}"/>
             </div>
           </div>
 
@@ -2769,12 +2902,12 @@ app.get("/project/:id", (req, res) => {
               <label class="cp-label">Phone</label>
               <div class="cp-phone-wrap">
                 <div class="cp-flag">🇺🇸 <svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></div>
-                <input class="cp-input cp-phone-input" type="tel" placeholder="+1" value="${esc(project.customer?.phone||"")}"/>
+                <input class="cp-input cp-phone-input" id="cpPhone" type="tel" placeholder="+1" value="${esc(project.customer?.phone||"")}"/>
               </div>
             </div>
             <div class="cp-field">
               <label class="cp-label">Email</label>
-              <input class="cp-input" type="email" placeholder="email address" value="${esc(project.customer?.email||"")}"/>
+              <input class="cp-input" id="cpEmail" type="email" placeholder="email address" value="${esc(project.customer?.email||"")}"/>
             </div>
           </div>
 
@@ -2809,16 +2942,59 @@ app.get("/project/:id", (req, res) => {
             </div>
             <a href="#" class="cp-jurisdiction-link">View jurisdiction</a>
           </div>
+
+          <div style="margin-top:20px;display:flex;align-items:center;gap:12px;">
+            <button id="cpSaveBtn" onclick="saveCustomerProfile()" style="padding:9px 24px;border-radius:8px;border:none;background:#111;color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;">Save changes</button>
+            <span id="cpSaveStatus" style="font-size:0.8rem;color:#16a34a;font-weight:500;opacity:0;transition:opacity 0.3s;"></span>
+          </div>
         </div>
 
-        <!-- Right: satellite map -->
+        <!-- Right: satellite map with pin -->
         <div class="cp-map">
-          ${mapSrc
-            ? `<img src="${mapSrc}" alt="Property satellite view"/>`
+          ${project.lat && project.lng
+            ? `<div style="position:relative;width:100%;height:100%;">
+                <img src="/api/satellite?lat=${project.lat}&lng=${project.lng}&zoom=20&width=640&height=640" alt="Property satellite view" style="width:100%;height:100%;object-fit:cover;"/>
+                <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-100%);z-index:2;">
+                  <svg width="32" height="42" viewBox="0 0 32 42" fill="none"><path d="M16 0C7.16 0 0 7.16 0 16c0 12 16 26 16 26s16-14 16-26C32 7.16 24.84 0 16 0z" fill="#e8682a"/><circle cx="16" cy="16" r="6" fill="#fff"/></svg>
+                </div>
+              </div>`
             : `<div style="width:100%;height:100%;background:#e5e7eb;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:0.85rem;">No location data</div>`
           }
         </div>
-      </div>`;
+      </div>
+      <script>
+        function saveCustomerProfile() {
+          const first = document.getElementById("cpFirstName").value.trim();
+          const last = document.getElementById("cpLastName").value.trim();
+          const name = [first, last].filter(Boolean).join(" ");
+          const email = document.getElementById("cpEmail").value.trim();
+          const phone = document.getElementById("cpPhone").value.trim();
+          const btn = document.getElementById("cpSaveBtn");
+          const status = document.getElementById("cpSaveStatus");
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+          fetch("/api/projects/${project.id}/customer", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, email, phone })
+          })
+          .then(r => r.json())
+          .then(() => {
+            btn.textContent = "Save changes";
+            btn.disabled = false;
+            status.textContent = "✓ Saved";
+            status.style.opacity = "1";
+            setTimeout(() => { status.style.opacity = "0"; }, 2500);
+          })
+          .catch(() => {
+            btn.textContent = "Save changes";
+            btn.disabled = false;
+            status.textContent = "Failed to save";
+            status.style.color = "#dc2626";
+            status.style.opacity = "1";
+          });
+        }
+      </script>`;
   }
 
   else if (tab === "documents") {
@@ -5843,6 +6019,11 @@ app.get("/design", (req, res) => {
       <!-- LiDAR 3D viewer — sits on top of map, hidden until toggled -->
       <div id="viewer3d" style="position:absolute;inset:0;z-index:10;">
         <canvas id="canvas3d" style="width:100%;height:100%;display:block;"></canvas>
+        <!-- Tree mode banner -->
+        <div id="treeModeBanner" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#16a34a;color:#fff;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
+          Tree Mode — Click to place center, move to set radius, click to confirm
+        </div>
         <!-- Status -->
         <div id="lidarStatus" style="position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.85rem;font-weight:600;z-index:20;"></div>
         <!-- LiDAR loading overlay -->
@@ -5859,8 +6040,8 @@ app.get("/design", (req, res) => {
           <div class="viewcube-wrap" id="viewcubeWrap3d">
             <div class="viewcube-ring"></div>
             <div class="viewcube-compass" id="vcCompass3d">
-              <span class="vc-n">S</span>
-              <span class="vc-s"></span>
+              <span class="vc-n">N</span>
+              <span class="vc-s">S</span>
               <span class="vc-e">E</span>
               <span class="vc-w">W</span>
             </div>
@@ -6420,6 +6601,14 @@ app.get("/design", (req, res) => {
     var selectedSegment = null;
     var currentMode = 'select';
 
+    /* ── Tree placement state ── */
+    var trees3d = [];
+    var treePlacingMode = false;
+    var treePlaceStep = 0;
+    var treeCenterPoint = null;
+    var treePreviewCircle = null;
+    var treePreviewMesh = null;
+
     /* ── Production bottom drawer ── */
     var prodDrawer = document.getElementById('prodDrawer');
     var prodExpand = document.querySelector('.tb-stats-expand');
@@ -6608,6 +6797,50 @@ app.get("/design", (req, res) => {
           if (w) w.classList.remove('open');
           if (i) i.classList.remove('active');
         });
+      }
+    });
+
+    /* ── Tree tool toggle ── */
+    (function() {
+      var menuTrees = document.getElementById('menuTrees');
+      if (menuTrees) {
+        menuTrees.addEventListener('click', function(e) {
+          e.stopPropagation();
+          toggleTreeMode();
+        });
+      }
+    })();
+    function toggleTreeMode() {
+      treePlacingMode = !treePlacingMode;
+      var menuTrees = document.getElementById('menuTrees');
+      var canvas = document.getElementById('canvas3d');
+      var banner = document.getElementById('treeModeBanner');
+      if (treePlacingMode) {
+        if (menuTrees) menuTrees.classList.add('active');
+        if (canvas) canvas.style.cursor = 'crosshair';
+        treePlaceStep = 0;
+        if (banner) banner.style.display = 'flex';
+      } else {
+        if (menuTrees) menuTrees.classList.remove('active');
+        if (canvas) canvas.style.cursor = '';
+        treePlaceStep = 0;
+        treeCenterPoint = null;
+        removeTreePreview();
+        if (banner) banner.style.display = 'none';
+      }
+    }
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === 't' || e.key === 'T') && !e.target.matches('input,textarea,select')) {
+        toggleTreeMode();
+      }
+      if (e.key === 'Escape' && treePlacingMode) {
+        if (treePlaceStep === 1) {
+          treePlaceStep = 0;
+          treeCenterPoint = null;
+          removeTreePreview();
+        } else {
+          toggleTreeMode();
+        }
       }
     });
 
@@ -6810,7 +7043,7 @@ app.get("/design", (req, res) => {
 
       function updateViewCube() {
         // Clamp tilt: 0 = flat top-down, 80 = near eye-level
-        vcRotX = Math.max(0, Math.min(80, vcRotX));
+        vcRotX = Math.max(0, Math.min(90, vcRotX));
         // Normalize heading
         vcRotZ = ((vcRotZ % 360) + 360) % 360;
 
@@ -6828,7 +7061,7 @@ app.get("/design", (req, res) => {
         tiltSlider.value = vcRotX;
       }
 
-      /* ── Spacebar + drag to pan the 3D view ── */
+      /* ── Spacebar + drag to pan the 2D view ── */
       var spaceHeld = false;
       var spacePanning = false;
       var spStartX = 0, spStartY = 0;
@@ -6906,7 +7139,7 @@ app.get("/design", (req, res) => {
         var dy = e.clientY - vcStartY;
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) vcDidDrag = true;
         vcRotZ = vcStartRotZ - dx * 0.6;
-        vcRotX = Math.max(0, Math.min(80, vcStartRotX - dy * 0.3));
+        vcRotX = Math.max(0, Math.min(90, vcStartRotX - dy * 0.3));
         updateViewCube();
       });
 
@@ -6922,7 +7155,7 @@ app.get("/design", (req, res) => {
       function handleFaceClick(view) {
         map3dPlane.style.transition = 'transform 0.4s ease';
         if (view === 'top') { vcRotX = 0; vcRotZ = 0; }
-        else if (view === 'bottom') { vcRotX = 80; vcRotZ = vcRotZ; }
+        else if (view === 'bottom') { vcRotX = 90; vcRotZ = vcRotZ; }
         else {
           // Keep current tilt, but if flat (0), bump to dice-on-table angle
           if (vcRotX < 10) vcRotX = 30;
@@ -6949,7 +7182,7 @@ app.get("/design", (req, res) => {
         updateViewCube();
       });
       // Update slider range for full tilt
-      tiltSlider.max = 80;
+      tiltSlider.max = 90;
 
       // Apply default dice-on-table orientation on load
       updateViewCube();
@@ -7224,7 +7457,7 @@ app.get("/design", (req, res) => {
 
     function saveCurrentDesign(callback) {
       if (!projectId || !currentDesignId) { if (callback) callback(); return; }
-      var data = { segments: serializeSegments(), stats: getCurrentStats() };
+      var data = { segments: serializeSegments(), stats: getCurrentStats(), trees: serializeTrees() };
       fetch('/api/projects/' + projectId + '/designs/' + currentDesignId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -7345,6 +7578,26 @@ app.get("/design", (req, res) => {
             addAzimuthArrow(polygon);
           });
           updateStats();
+        }
+
+        /* Restore trees in 3D view */
+        trees3d.forEach(function(t) { if (t.mesh) scene3d.remove(t.mesh); });
+        trees3d = [];
+        if (design.trees && design.trees.length > 0 && typeof THREE !== 'undefined') {
+          design.trees.forEach(function(td) {
+            var local = geoToLocal(td.lat, td.lng);
+            var sceneH = td.height * vertExag;
+            var mesh = buildTreeGroup({ x: local.x, z: local.z }, td.radius, sceneH, false);
+            scene3d.add(mesh);
+            trees3d.push({
+              center: { x: local.x, z: local.z },
+              radius: td.radius,
+              height: td.height,
+              mesh: mesh,
+              lat: td.lat,
+              lng: td.lng
+            });
+          });
         }
       });
     }
@@ -7626,7 +7879,7 @@ app.get("/design", (req, res) => {
 
       camera3d = new THREE.PerspectiveCamera(5, w / h, 1, 5000);
       // Dice-on-table default: 30° tilt from above
-      camera3d.position.set(0, 800, 0.001);
+      camera3d.position.set(0, 530, 0.001);
       camera3d.lookAt(0, 0, 0);
 
       renderer3d = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
@@ -7639,9 +7892,75 @@ app.get("/design", (req, res) => {
       controls3d.dampingFactor = 0.08;
       controls3d.minDistance = 50;
       controls3d.maxDistance = 3000;
-      controls3d.maxPolarAngle = Math.PI / 2.05; // don't go below ground
+      controls3d.maxPolarAngle = 80 * Math.PI / 180; // cap at 80°
       controls3d.screenSpacePanning = true;
       controls3d.panSpeed = 12;
+      // Swap: right-click = orbit, disable built-in left-click rotate
+      controls3d.mouseButtons = {
+        LEFT: null,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.ROTATE
+      };
+      canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+      // Spacebar + drag = pan in 3D view
+      var space3dHeld = false, space3dPanning = false;
+      var sp3dStartX = 0, sp3dStartY = 0;
+      document.addEventListener('keydown', function(e) {
+        if (e.code === 'Space' && !e.repeat && !e.target.matches('input,textarea,select') && lidarActive) {
+          e.preventDefault();
+          space3dHeld = true;
+          canvas.style.cursor = 'grab';
+          controls3d.enabled = false;
+        }
+      });
+      document.addEventListener('keyup', function(e) {
+        if (e.code === 'Space' && lidarActive) {
+          e.preventDefault();
+          space3dHeld = false;
+          space3dPanning = false;
+          canvas.style.cursor = '';
+          controls3d.enabled = true;
+        }
+      });
+      canvas.addEventListener('mousedown', function(e) {
+        if (space3dHeld && e.button === 0) {
+          space3dPanning = true;
+          sp3dStartX = e.clientX;
+          sp3dStartY = e.clientY;
+          canvas.style.cursor = 'grabbing';
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+      document.addEventListener('mousemove', function(e) {
+        if (space3dPanning && camera3d && controls3d) {
+          var dx = e.clientX - sp3dStartX;
+          var dy = e.clientY - sp3dStartY;
+          sp3dStartX = e.clientX;
+          sp3dStartY = e.clientY;
+          // Pan along ground plane (XZ) based on camera heading
+          var scale = 0.25;
+          var forward = new THREE.Vector3();
+          camera3d.getWorldDirection(forward);
+          forward.y = 0;
+          forward.normalize();
+          var right = new THREE.Vector3();
+          right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+          var panOffset = new THREE.Vector3();
+          panOffset.addScaledVector(right, -dx * scale);
+          panOffset.addScaledVector(forward, dy * scale);
+          camera3d.position.add(panOffset);
+          controls3d.target.add(panOffset);
+        }
+      });
+      document.addEventListener('mouseup', function() {
+        if (space3dPanning) {
+          space3dPanning = false;
+          canvas.style.cursor = space3dHeld ? 'grab' : '';
+          controls3d.enabled = true;
+        }
+      });
 
       // Lights
       scene3d.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -7701,7 +8020,7 @@ app.get("/design", (req, res) => {
       if (!wrap3d) return;
 
       // Stop events from reaching OrbitControls canvas underneath
-      ['mousedown','mouseup','mousemove','click','dblclick','wheel','pointerdown','pointerup','pointermove'].forEach(function(evt) {
+      ['click','dblclick','wheel'].forEach(function(evt) {
         wrap3d.addEventListener(evt, function(e) { e.stopPropagation(); });
       });
 
@@ -7709,6 +8028,7 @@ app.get("/design", (req, res) => {
       var vcDragging3d = false, vcDidDrag3d = false;
       var vcStartX3d = 0, vcStartY3d = 0;
       var vcStartAzimuth3d = 0, vcStartPolar3d = 0;
+      var vcPointerId3d = -1;
       var DEG = Math.PI / 180;
 
       function getCameraSpherical() {
@@ -7732,9 +8052,11 @@ app.get("/design", (req, res) => {
         controls3d.update();
       }
 
-      // Drag: horizontal 0.6 deg/px, vertical 0.3 deg/px (matches 2D cube)
-      wrap3d.addEventListener('mousedown', function(e) {
+      // Drag: use pointer capture so moves work even when cursor leaves the cube
+      wrap3d.addEventListener('pointerdown', function(e) {
         if (!camera3d || !controls3d) return;
+        e.stopPropagation();
+        e.preventDefault();
         vcDragging3d = true;
         vcDidDrag3d = false;
         vcStartX3d = e.clientX;
@@ -7742,11 +8064,12 @@ app.get("/design", (req, res) => {
         var s = getCameraSpherical();
         vcStartAzimuth3d = s.azimuth;
         vcStartPolar3d = s.polar;
+        vcPointerId3d = e.pointerId;
+        wrap3d.setPointerCapture(e.pointerId);
         wrap3d.style.cursor = 'grabbing';
-        e.preventDefault();
       });
 
-      document.addEventListener('mousemove', function(e) {
+      wrap3d.addEventListener('pointermove', function(e) {
         if (!vcDragging3d) return;
         var dx = e.clientX - vcStartX3d;
         var dy = e.clientY - vcStartY3d;
@@ -7755,15 +8078,17 @@ app.get("/design", (req, res) => {
 
         var s = getCameraSpherical();
         var newAzimuth = vcStartAzimuth3d - dx * 0.6 * DEG;
-        var newPolar = vcStartPolar3d + dy * 0.3 * DEG;
+        var newPolar = vcStartPolar3d - dy * 0.3 * DEG;
         // Clamp polar: 0° (top-down) to 80° (near ground) — matches 2D cube range
         newPolar = Math.max(0.1 * DEG, Math.min(80 * DEG, newPolar));
         setCameraFromSpherical(s.r, newPolar, newAzimuth);
       });
 
-      document.addEventListener('mouseup', function() {
+      wrap3d.addEventListener('pointerup', function(e) {
         if (vcDragging3d) {
           vcDragging3d = false;
+          if (vcPointerId3d >= 0) wrap3d.releasePointerCapture(vcPointerId3d);
+          vcPointerId3d = -1;
           wrap3d.style.cursor = 'grab';
         }
       });
@@ -7777,16 +8102,15 @@ app.get("/design", (req, res) => {
         var azimuth = s.azimuth;
 
         if (view === 'top') {
-          polar = 0.1 * DEG; azimuth = 0;
+          polar = 0.001 * DEG; azimuth = 0;
         } else if (view === 'bottom') {
-          polar = 80 * DEG;
+          polar = 179.999 * DEG; azimuth = 0;
         } else {
-          // Keep current tilt; if near flat, bump to 30°
-          if (polar < 10 * DEG) polar = 30 * DEG;
+          polar = 90 * DEG;
           if (view === 'front') azimuth = 0;
           else if (view === 'back') azimuth = Math.PI;
-          else if (view === 'left') azimuth = -Math.PI / 2;
-          else if (view === 'right') azimuth = Math.PI / 2;
+          else if (view === 'left') azimuth = Math.PI / 2;
+          else if (view === 'right') azimuth = -Math.PI / 2;
         }
         setCameraFromSpherical(r, polar, azimuth);
       }
@@ -7838,6 +8162,16 @@ app.get("/design", (req, res) => {
 
       var img = new Image();
       img.crossOrigin = 'anonymous';
+
+      function frameCamera() {
+        var fovRad = camera3d.fov * Math.PI / 180;
+        var camDist = (extentM / 2) / Math.tan(fovRad / 2) * 0.87;
+        camDist = Math.max(200, Math.min(2000, camDist));
+        camera3d.position.set(0, camDist, 0.001);
+        controls3d.target.set(0, 0, 0);
+        controls3d.update();
+      }
+
       img.onload = function() {
         var texture = new THREE.Texture(img);
         texture.needsUpdate = true;
@@ -7845,15 +8179,19 @@ app.get("/design", (req, res) => {
         groundPlane3d = new THREE.Mesh(geo, mat);
         groundPlane3d.position.set(0, -0.5, 0);
         scene3d.add(groundPlane3d);
-
-        // Frame camera to see the ground plane
-        var fovRad = camera3d.fov * Math.PI / 180;
-        var camDist = (extentM / 2) / Math.tan(fovRad / 2) * 1.3;
-        camDist = Math.max(200, Math.min(2000, camDist));
-        camera3d.position.set(0, camDist, 0.001);
-        controls3d.target.set(0, 0, 0);
-        controls3d.update();
+        frameCamera();
       };
+
+      img.onerror = function() {
+        // Fallback: render a gray ground plane so the scene isn't empty
+        var mat = new THREE.MeshBasicMaterial({ color: 0xd1d5db, side: THREE.DoubleSide });
+        groundPlane3d = new THREE.Mesh(geo, mat);
+        groundPlane3d.position.set(0, -0.5, 0);
+        scene3d.add(groundPlane3d);
+        frameCamera();
+        setStatus3d('Satellite imagery unavailable — showing placeholder');
+      };
+
       img.src = '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640';
     }
 
@@ -7905,16 +8243,21 @@ app.get("/design", (req, res) => {
         .then(function(r) { return r.json(); })
         .then(function(data) {
           lidarLoading = false;
-          if (overlay) overlay.style.display = 'none';
-          if (data.error) { lidarLoadError = data.error; setStatus3d('LiDAR: ' + data.error); return; }
+          if (data.error) {
+            if (overlay) overlay.style.display = 'none';
+            lidarLoadError = data.error; setStatus3d('LiDAR: ' + data.error); return;
+          }
           if (!data.points || data.points.length === 0) {
+            if (overlay) overlay.style.display = 'none';
             lidarLoadError = data.message || 'No LiDAR data for this location';
             setStatus3d(lidarLoadError);
             return;
           }
+          if (overlay) overlay.querySelector && overlay.querySelector('span') ?
+            overlay.querySelector('span').textContent = 'Aligning LiDAR...' :
+            setStatus3d('Aligning LiDAR...');
           buildLidarPointCloud(data.points);
           lidarFetched = true;
-          setStatus3d(data.points.length.toLocaleString() + ' points loaded');
         })
         .catch(function(e) {
           lidarLoading = false;
@@ -7928,9 +8271,6 @@ app.get("/design", (req, res) => {
     function buildLidarPointCloud(points) {
       if (lidarPoints) { scene3d.remove(lidarPoints); lidarPoints = null; }
 
-      var positions = new Float32Array(points.length * 3);
-      var colors = new Float32Array(points.length * 3);
-
       var minZ = Infinity, maxZ = -Infinity;
       for (var i = 0; i < points.length; i++) {
         if (points[i][2] < minZ) minZ = points[i][2];
@@ -7939,29 +8279,38 @@ app.get("/design", (req, res) => {
       var zRange = maxZ - minZ || 1;
       groundLevel = minZ;
 
+      // Filter out ground-level points (within 1m of lowest elevation)
+      var groundThreshold = minZ + 1.0;
+      var filtered = [];
       for (var i = 0; i < points.length; i++) {
-        var p = points[i];
-        var cls = p[3] || 0;
+        if (points[i][2] > groundThreshold) filtered.push(points[i]);
+      }
+
+      var positions = new Float32Array(filtered.length * 3);
+      var colors = new Float32Array(filtered.length * 3);
+
+      for (var i = 0; i < filtered.length; i++) {
+        var p = filtered[i];
         var local = geoToLocal(p[1], p[0]);
         positions[i * 3]     = local.x;
         positions[i * 3 + 1] = (p[2] - minZ) * vertExag;
         positions[i * 3 + 2] = local.z;
 
-        // Aurora-style rainbow elevation gradient: blue → cyan → green → yellow → red
+        // Aurora-style elevation gradient: cyan → green → yellow → orange → red
         var ht = (p[2] - minZ) / zRange;
         var r, g, b;
-        if (ht < 0.25) {
-          var t = ht / 0.25;
-          r = 0.0; g = t; b = 1.0;                // blue → cyan
-        } else if (ht < 0.5) {
-          var t = (ht - 0.25) / 0.25;
-          r = 0.0; g = 1.0; b = 1.0 - t;          // cyan → green
+        if (ht < 0.35) {
+          var t = ht / 0.35;
+          r = 0.2 * t; g = 0.7 + t * 0.15; b = 0.95 - t * 0.45; // cyan → teal-green
+        } else if (ht < 0.55) {
+          var t = (ht - 0.35) / 0.2;
+          r = 0.2 + t * 0.4; g = 0.85 + t * 0.1; b = 0.5 - t * 0.35; // teal-green → yellow-green
         } else if (ht < 0.75) {
-          var t = (ht - 0.5) / 0.25;
-          r = t; g = 1.0; b = 0.0;                 // green → yellow
+          var t = (ht - 0.55) / 0.2;
+          r = 0.6 + t * 0.35; g = 0.95 - t * 0.35; b = 0.15 - t * 0.1; // yellow-green → orange
         } else {
           var t = (ht - 0.75) / 0.25;
-          r = 1.0; g = 1.0 - t; b = 0.0;           // yellow → red
+          r = 0.95; g = 0.6 - t * 0.4; b = 0.05;              // orange → red
         }
         colors[i * 3] = r;
         colors[i * 3 + 1] = g;
@@ -7984,7 +8333,7 @@ app.get("/design", (req, res) => {
       ptTexture.needsUpdate = true;
 
       var mat = new THREE.PointsMaterial({
-        size: 4.5,
+        size: 6.6,
         map: ptTexture,
         vertexColors: true,
         sizeAttenuation: true,
@@ -7994,13 +8343,18 @@ app.get("/design", (req, res) => {
       });
 
       lidarPoints = new THREE.Points(geo, mat);
+      lidarPoints.visible = false; // hidden until calibration applied
       scene3d.add(lidarPoints);
 
       // Auto-align: use Solar API roof segments to correct LiDAR offset
       autoAlignLidar(points, positions, minZ, zRange);
     }
 
+    var autoAlignDone = false;
+    var onAutoAlignDone = null; // callback after auto-align finishes
+
     function autoAlignLidar(points, positions, minZ, zRange) {
+      autoAlignDone = false;
       fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -8051,8 +8405,259 @@ app.get("/design", (req, res) => {
             console.log('Auto-align offset: x=' + offsetX.toFixed(2) + ' z=' + offsetZ.toFixed(2));
           }
         })
-        .catch(function(e) { console.error('Auto-align error:', e); });
+        .catch(function(e) { console.error('Auto-align error:', e); })
+        .finally(function() {
+          autoAlignDone = true;
+          if (onAutoAlignDone) { onAutoAlignDone(); onAutoAlignDone = null; }
+        });
     }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       TREE PLACEMENT TOOL — click center, drag radius, snap to LiDAR height
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    function raycastGroundPlane(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      var plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      var intersection = new THREE.Vector3();
+      var hit = raycaster3d.ray.intersectPlane(plane, intersection);
+      return hit ? intersection : null;
+    }
+
+    function getTreeHeightFromLidar(cx, cz, radius) {
+      if (!lidarPoints) return radius * 2 * vertExag;
+      var positions = lidarPoints.geometry.attributes.position.array;
+      var count = positions.length / 3;
+      var ox = lidarPoints.position.x;
+      var oz = lidarPoints.position.z;
+      var maxY = 0;
+      var found = false;
+      var r2 = radius * radius;
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3] + ox;
+        var py = positions[i * 3 + 1];
+        var pz = positions[i * 3 + 2] + oz;
+        var dx = px - cx;
+        var dz = pz - cz;
+        if (dx * dx + dz * dz <= r2) {
+          if (py > maxY) maxY = py;
+          found = true;
+        }
+      }
+      return found ? maxY : (radius * 2 * vertExag);
+    }
+
+    function createTreePreviewCircle(center, radius) {
+      removeTreePreview();
+      var segs = 64;
+      var positions = new Float32Array((segs + 1) * 3);
+      for (var i = 0; i <= segs; i++) {
+        var theta = (i / segs) * Math.PI * 2;
+        positions[i * 3]     = center.x + Math.cos(theta) * radius;
+        positions[i * 3 + 1] = 0.1;
+        positions[i * 3 + 2] = center.z + Math.sin(theta) * radius;
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      var mat = new THREE.LineBasicMaterial({ color: 0x22c55e, linewidth: 2 });
+      treePreviewCircle = new THREE.Line(geo, mat);
+      scene3d.add(treePreviewCircle);
+    }
+
+    function updateTreePreviewCircle(center, radius) {
+      if (!treePreviewCircle) return;
+      var positions = treePreviewCircle.geometry.attributes.position.array;
+      var segs = 64;
+      for (var i = 0; i <= segs; i++) {
+        var theta = (i / segs) * Math.PI * 2;
+        positions[i * 3]     = center.x + Math.cos(theta) * radius;
+        positions[i * 3 + 1] = 0.1;
+        positions[i * 3 + 2] = center.z + Math.sin(theta) * radius;
+      }
+      treePreviewCircle.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function updateTreePreviewMesh(center, radius) {
+      if (treePreviewMesh) { scene3d.remove(treePreviewMesh); treePreviewMesh = null; }
+      var estHeight = radius * 2 * vertExag;
+      treePreviewMesh = buildTreeGroup(center, radius, estHeight, true);
+      scene3d.add(treePreviewMesh);
+    }
+
+    function removeTreePreview() {
+      if (treePreviewCircle) { scene3d.remove(treePreviewCircle); treePreviewCircle = null; }
+      if (treePreviewMesh) { scene3d.remove(treePreviewMesh); treePreviewMesh = null; }
+    }
+
+    function buildTreeGroup(center, radius, sceneHeight, isPreview) {
+      var group = new THREE.Group();
+      var trunkR = radius * 0.15;
+      var trunkH = sceneHeight * 0.35;
+      var opacity = isPreview ? 0.4 : 0.85;
+
+      var trunkGeo = new THREE.CylinderGeometry(trunkR, trunkR * 1.2, trunkH, 8);
+      var trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, transparent: isPreview, opacity: isPreview ? 0.3 : 1.0 });
+      var trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.set(center.x, trunkH / 2, center.z);
+      group.add(trunk);
+
+      var canopyGeo = new THREE.SphereGeometry(radius, 16, 12);
+      var canopyMat = new THREE.MeshLambertMaterial({ color: 0x228B22, transparent: true, opacity: opacity });
+      var canopy = new THREE.Mesh(canopyGeo, canopyMat);
+      canopy.position.set(center.x, sceneHeight * 0.7, center.z);
+      group.add(canopy);
+
+      return group;
+    }
+
+    function createTreeMesh(center, radius, sceneHeight) {
+      var mesh = buildTreeGroup(center, radius, sceneHeight, false);
+      scene3d.add(mesh);
+      return mesh;
+    }
+
+    function finalizeTree(center, radius) {
+      var sceneHeight = getTreeHeightFromLidar(center.x, center.z, radius);
+      var mesh = createTreeMesh(center, radius, sceneHeight);
+      var mPerDegLng = 111320 * Math.cos(designLat * Math.PI / 180);
+      var lng = center.x / mPerDegLng + designLng;
+      var lat = -(center.z / metersPerDegLat) + designLat;
+      trees3d.push({
+        center: { x: center.x, z: center.z },
+        radius: radius,
+        height: sceneHeight / vertExag,
+        mesh: mesh,
+        lat: lat,
+        lng: lng
+      });
+      markDirty();
+    }
+
+    function serializeTrees() {
+      return trees3d.map(function(t) {
+        return { lat: t.lat, lng: t.lng, radius: t.radius, height: t.height };
+      });
+    }
+
+    /* ── Tree canvas event handlers ── */
+    var hoveredTreeIdx = -1;
+
+    function findTreeUnderCursor(event) {
+      var hit = raycastGroundPlane(event);
+      if (!hit) return -1;
+      for (var i = 0; i < trees3d.length; i++) {
+        var t = trees3d[i];
+        var dx = hit.x - t.center.x;
+        var dz = hit.z - t.center.z;
+        if (dx * dx + dz * dz <= t.radius * t.radius) return i;
+      }
+      return -1;
+    }
+
+    function setTreeHighlight(idx, highlight) {
+      if (idx < 0 || idx >= trees3d.length) return;
+      var group = trees3d[idx].mesh;
+      if (!group) return;
+      group.children.forEach(function(child) {
+        if (child.material) {
+          if (highlight) {
+            child.material._origOpacity = child.material.opacity;
+            child.material.opacity = Math.min(child.material.opacity + 0.15, 1.0);
+            child.material.emissive = new THREE.Color(0x444444);
+            child.material.transparent = true;
+            child.material.needsUpdate = true;
+          } else {
+            child.material.opacity = child.material._origOpacity !== undefined ? child.material._origOpacity : child.material.opacity;
+            child.material.emissive = new THREE.Color(0x000000);
+            child.material.needsUpdate = true;
+          }
+        }
+      });
+    }
+
+    function deleteTree(idx) {
+      if (idx < 0 || idx >= trees3d.length) return;
+      var t = trees3d[idx];
+      if (t.mesh) scene3d.remove(t.mesh);
+      trees3d.splice(idx, 1);
+      hoveredTreeIdx = -1;
+      markDirty();
+    }
+
+    (function() {
+      var canvas = document.getElementById('canvas3d');
+      if (!canvas) return;
+
+      canvas.addEventListener('click', function(e) {
+        if (!treePlacingMode || !camera3d) return;
+        // If hovering over existing tree and not mid-placement, ignore click (don't place on top)
+        if (treePlaceStep === 0 && hoveredTreeIdx >= 0) return;
+        var hit = raycastGroundPlane(e);
+        if (!hit) return;
+
+        if (treePlaceStep === 0) {
+          treeCenterPoint = { x: hit.x, z: hit.z };
+          createTreePreviewCircle(treeCenterPoint, 0.5);
+          treePlaceStep = 1;
+          var banner = document.getElementById('treeModeBanner');
+          if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg> Move to set canopy radius, click to confirm';
+        } else if (treePlaceStep === 1) {
+          var dx = hit.x - treeCenterPoint.x;
+          var dz = hit.z - treeCenterPoint.z;
+          var radius = Math.sqrt(dx * dx + dz * dz);
+          radius = Math.max(0.5, Math.min(radius, 15));
+          removeTreePreview();
+          finalizeTree(treeCenterPoint, radius);
+          treeCenterPoint = null;
+          treePlaceStep = 0;
+          var banner = document.getElementById('treeModeBanner');
+          if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg> Tree Mode — Click to place center, move to set radius, click to confirm';
+        }
+      });
+
+      canvas.addEventListener('mousemove', function(e) {
+        if (!camera3d) return;
+
+        // Tree hover highlight (active in tree mode when not mid-placement)
+        if (treePlacingMode && treePlaceStep === 0) {
+          var idx = findTreeUnderCursor(e);
+          if (idx !== hoveredTreeIdx) {
+            if (hoveredTreeIdx >= 0) setTreeHighlight(hoveredTreeIdx, false);
+            hoveredTreeIdx = idx;
+            if (hoveredTreeIdx >= 0) {
+              setTreeHighlight(hoveredTreeIdx, true);
+              canvas.style.cursor = 'pointer';
+            } else {
+              canvas.style.cursor = 'crosshair';
+            }
+          }
+        }
+
+        // Preview circle during radius drag
+        if (treePlacingMode && treePlaceStep === 1 && treeCenterPoint) {
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+          var dx = hit.x - treeCenterPoint.x;
+          var dz = hit.z - treeCenterPoint.z;
+          var radius = Math.sqrt(dx * dx + dz * dz);
+          radius = Math.max(0.5, Math.min(radius, 15));
+          updateTreePreviewCircle(treeCenterPoint, radius);
+          updateTreePreviewMesh(treeCenterPoint, radius);
+        }
+      });
+
+      // Delete/Backspace to remove hovered tree
+      document.addEventListener('keydown', function(e) {
+        if ((e.key === 'Delete' || e.key === 'Backspace') && treePlacingMode && hoveredTreeIdx >= 0 && !e.target.matches('input,textarea,select')) {
+          e.preventDefault();
+          deleteTree(hoveredTreeIdx);
+        }
+      });
+    })();
 
     /* ══════════════════════════════════════════════════════════════════════════
        CALIBRATION SYSTEM — side-by-side alignment of satellite + LiDAR
@@ -8323,22 +8928,40 @@ app.get("/design", (req, res) => {
     var _origBuildLidar=buildLidarPointCloud;
     buildLidarPointCloud=function(points){
       _origBuildLidar(points);
-      // Apply pending calibration (set before LiDAR loaded)
-      if (pendingCalibration) {
-        applyCalibration(pendingCalibration);
-        return;
+
+      function revealLidar() {
+        if (lidarPoints) lidarPoints.visible = true;
+        var overlay = document.getElementById('lidarLoadingOverlay');
+        if (overlay) overlay.style.display = 'none';
+        setStatus3d(points.length.toLocaleString() + ' points loaded');
       }
-      // Auto-load saved calibration (version 2+ only, ignore old pixel-space data)
-      fetch('/api/projects/'+projectId+'/calibration')
-        .then(function(r){return r.json();})
-        .then(function(cal){
-          if(cal && cal.version >= 2 && cal.tx !== undefined){
-            applyCalibration(cal);
-            var btn=document.getElementById('btnCalibrate');
-            if(btn) btn.classList.add('tb2-calibrated');
-          }
-        })
-        .catch(function(){});
+
+      // Apply calibration AFTER auto-align finishes to avoid race condition
+      function applyAfterAlign() {
+        if (pendingCalibration) {
+          applyCalibration(pendingCalibration);
+          revealLidar();
+          return;
+        }
+        // Auto-load saved calibration (version 2+ only, ignore old pixel-space data)
+        fetch('/api/projects/'+projectId+'/calibration')
+          .then(function(r){return r.json();})
+          .then(function(cal){
+            if(cal && cal.version >= 2 && cal.tx !== undefined){
+              applyCalibration(cal);
+              var btn=document.getElementById('btnCalibrate');
+              if(btn) btn.classList.add('tb2-calibrated');
+            }
+          })
+          .catch(function(){})
+          .finally(function(){ revealLidar(); });
+      }
+
+      if (autoAlignDone) {
+        applyAfterAlign();
+      } else {
+        onAutoAlignDone = applyAfterAlign;
+      }
     };
 
   </script>
