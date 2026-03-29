@@ -45,13 +45,13 @@
 
 ### CAD Engine & Equipment Catalog (6 phases)
 
-**Phase 1 — Equipment Catalog & Database Page (~1 session)**
-- New `data/equipment.json` with real specs: modules, inverters, DC optimizers, batteries
-- Seed data: 8-12 modules (Canadian Solar, REC, Jinko, Trina, Q CELLS, SunPower, LONGi, 370W-450W range), 4-6 inverters (SolarEdge SE7600H/SE10000H, Enphase IQ8M/IQ8A, SMA Sunny Boy), 3 optimizers (SolarEdge P401/P505/P700), 4 batteries (Tesla Powerwall 3, Enphase IQ Battery 5P, LG ESS, SolarEdge Home Battery)
-- Module fields: manufacturer, model, wattage, width/height (m), efficiency, Vmp/Imp/Voc/Isc, tempCoeff, costPerWatt
-- Inverter fields: manufacturer, model, type (string/micro/hybrid), ratedPower, maxDcInput, MPPT channels, max string size, cost
-- CRUD endpoints: `GET/POST/PUT/DELETE /api/equipment/:category[/:id]`
-- Wire up existing `/database` page — render real data in tables, toggle enable/disable, search/filter
+**Phase 1 — Equipment Catalog & Database Page (~1 session)** ✅ Partially done (2026-03-29)
+- ✅ `data/equipment.json` created with module schema (Q.TRON BLK 430W with full mechanical/misc specs)
+- ✅ CRUD endpoints: `GET/POST/PUT/DELETE /api/equipment/modules[/:id]`
+- Remaining: seed more modules (Canadian Solar, REC, Jinko, Trina, SunPower, LONGi), add inverters/optimizers/batteries
+- Remaining: add electrical & temperature spec tabs to equipment schema
+- Remaining: wire up `/database` page to render equipment tables with search/filter
+- Remaining: inverter fields: manufacturer, model, type (string/micro/hybrid), ratedPower, maxDcInput, MPPT channels, max string size, cost
 
 **Phase 2 — Module Selection in Design Tool (~1 session)**
 - Module dropdown in right panel System tab (above Setbacks) showing enabled modules
@@ -108,9 +108,16 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - **Setbacks — live enforcement** — Apply setback values from System settings to roof segment drawing in real time
 
 ### Design Tool
+- ~~**Spacebar = pan only**~~ ✅ Done (2026-03-29) — 1:1 pan scale, multi-drag support
+- ~~**ViewCube snap**~~ ✅ Done (2026-03-29) — Face clicks snap to true head-on views
+- ~~**LiDAR calibration persistence**~~ ✅ Done (2026-03-29) — Fixed race condition, no more visible shift on load
+- ~~**Toolbar consolidation**~~ ✅ Done (2026-03-29) — Draw toolbar removed, LiDAR moved to tb2
 - **Remove 2D map view** — The 2D CSS-transform map view is obsolete and should be removed. The 3D LiDAR/Three.js viewer is the primary interface going forward.
 - **Bill savings tab** — Build out the Bill savings view in the production panel dropdown.
 - **Simulate system** — Connect the Simulate system button to a real simulation backend.
+- **Sidebar-driven tools** — Wire Roof/Obstructions/Trees sidebar items to trigger drawing modes (replacing removed draw-toolbar)
+- **Scroll zoom 1:1** — Apply same dynamic scale to scroll/pinch zoom for consistent feel
+- **Animated camera transitions** — Smooth tween between ViewCube positions instead of instant snap
 
 ### Settings
 - **Edit mode** — Hook up the Edit button on the User Profile settings page to persist real profile updates.
@@ -135,6 +142,13 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 
 ### Documents
 - **File upload/download** — Upload and manage permits, contracts, proposals on the Documents tab.
+
+### Imagery Providers
+- ✅ Provider architecture done (2026-03-29) — Google/Nearmap/EagleView abstraction with `/api/imagery/providers`
+- **Nearmap integration** — Add `NEARMAP_API_KEY` to `.env`, verify Tile API URL matches account tier
+- **EagleView integration** — Add `EAGLEVIEW_API_KEY` + `EAGLEVIEW_CLIENT_ID`, verify Reveal API endpoint
+- **Provider selector UI** — Dropdown in design tool to switch imagery source per project
+- **Resolution comparison** — Side-by-side view of Google vs Nearmap/EagleView for quality assessment
 
 ### Infrastructure
 - **Persistent storage** — Migrate from JSON files to SQLite or Postgres.
@@ -179,6 +193,36 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - **Empty states** — Design cards with `$0.00` need helpful messaging.
 - **Loading / error states** — Map load, API failures, bad addresses.
 - **Undo / Redo** — Toolbar buttons exist in design tool but need history stack.
+
+---
+
+## Completed — 2026-03-29 (Session 21)
+
+### Tree Placement Tool
+- Click "Trees" menu or press `T` to enter tree mode — green banner shows instructions
+- Two-click workflow: click to set center → move cursor to set canopy radius (live preview circle + ghost tree) → click to finalize
+- Tree height auto-snaps to LiDAR point cloud: queries max elevation within canopy radius, accounts for LiDAR offset from calibration alignment
+- Tree mesh: brown cylinder trunk (bottom 35%) + green sphere canopy (top 70%), `MeshLambertMaterial` responds to scene lighting
+- Hover highlight: trees brighten (emissive glow + opacity boost) when cursor is over them in tree mode, cursor changes to pointer
+- Delete: press Delete/Backspace while hovering a tree to remove it
+- Persistence: trees save/load with design via `PUT /api/projects/:id/designs/:designId`, duplicated with design copies
+- Data model: `{ lat, lng, radius, height }` per tree, stored in `design.trees[]`
+
+### 3D View Controls Swap
+- Right-click drag = orbit/rotate (was left-click via OrbitControls default)
+- Spacebar + drag = pan along ground plane (fixed sensitivity 0.25, heading-aware, no zoom impact)
+- Left-click freed up for tool interactions (tree placement, future panel placement)
+- Context menu suppressed on 3D canvas
+- Spacebar suppresses all tool interactions (tree clicks, hover, preview) — only pan works while held
+
+### Customer Profile — Save & Satellite Image
+- New `PATCH /api/projects/:id/customer` endpoint: persists name, email, phone
+- Save button + success indicator on customer profile tab
+- Input fields have IDs for JS access (cpFirstName, cpLastName, cpPhone, cpEmail)
+- Satellite image replaced: now uses high-res `/api/satellite` endpoint at zoom 20 with orange location pin centered on property (was Google Static Maps)
+
+### Default Project Name
+- Project name defaults to customer name when no custom project name is provided at creation
 
 ---
 

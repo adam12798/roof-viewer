@@ -4808,7 +4808,8 @@ app.get("/design", (req, res) => {
     }
     #map { width: 100%; height: 100%; }
     /* Ensure overlays sit above the 3D scene */
-    .draw-toolbar, .map-bottom, .lp-toggle-float { z-index: 10; }
+    .draw-toolbar, .lp-toggle-float { z-index: 10; }
+    .map-bottom { z-index: 20; }
 
     /* bottom map bar */
     .map-bottom {
@@ -5717,7 +5718,7 @@ app.get("/design", (req, res) => {
       <span class="tb2-tip">Sun path</span>
     </button>
     <!-- LIDAR -->
-    <button class="tb2-btn">
+    <button class="tb2-btn" id="btn3dView">
       <svg width="16" height="16" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
         <line x1="28" y1="4" x2="28" y2="17"/>
         <line x1="38" y1="2" x2="38" y2="13"/>
@@ -6115,32 +6116,13 @@ app.get("/design", (req, res) => {
       </button>
 
       <!-- Drawing toolbar -->
-      <div class="draw-toolbar">
-        <button class="draw-btn active" id="btnSelect" title="Select/Move">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-7 1-4 6z"/></svg>
-          Select
-        </button>
-        <button class="draw-btn" id="btnDrawRoof" title="Draw Roof Segment">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 19 22 19"/></svg>
-          Roof
-        </button>
-        <button class="draw-btn" id="btnPanels" title="Auto-fill Panels">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          Panels
-        </button>
-        <button class="draw-btn" id="btnDelete" title="Delete selected">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-          Delete
-        </button>
-        <div style="width:1px;height:24px;background:#555;margin:0 4px;"></div>
-        <button class="draw-btn" id="btnShade" title="Shade Analysis">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-          Shade
-        </button>
-        <button class="draw-btn" id="btn3dView" title="LiDAR 3D View">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
-          LiDAR
-        </button>
+      <!-- Hidden draw toolbar — buttons referenced by JS, kept in DOM -->
+      <div class="draw-toolbar" style="display:none;">
+        <button class="draw-btn active" id="btnSelect" title="Select/Move"></button>
+        <button class="draw-btn" id="btnDrawRoof" title="Draw Roof Segment"></button>
+        <button class="draw-btn" id="btnPanels" title="Auto-fill Panels"></button>
+        <button class="draw-btn" id="btnDelete" title="Delete selected"></button>
+        <button class="draw-btn" id="btnShade" title="Shade Analysis"></button>
       </div>
 
       <!-- Shade analysis floating panel -->
@@ -6608,6 +6590,7 @@ app.get("/design", (req, res) => {
     var treeCenterPoint = null;
     var treePreviewCircle = null;
     var treePreviewMesh = null;
+    var space3dHeld = false;
 
     /* ── Production bottom drawer ── */
     var prodDrawer = document.getElementById('prodDrawer');
@@ -7139,7 +7122,7 @@ app.get("/design", (req, res) => {
         var dy = e.clientY - vcStartY;
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) vcDidDrag = true;
         vcRotZ = vcStartRotZ - dx * 0.6;
-        vcRotX = Math.max(0, Math.min(90, vcStartRotX - dy * 0.3));
+        vcRotX = Math.max(0, Math.min(90, vcStartRotX - dy * 1.5));
         updateViewCube();
       });
 
@@ -7904,7 +7887,7 @@ app.get("/design", (req, res) => {
       canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
       // Spacebar + drag = pan in 3D view
-      var space3dHeld = false, space3dPanning = false;
+      var space3dPanning = false;
       var sp3dStartX = 0, sp3dStartY = 0;
       document.addEventListener('keydown', function(e) {
         if (e.code === 'Space' && !e.repeat && !e.target.matches('input,textarea,select') && lidarActive) {
@@ -7926,6 +7909,7 @@ app.get("/design", (req, res) => {
       canvas.addEventListener('mousedown', function(e) {
         if (space3dHeld && e.button === 0) {
           space3dPanning = true;
+          controls3d.enabled = false;
           sp3dStartX = e.clientX;
           sp3dStartY = e.clientY;
           canvas.style.cursor = 'grabbing';
@@ -7940,7 +7924,9 @@ app.get("/design", (req, res) => {
           sp3dStartX = e.clientX;
           sp3dStartY = e.clientY;
           // Pan along ground plane (XZ) based on camera heading
-          var scale = 0.25;
+          var distance = camera3d.position.distanceTo(controls3d.target);
+          var vFov = camera3d.fov * Math.PI / 180;
+          var scale = 2 * distance * Math.tan(vFov / 2) / renderer3d.domElement.clientHeight;
           var forward = new THREE.Vector3();
           camera3d.getWorldDirection(forward);
           forward.y = 0;
@@ -7958,7 +7944,7 @@ app.get("/design", (req, res) => {
         if (space3dPanning) {
           space3dPanning = false;
           canvas.style.cursor = space3dHeld ? 'grab' : '';
-          controls3d.enabled = true;
+          if (!space3dHeld) controls3d.enabled = true;
         }
       });
 
@@ -8078,7 +8064,7 @@ app.get("/design", (req, res) => {
 
         var s = getCameraSpherical();
         var newAzimuth = vcStartAzimuth3d - dx * 0.6 * DEG;
-        var newPolar = vcStartPolar3d - dy * 0.3 * DEG;
+        var newPolar = vcStartPolar3d - dy * 0.8 * DEG;
         // Clamp polar: 0° (top-down) to 80° (near ground) — matches 2D cube range
         newPolar = Math.max(0.1 * DEG, Math.min(80 * DEG, newPolar));
         setCameraFromSpherical(s.r, newPolar, newAzimuth);
@@ -8289,11 +8275,12 @@ app.get("/design", (req, res) => {
       var positions = new Float32Array(filtered.length * 3);
       var colors = new Float32Array(filtered.length * 3);
 
+      // Use groundThreshold as the zero-line so lowest visible points sit at y=0
       for (var i = 0; i < filtered.length; i++) {
         var p = filtered[i];
         var local = geoToLocal(p[1], p[0]);
         positions[i * 3]     = local.x;
-        positions[i * 3 + 1] = (p[2] - minZ) * vertExag;
+        positions[i * 3 + 1] = (p[2] - groundThreshold) * vertExag;
         positions[i * 3 + 2] = local.z;
 
         // Aurora-style elevation gradient: cyan → green → yellow → orange → red
@@ -8344,6 +8331,7 @@ app.get("/design", (req, res) => {
 
       lidarPoints = new THREE.Points(geo, mat);
       lidarPoints.visible = false; // hidden until calibration applied
+      lidarPoints.position.y = -0.75;
       scene3d.add(lidarPoints);
 
       // Auto-align: use Solar API roof segments to correct LiDAR offset
@@ -8593,7 +8581,7 @@ app.get("/design", (req, res) => {
       if (!canvas) return;
 
       canvas.addEventListener('click', function(e) {
-        if (!treePlacingMode || !camera3d) return;
+        if (!treePlacingMode || !camera3d || space3dHeld) return;
         // If hovering over existing tree and not mid-placement, ignore click (don't place on top)
         if (treePlaceStep === 0 && hoveredTreeIdx >= 0) return;
         var hit = raycastGroundPlane(e);
@@ -8620,7 +8608,7 @@ app.get("/design", (req, res) => {
       });
 
       canvas.addEventListener('mousemove', function(e) {
-        if (!camera3d) return;
+        if (!camera3d || space3dHeld) return;
 
         // Tree hover highlight (active in tree mode when not mid-placement)
         if (treePlacingMode && treePlaceStep === 0) {
