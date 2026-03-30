@@ -6455,7 +6455,6 @@ app.get("/design", (req, res) => {
             <div class="viewcube-ring"></div>
             <div class="viewcube-compass" id="vcCompass3d">
               <div class="vc-north-tick"></div>
-              <span class="vc-n">N</span>
               <span class="vc-s">S</span>
               <span class="vc-e">E</span>
               <span class="vc-w">W</span>
@@ -6741,11 +6740,11 @@ app.get("/design", (req, res) => {
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <span style="font-size:0.8rem;color:#ccc;">Modules</span>
-              <span style="font-size:0.8rem;color:#eee;" id="roofPropModules">0</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropModules">&mdash;</span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <span style="font-size:0.8rem;color:#ccc;">Module coverage</span>
-              <span style="font-size:0.8rem;color:#eee;" id="roofPropCoverage">0.00%</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropCoverage">&mdash;</span>
             </div>
           </div>
           <div id="roofEdgeLengthsList" style="margin-top:8px;"></div>
@@ -7120,6 +7119,21 @@ app.get("/design", (req, res) => {
           </div>
         </div>
       </div>
+      <div class="ef-section">
+        <div class="ef-section-title" style="font-size:0.75rem;color:#999;font-weight:600;">Dimensions</div>
+        <div class="ef-row">
+          <span class="ef-label">Width</span>
+          <span class="ef-value" id="dpWidth">&mdash;</span>
+        </div>
+        <div class="ef-row">
+          <span class="ef-label">Depth</span>
+          <span class="ef-value" id="dpDepth">&mdash;</span>
+        </div>
+        <div class="ef-row">
+          <span class="ef-label">Wall height</span>
+          <span class="ef-value" id="dpWallH">&mdash;</span>
+        </div>
+      </div>
     </div>
 
     <!-- SMARTROOF SIDE PANEL -->
@@ -7176,11 +7190,11 @@ app.get("/design", (req, res) => {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
           </button>
         </div>
-        <div class="sr-prop-row"><span class="sr-prop-label">Roof surface</span><span class="sr-prop-value">&mdash;</span></div>
-        <div class="sr-prop-row"><span class="sr-prop-label">Framing type</span><span class="sr-prop-value">&mdash;</span></div>
-        <div class="sr-prop-row"><span class="sr-prop-label">Framing size</span><span class="sr-prop-value">&mdash;</span></div>
-        <div class="sr-prop-row"><span class="sr-prop-label">Framing spacing</span><span class="sr-prop-value">&mdash;</span></div>
-        <div class="sr-prop-row"><span class="sr-prop-label">Decking</span><span class="sr-prop-value">&mdash;</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Roof surface</span><span class="sr-prop-value" id="srRoofSurface">Asphalt Shingle</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing type</span><span class="sr-prop-value" id="srFramingType">Rafter</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing size</span><span class="sr-prop-value" id="srFramingSize">2&times;6</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing spacing</span><span class="sr-prop-value" id="srFramingSpacing">24&quot; o.c.</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Decking</span><span class="sr-prop-value" id="srDecking">7/16&quot; OSB</span></div>
       </div>
     </div>
 
@@ -7209,11 +7223,11 @@ app.get("/design", (req, res) => {
       <div class="prod-stats-row">
         <div class="prod-stat-item">
           <div class="prod-stat-label">Panels</div>
-          <div class="prod-stat-val" id="prodPanels">25</div>
+          <div class="prod-stat-val" id="prodPanels">&mdash;</div>
         </div>
         <div class="prod-stat-item">
           <div class="prod-stat-label">Annual energy</div>
-          <div class="prod-stat-val">9,371<span>kWh</span></div>
+          <div class="prod-stat-val" id="prodEnergy">&mdash;<span>kWh</span></div>
         </div>
         <div class="prod-stat-item">
           <div class="prod-stat-label">Energy offset</div>
@@ -7307,6 +7321,12 @@ app.get("/design", (req, res) => {
     var roofMoveStart = null; // {x, z} world coords at drag start
     var roofDraggingHandle = -1;
     var roofDraggingFaceIdx = -1;
+    var roofDraggingEdge = -1;
+    var roofDraggingEdgeFaceIdx = -1;
+    var roofEdgeDragStart = null;
+    var roofEdgeDragOrigVerts = null;
+    var roofHoveredEdgeFace = -1;
+    var roofHoveredEdgeIdx = -1;
     var roofUndoStack = [];
     var roofRedoStack = [];
     var ROOF_UNDO_MAX = 50;
@@ -7319,8 +7339,9 @@ app.get("/design", (req, res) => {
     var dormerDraggingHandle = -1;
     var dormerDraggingFaceIdx = -1;
     var dormerDraggingDormerIdx = -1;
-    var DORMER_DEFAULT_WIDTH = 1.2;  // meters (~4ft)
-    var DORMER_DEFAULT_DEPTH = 0.9;  // meters (~3ft)
+    var DORMER_DEFAULT_WIDTH = 3.6;  // meters (~12ft)
+    var DORMER_DEFAULT_DEPTH = 2.4;  // meters (~8ft)
+    var dormerDragStartVerts = null; // saved verts at drag start for edge-based resize
 
     /* ── Unified undo stack — captures all interactable actions ── */
     var undoStack = [];
@@ -7656,7 +7677,25 @@ app.get("/design", (req, res) => {
     var currentDesignId = '${activeDesignId}';
     var projectHasCalibration = ${hasCalibration};
 
-    function markDirty() { isDirty = true; }
+    function markDirty() { isDirty = true; updateProductionStats(); }
+
+    function updateProductionStats() {
+      // Count total modules across all roof faces
+      var totalModules = 0;
+      roofFaces3d.forEach(function(f) { totalModules += (f.modules || 0); });
+      var prodPanels = document.getElementById('prodPanels');
+      if (prodPanels) prodPanels.textContent = totalModules > 0 ? totalModules : '\u2014';
+      var prodEnergy = document.getElementById('prodEnergy');
+      if (prodEnergy) {
+        if (totalModules > 0) {
+          // ~400W per module, ~1500 kWh/kW/yr average
+          var kWh = Math.round(totalModules * 0.4 * 1500);
+          prodEnergy.innerHTML = kWh.toLocaleString() + '<span>kWh</span>';
+        } else {
+          prodEnergy.innerHTML = '\u2014<span>kWh</span>';
+        }
+      }
+    }
 
     function handleBack(e) {
       e.preventDefault();
@@ -8067,7 +8106,7 @@ app.get("/design", (req, res) => {
           controls3d.enabled = true;
         }
       });
-      canvas.addEventListener('mousedown', function(e) {
+      canvas.addEventListener('pointerdown', function(e) {
         if (space3dHeld && e.button === 0) {
           space3dPanning = true;
           controls3d.enabled = false;
@@ -8078,13 +8117,12 @@ app.get("/design", (req, res) => {
           e.stopPropagation();
         }
       });
-      document.addEventListener('mousemove', function(e) {
+      document.addEventListener('pointermove', function(e) {
         if (space3dPanning && camera3d && controls3d) {
           var dx = e.clientX - sp3dStartX;
           var dy = e.clientY - sp3dStartY;
           sp3dStartX = e.clientX;
           sp3dStartY = e.clientY;
-          // Pan along ground plane (XZ) based on camera heading
           var distance = camera3d.position.distanceTo(controls3d.target);
           var vFov = camera3d.fov * Math.PI / 180;
           var scale = 2 * distance * Math.tan(vFov / 2) / renderer3d.domElement.clientHeight;
@@ -8101,7 +8139,7 @@ app.get("/design", (req, res) => {
           controls3d.target.add(panOffset);
         }
       });
-      document.addEventListener('mouseup', function() {
+      document.addEventListener('pointerup', function() {
         if (space3dPanning) {
           space3dPanning = false;
           canvas.style.cursor = space3dHeld ? 'grab' : '';
@@ -8157,11 +8195,24 @@ app.get("/design", (req, res) => {
           if (face.handleMeshes) {
             face.handleMeshes.forEach(function(h) { h.scale.setScalar(hs); });
           }
+          if (face.edgeHandleMeshes) {
+            face.edgeHandleMeshes.forEach(function(h) { h.scale.setScalar(hs); });
+          }
           if (face.edgeLines && face.edgeLines.children) {
             face.edgeLines.children.forEach(function(cyl) {
               cyl.scale.x = edgeScale;
               cyl.scale.z = edgeScale;
             });
+          }
+        });
+      }
+      if (typeof roofFaces3d !== 'undefined' && roofFaces3d) {
+        roofFaces3d.forEach(function(face) {
+          if (face.handleMeshes) {
+            face.handleMeshes.forEach(function(h) { h.scale.setScalar(hs); });
+          }
+          if (face.edgeHandleMeshes) {
+            face.edgeHandleMeshes.forEach(function(h) { h.scale.setScalar(hs); });
           }
         });
       }
@@ -8864,7 +8915,7 @@ app.get("/design", (req, res) => {
       var isDragging = false;
       var dragStartPos = null;
 
-      canvas.addEventListener('mousedown', function(e) {
+      canvas.addEventListener('pointerdown', function(e) {
         if (!camera3d || space3dHeld || treePlaceStep !== 0) return;
         if (roofDrawingMode) return;
         if (e.button !== 0) return; // left click only
@@ -8881,7 +8932,7 @@ app.get("/design", (req, res) => {
         }
       }, true);
 
-      document.addEventListener('mouseup', function(e) {
+      document.addEventListener('pointerup', function(e) {
         if (draggingTreeIdx >= 0) {
           if (isDragging) {
             // Finish drag — update lat/lng
@@ -8930,7 +8981,7 @@ app.get("/design", (req, res) => {
         }
       });
 
-      canvas.addEventListener('mousemove', function(e) {
+      canvas.addEventListener('pointermove', function(e) {
         if (!camera3d || space3dHeld) return;
 
         // Tree dragging
@@ -9011,6 +9062,10 @@ app.get("/design", (req, res) => {
         if (!camera3d || space3dHeld || roofDrawingMode || treePlaceStep !== 0) return;
         if (e.button !== 0) return;
         if (hoveredTreeIdx >= 0 || draggingTreeIdx >= 0) return;
+        // Don't start marquee if cursor is over a roof handle (corner or edge)
+        if (findHandleUnderCursor && findHandleUnderCursor(e)) return;
+        if (findEdgeHandleUnderCursor && findEdgeHandleUnderCursor(e)) return;
+        if (findDormerHandleUnderCursor && findDormerHandleUnderCursor(e)) return;
         marqueeStart = { x: e.clientX, y: e.clientY };
         marqueeEnd = { x: e.clientX, y: e.clientY };
         marqueeActive = false;
@@ -9746,8 +9801,8 @@ app.get("/design", (req, res) => {
     var EDGE_LINE_RADIUS = 0.06;
     function buildRoofEdgeLines(verts, color) {
       var group = new THREE.Group();
-      var mat = new THREE.MeshBasicMaterial({ color: color });
       for (var i = 0; i < verts.length; i++) {
+        var mat = new THREE.MeshBasicMaterial({ color: color });
         var a = verts[i], b = verts[(i + 1) % verts.length];
         var ax = a.x, az = a.z, bx = b.x, bz = b.z, y = 0.15;
         var dx = bx - ax, dz = bz - az;
@@ -9766,6 +9821,7 @@ app.get("/design", (req, res) => {
         var quat = new THREE.Quaternion();
         quat.setFromUnitVectors(up, dir);
         cyl.quaternion.copy(quat);
+        cyl.userData.edgeIdx = i;
         group.add(cyl);
       }
       return group;
@@ -9840,6 +9896,22 @@ app.get("/design", (req, res) => {
         scene3d.add(sphere);
         handles.push(sphere);
       });
+      return handles;
+    }
+
+    function buildRoofEdgeHandles(verts) {
+      var handles = [];
+      for (var i = 0; i < verts.length; i++) {
+        var a = verts[i], b = verts[(i + 1) % verts.length];
+        var mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
+        var box = new THREE.Mesh(
+          new THREE.BoxGeometry(0.35, 0.12, 0.35),
+          new THREE.MeshBasicMaterial({ color: 0x00e5ff })
+        );
+        box.position.set(mx, 0.18, mz);
+        scene3d.add(box);
+        handles.push(box);
+      }
       return handles;
     }
 
@@ -9950,7 +10022,7 @@ app.get("/design", (req, res) => {
       var sideL = Math.sqrt(Math.pow(v[3].x - v[0].x, 2) + Math.pow(v[3].z - v[0].z, 2));
 
       // Wall height (dormer walls rise from roof surface)
-      var wallH = 0.6; // ~2ft dormer wall height
+      var wallH = 1.1; // ~3.5ft dormer wall height (avg US dormer)
 
       // Ridge height from dormer pitch
       var pitch = dormer.pitch || 15;
@@ -10183,8 +10255,29 @@ app.get("/design", (req, res) => {
     // Get downslope angle for a roof face section
     function getRoofSlopeAngle(face) {
       if (!face || face.vertices.length !== 4) return 0;
-      // Use azimuth to determine slope direction
-      return (face.azimuth || 180) * Math.PI / 180;
+      // Compute perpendicular to the roof's long edge (eave)
+      // so the dormer faces directly down the slope
+      var verts = face.vertices;
+      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
+      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
+      var v0, v1, v2, v3;
+      if (d01 >= d12) {
+        // v0-v1 is the long edge (eave), slope runs v0->v3 direction
+        v0 = verts[0]; v1 = verts[1]; v2 = verts[2]; v3 = verts[3];
+      } else {
+        // v1-v2 is the long edge, slope runs v1->v0 direction
+        v0 = verts[1]; v1 = verts[2]; v2 = verts[3]; v3 = verts[0];
+      }
+      // Long edge direction
+      var ldx = v1.x - v0.x, ldz = v1.z - v0.z;
+      // Perpendicular to long edge (pointing from eave toward ridge)
+      // The slope direction is from eave midpoint toward ridge
+      var mx0 = (v0.x + v1.x) / 2, mz0 = (v0.z + v1.z) / 2;
+      var mx1 = (v3.x + v2.x) / 2, mz1 = (v3.z + v2.z) / 2;
+      var slopeDx = mx1 - mx0, slopeDz = mz1 - mz0;
+      // At angle θ, dormer front faces (sinθ, -cosθ) in XZ plane.
+      // For front to face downslope (-slopeDx, -slopeDz): sinθ = -slopeDx, cosθ = slopeDz
+      return Math.atan2(-slopeDx, slopeDz);
     }
 
     // Enter dormer placement mode
@@ -10356,6 +10449,18 @@ app.get("/design", (req, res) => {
         if (pitchFrontRow) pitchFrontRow.style.display = 'none';
         if (pitchInput) pitchInput.value = d.pitch || 15;
       }
+      // Dimensions
+      if (d.vertices && d.vertices.length >= 4) {
+        var v = d.vertices;
+        var frontW = Math.sqrt(Math.pow(v[1].x - v[0].x, 2) + Math.pow(v[1].z - v[0].z, 2));
+        var sideL = Math.sqrt(Math.pow(v[3].x - v[0].x, 2) + Math.pow(v[3].z - v[0].z, 2));
+        var dpW = document.getElementById('dpWidth');
+        var dpD = document.getElementById('dpDepth');
+        var dpWH = document.getElementById('dpWallH');
+        if (dpW) dpW.textContent = (frontW * 3.28084).toFixed(1) + ' ft';
+        if (dpD) dpD.textContent = (sideL * 3.28084).toFixed(1) + ' ft';
+        if (dpWH) dpWH.textContent = '3.6 ft'; // wallH = 1.1m
+      }
     }
 
     /* ── Finalize a roof face (add to scene + array) ── */
@@ -10370,12 +10475,17 @@ app.get("/design", (req, res) => {
         azimuth: azimuth || 180,
         height: height || 0,
         stories: 0,
+        roofSurface: 'Asphalt Shingle',
+        framingType: 'Rafter',
+        framingSize: '2\u00d76',
+        framingSpacing: '24" o.c.',
+        decking: '7/16" OSB',
         color: '#f5a623',
         mesh: null, edgeLines: null, hipLines: null,
         sectionMeshes: [],
         deletedSections: deletedSections || [false, false, false, false],
         selectedSection: -1,
-        handleMeshes: [], labelSprites: [],
+        handleMeshes: [], edgeHandleMeshes: [], labelSprites: [],
         selected: false,
         dormers: []
       };
@@ -10402,6 +10512,9 @@ app.get("/design", (req, res) => {
 
       face.handleMeshes = buildRoofHandles(verts);
       face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
+
+      face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
+      face.edgeHandleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
 
       face.labelSprites = buildEdgeLabels(verts);
       roofFaces3d.push(face);
@@ -10444,6 +10557,12 @@ app.get("/design", (req, res) => {
       face.vertices.forEach(function(v, i) {
         face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
       });
+      if (face.edgeHandleMeshes) {
+        for (var ei = 0; ei < face.vertices.length; ei++) {
+          var ea = face.vertices[ei], eb = face.vertices[(ei + 1) % face.vertices.length];
+          face.edgeHandleMeshes[ei].position.set((ea.x + eb.x) / 2, wH + 0.18, (ea.z + eb.z) / 2);
+        }
+      }
       // Rebuild dormers on this face
       clearFaceDormers(face);
       rebuildFaceDormers(idx);
@@ -10458,6 +10577,7 @@ app.get("/design", (req, res) => {
         if (face.hipLines) scene3d.remove(face.hipLines);
         if (face.wallMesh) scene3d.remove(face.wallMesh);
         face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+        if (face.edgeHandleMeshes) face.edgeHandleMeshes.forEach(function(h) { scene3d.remove(h); });
         face.labelSprites.forEach(function(s) { scene3d.remove(s); });
         clearFaceDormers(face);
       });
@@ -10500,6 +10620,7 @@ app.get("/design", (req, res) => {
       if (face.hipLines) scene3d.remove(face.hipLines);
       if (face.wallMesh) scene3d.remove(face.wallMesh);
       face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+      if (face.edgeHandleMeshes) face.edgeHandleMeshes.forEach(function(h) { scene3d.remove(h); });
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       roofFaces3d.splice(idx, 1);
       if (roofSelectedFace === idx) { roofSelectedFace = -1; roofSelectedSection = -1; }
@@ -10594,6 +10715,17 @@ app.get("/design", (req, res) => {
         if (srH) srH.value = (face.height * 3.28084).toFixed(1);
         var srS = document.getElementById('srStories');
         if (srS) srS.value = face.stories || 0;
+        // Populate structural properties
+        var srSurf = document.getElementById('srRoofSurface');
+        if (srSurf) srSurf.textContent = face.roofSurface || 'Asphalt Shingle';
+        var srFT = document.getElementById('srFramingType');
+        if (srFT) srFT.textContent = face.framingType || 'Rafter';
+        var srFS = document.getElementById('srFramingSize');
+        if (srFS) srFS.textContent = face.framingSize || '2\u00d76';
+        var srFSp = document.getElementById('srFramingSpacing');
+        if (srFSp) srFSp.textContent = face.framingSpacing || '24" o.c.';
+        var srDk = document.getElementById('srDecking');
+        if (srDk) srDk.textContent = face.decking || '7/16" OSB';
       }
       if (roofProps) roofProps.style.display = 'none';
       if (efPanel) efPanel.classList.add('hidden');
@@ -10630,6 +10762,12 @@ app.get("/design", (req, res) => {
             sectionPitches: f.sectionPitches ? f.sectionPitches.slice() : null,
             azimuth: f.azimuth,
             height: f.height,
+            stories: f.stories || 0,
+            roofSurface: f.roofSurface,
+            framingType: f.framingType,
+            framingSize: f.framingSize,
+            framingSpacing: f.framingSpacing,
+            decking: f.decking,
             color: f.color,
             deletedSections: f.deletedSections.slice(),
             dormers: (f.dormers || []).map(function(d) {
@@ -10653,6 +10791,14 @@ app.get("/design", (req, res) => {
       clearAllRoofFaces();
       snapshot.faces.forEach(function(rf) {
         var fIdx = finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+        // Restore structural properties
+        var restoredFace = roofFaces3d[fIdx];
+        if (rf.stories !== undefined) restoredFace.stories = rf.stories;
+        if (rf.roofSurface) restoredFace.roofSurface = rf.roofSurface;
+        if (rf.framingType) restoredFace.framingType = rf.framingType;
+        if (rf.framingSize) restoredFace.framingSize = rf.framingSize;
+        if (rf.framingSpacing) restoredFace.framingSpacing = rf.framingSpacing;
+        if (rf.decking) restoredFace.decking = rf.decking;
         // Restore dormers
         if (rf.dormers && rf.dormers.length > 0) {
           var face = roofFaces3d[fIdx];
@@ -10845,6 +10991,21 @@ app.get("/design", (req, res) => {
       var areaEl = document.getElementById('roofPropArea');
       if (areaEl) areaEl.textContent = areaFt2 + ' ft\u00B2';
 
+      // Modules & coverage
+      var modEl = document.getElementById('roofPropModules');
+      var covEl = document.getElementById('roofPropCoverage');
+      var faceModules = face.modules || 0;
+      if (modEl) modEl.textContent = faceModules > 0 ? faceModules : '\u2014';
+      if (covEl) {
+        if (faceModules > 0 && parseFloat(areaFt2) > 0) {
+          var moduleFt2 = 17.6;
+          var coverage = (faceModules * moduleFt2 / parseFloat(areaFt2) * 100).toFixed(1);
+          covEl.textContent = coverage + '%';
+        } else {
+          covEl.textContent = '\u2014';
+        }
+      }
+
       // Edge lengths
       var edgeList = document.getElementById('roofEdgeLengthsList');
       if (edgeList) {
@@ -10943,6 +11104,46 @@ app.get("/design", (req, res) => {
           return { faceIdx: fi, vertexIdx: handleIdx };
         }
       }
+      return null;
+    }
+
+    function findEdgeHandleUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      // Check edge handle box meshes first
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        if (!roofFaces3d[fi].edgeHandleMeshes) continue;
+        var hits = raycaster3d.intersectObjects(roofFaces3d[fi].edgeHandleMeshes);
+        if (hits.length > 0) {
+          var edgeIdx = roofFaces3d[fi].edgeHandleMeshes.indexOf(hits[0].object);
+          return { faceIdx: fi, edgeIdx: edgeIdx };
+        }
+      }
+      // Fall back: click anywhere near an edge line (10px hit zone)
+      var gp = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      var pt = new THREE.Vector3();
+      if (!raycaster3d.ray.intersectPlane(gp, pt)) return null;
+      var threshold = getWorldPerPixel() * 10;
+      var bestDist = threshold, bestFace = -1, bestEdge = -1;
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var verts = roofFaces3d[fi].vertices;
+        if (!verts || verts.length < 3) continue;
+        for (var ei = 0; ei < verts.length; ei++) {
+          var a = verts[ei], b = verts[(ei + 1) % verts.length];
+          var abx = b.x - a.x, abz = b.z - a.z;
+          var ab2 = abx * abx + abz * abz;
+          if (ab2 < 0.001) continue;
+          var t = ((pt.x - a.x) * abx + (pt.z - a.z) * abz) / ab2;
+          if (t < 0.05 || t > 0.95) continue;
+          var cx = a.x + t * abx, cz = a.z + t * abz;
+          var dist = Math.sqrt(Math.pow(pt.x - cx, 2) + Math.pow(pt.z - cz, 2));
+          if (dist < bestDist) { bestDist = dist; bestFace = fi; bestEdge = ei; }
+        }
+      }
+      if (bestFace >= 0) return { faceIdx: bestFace, edgeIdx: bestEdge };
       return null;
     }
 
@@ -11847,8 +12048,10 @@ app.get("/design", (req, res) => {
         }
 
         // Not in drawing mode — check for dormer or face/section selection
-        if (roofDraggingHandle >= 0 || dormerDraggingHandle >= 0 || isViewCubeBusy()) return;
+        if (roofDraggingHandle >= 0 || roofDraggingEdge >= 0 || dormerDraggingHandle >= 0 || isViewCubeBusy()) return;
         if (roofMovingMode) return; // handled by move drag
+        // Don't select/deselect if clicking on an edge (edge drag handles this)
+        if (findEdgeHandleUnderCursor && findEdgeHandleUnderCursor(e)) return;
 
         // Check dormer selection first (in edit mode)
         if (roofEditMode && roofSelectedFace >= 0) {
@@ -11888,6 +12091,18 @@ app.get("/design", (req, res) => {
           toggleRoofDrawingMode();
           return;
         }
+        // Double-click on dormer → enter edit mode + select the dormer
+        var dblDormerHit = findDormerUnderCursor(e);
+        if (dblDormerHit.dormerIdx >= 0) {
+          if (!roofEditMode) {
+            if (roofSelectedFace !== dblDormerHit.faceIdx) {
+              selectRoofWhole(dblDormerHit.faceIdx);
+            }
+            enterRoofEditMode();
+          }
+          selectDormer(dblDormerHit.faceIdx, dblDormerHit.dormerIdx);
+          return;
+        }
         // Double-click on roof → select + enter face edit mode + select tapped section
         if (!roofEditMode) {
           var hit = findRoofFaceUnderCursor(e);
@@ -11901,8 +12116,9 @@ app.get("/design", (req, res) => {
         }
       });
 
-      // Mousedown: start dragging handle
-      canvas.addEventListener('mousedown', function(e) {
+      // Pointerdown: start dragging handle
+      canvas.addEventListener('pointerdown', function(e) {
+        if (e.button !== 0) return;
         if (roofDrawingMode || treePlacingMode || space3dHeld || isViewCubeBusy()) return;
         // Move mode: start drag
         if (roofMovingMode && roofSelectedFace >= 0) {
@@ -11922,6 +12138,9 @@ app.get("/design", (req, res) => {
           dormerDraggingFaceIdx = dh.faceIdx;
           dormerDraggingDormerIdx = dh.dormerIdx;
           dormerDraggingHandle = dh.handleIdx;
+          // Save starting verts for edge-symmetric drag
+          var ddv = roofFaces3d[dh.faceIdx].dormers[dh.dormerIdx].vertices;
+          dormerDragStartVerts = ddv.map(function(v) { return {x: v.x, z: v.z}; });
           if (controls3d) controls3d.enabled = false;
           canvas.style.cursor = 'grabbing';
           e.preventDefault();
@@ -11935,11 +12154,30 @@ app.get("/design", (req, res) => {
           if (controls3d) controls3d.enabled = false;
           canvas.style.cursor = 'grabbing';
           e.preventDefault();
+          return;
+        }
+        var edgeFound = findEdgeHandleUnderCursor(e);
+        if (edgeFound) {
+          pushUndo();
+          roofDraggingEdgeFaceIdx = edgeFound.faceIdx;
+          roofDraggingEdge = edgeFound.edgeIdx;
+          var eh = raycastGroundPlane(e);
+          roofEdgeDragStart = eh ? { x: eh.x, z: eh.z } : null;
+          var eface = roofFaces3d[edgeFound.faceIdx];
+          var ei0 = edgeFound.edgeIdx;
+          var ei1 = (ei0 + 1) % eface.vertices.length;
+          roofEdgeDragOrigVerts = [
+            { x: eface.vertices[ei0].x, z: eface.vertices[ei0].z },
+            { x: eface.vertices[ei1].x, z: eface.vertices[ei1].z }
+          ];
+          if (controls3d) controls3d.enabled = false;
+          canvas.style.cursor = 'grabbing';
+          e.preventDefault();
         }
       });
 
-      // Mousemove: drag handle, snap guides, or show close hint
-      canvas.addEventListener('mousemove', function(e) {
+      // Pointermove: drag handle, snap guides, or show close hint
+      canvas.addEventListener('pointermove', function(e) {
         // Snap guides + highlight first vertex in drawing mode
         if (roofDrawingMode && roofTempVertices.length > 0) {
           var hit = raycastGroundPlane(e);
@@ -11977,35 +12215,141 @@ app.get("/design", (req, res) => {
         if (dormerPlaceMode) {
           updateDormerGhost(e);
         }
-        // Dormer handle dragging (symmetric)
+        // Dormer handle dragging (edge-symmetric: dragging a corner mirrors its pair on the same edge)
         if (dormerDraggingHandle >= 0) {
           var dhit = raycastGroundPlane(e);
           if (!dhit) return;
           var dface = roofFaces3d[dormerDraggingFaceIdx];
           var dd = dface.dormers[dormerDraggingDormerIdx];
           var dv = dd.vertices;
-          var dcx = (dv[0].x + dv[1].x + dv[2].x + dv[3].x) / 4;
-          var dcz = (dv[0].z + dv[1].z + dv[2].z + dv[3].z) / 4;
+          var sv = dormerDragStartVerts;
+          if (!sv) return;
           var dhi = dormerDraggingHandle;
-          var doppIdx = (dhi + 2) % 4;
-          dv[dhi] = { x: dhit.x, z: dhit.z };
-          dv[doppIdx] = { x: 2 * dcx - dhit.x, z: 2 * dcz - dhit.z };
-          var dadj1 = (dhi + 1) % 4, dadj2 = (dhi + 3) % 4;
-          dv[dadj1] = { x: 2 * dcx - dv[dadj2].x, z: 2 * dcz - dv[dadj2].z };
+
+          // Vertices: 0=front-left, 1=front-right, 2=back-right, 3=back-left
+          // Front edge pair: 0,1   Back edge pair: 2,3
+          // Left edge pair: 0,3    Right edge pair: 1,2
+          // Compute the dormer's local axes from original verts
+          var frontMidX = (sv[0].x + sv[1].x) / 2, frontMidZ = (sv[0].z + sv[1].z) / 2;
+          var backMidX = (sv[3].x + sv[2].x) / 2, backMidZ = (sv[3].z + sv[2].z) / 2;
+          // Width axis (front-left to front-right)
+          var wdx = sv[1].x - sv[0].x, wdz = sv[1].z - sv[0].z;
+          var wLen = Math.sqrt(wdx * wdx + wdz * wdz) || 1;
+          var wux = wdx / wLen, wuz = wdz / wLen; // width unit vector
+          // Depth axis (front-mid to back-mid)
+          var ddx = backMidX - frontMidX, ddz = backMidZ - frontMidZ;
+          var dLen = Math.sqrt(ddx * ddx + ddz * ddz) || 1;
+          var dux = ddx / dLen, duz = ddz / dLen; // depth unit vector
+
+          // Project drag delta onto width and depth axes
+          var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
+          var projW = deltaX * wux + deltaZ * wuz; // along width
+          var projD = deltaX * dux + deltaZ * duz; // along depth
+
+          // Determine which side the dragged handle is on
+          var isFront = (dhi === 0 || dhi === 1);
+          var isLeft = (dhi === 0 || dhi === 3);
+
+          // Width sign: left handles move in -width direction
+          var wSign = isLeft ? -1 : 1;
+          // Mirror amount: each side moves by projW in its direction
+          var mirrorW = projW * wSign;
+
+          // Apply symmetric width change to both front and back on the same side
+          // and mirror the opposite side
+          for (var ci = 0; ci < 4; ci++) {
+            var cIsLeft = (ci === 0 || ci === 3);
+            var cIsFront = (ci === 0 || ci === 1);
+            var cWmove = cIsLeft ? -mirrorW : mirrorW;
+            var cDmove = 0;
+            // Depth: only move the edge the user is dragging (front or back)
+            if (cIsFront === isFront) {
+              cDmove = projD;
+            }
+            dv[ci] = {
+              x: sv[ci].x + wux * cWmove + dux * cDmove,
+              z: sv[ci].z + wuz * cWmove + duz * cDmove
+            };
+          }
+
           rebuildDormer(dface, dormerDraggingDormerIdx);
+          updateDormerPanel(dd);
           return;
         }
-        if (roofDraggingHandle < 0) return;
-        var hit = raycastGroundPlane(e);
-        if (!hit) return;
-        var face = roofFaces3d[roofDraggingFaceIdx];
-        face.vertices[roofDraggingHandle] = { x: hit.x, z: hit.z };
-        rebuildRoofFace(roofDraggingFaceIdx);
-        if (roofSelectedFace === roofDraggingFaceIdx) updateRoofPropsPanel();
+        // Edge handle dragging (perpendicular constraint)
+        if (roofDraggingEdge >= 0) {
+          var ehit = raycastGroundPlane(e);
+          if (!ehit || !roofEdgeDragStart) return;
+          var eface = roofFaces3d[roofDraggingEdgeFaceIdx];
+          var ei0 = roofDraggingEdge;
+          var ei1 = (ei0 + 1) % eface.vertices.length;
+          var edx = roofEdgeDragOrigVerts[1].x - roofEdgeDragOrigVerts[0].x;
+          var edz = roofEdgeDragOrigVerts[1].z - roofEdgeDragOrigVerts[0].z;
+          var elen = Math.sqrt(edx * edx + edz * edz);
+          if (elen < 0.001) return;
+          var nx = -edz / elen, nz = edx / elen;
+          var dmx = ehit.x - roofEdgeDragStart.x;
+          var dmz = ehit.z - roofEdgeDragStart.z;
+          var proj = dmx * nx + dmz * nz;
+          eface.vertices[ei0] = { x: roofEdgeDragOrigVerts[0].x + nx * proj, z: roofEdgeDragOrigVerts[0].z + nz * proj };
+          eface.vertices[ei1] = { x: roofEdgeDragOrigVerts[1].x + nx * proj, z: roofEdgeDragOrigVerts[1].z + nz * proj };
+          rebuildRoofFace(roofDraggingEdgeFaceIdx);
+          if (roofSelectedFace === roofDraggingEdgeFaceIdx) updateRoofPropsPanel();
+          return;
+        }
+        if (roofDraggingHandle >= 0) {
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+          var face = roofFaces3d[roofDraggingFaceIdx];
+          face.vertices[roofDraggingHandle] = { x: hit.x, z: hit.z };
+          rebuildRoofFace(roofDraggingFaceIdx);
+          if (roofSelectedFace === roofDraggingFaceIdx) updateRoofPropsPanel();
+          return;
+        }
+        // Edge hover highlight
+        var prevFace = roofHoveredEdgeFace, prevEdge = roofHoveredEdgeIdx;
+        roofHoveredEdgeFace = -1;
+        roofHoveredEdgeIdx = -1;
+        if (!roofDrawingMode && !roofMovingMode && !dormerPlaceMode) {
+          var edgeHover = findEdgeHandleUnderCursor(e);
+          if (edgeHover) {
+            roofHoveredEdgeFace = edgeHover.faceIdx;
+            roofHoveredEdgeIdx = edgeHover.edgeIdx;
+            canvas.style.cursor = 'grab';
+          } else if (!roofDrawingMode) {
+            // Only reset cursor if we were showing grab
+            if (prevFace >= 0) canvas.style.cursor = '';
+          }
+        }
+        // Update edge line colors on hover change
+        if (prevFace !== roofHoveredEdgeFace || prevEdge !== roofHoveredEdgeIdx) {
+          // Restore previous
+          if (prevFace >= 0 && prevFace < roofFaces3d.length) {
+            var pf = roofFaces3d[prevFace];
+            if (pf.edgeLines && pf.edgeLines.children) {
+              pf.edgeLines.children.forEach(function(cyl) {
+                if (cyl.userData.edgeIdx === prevEdge) {
+                  cyl.material.color.set(pf.selected ? '#00e5ff' : '#ffffff');
+                }
+              });
+            }
+          }
+          // Highlight new
+          if (roofHoveredEdgeFace >= 0 && roofHoveredEdgeFace < roofFaces3d.length) {
+            var hf = roofFaces3d[roofHoveredEdgeFace];
+            if (hf.edgeLines && hf.edgeLines.children) {
+              hf.edgeLines.children.forEach(function(cyl) {
+                if (cyl.userData.edgeIdx === roofHoveredEdgeIdx) {
+                  cyl.material.color.set('#00e5ff');
+                }
+              });
+            }
+          }
+        }
       });
 
-      // Mouseup: end drag
-      canvas.addEventListener('mouseup', function(e) {
+      // Pointerup: end drag
+      canvas.addEventListener('pointerup', function(e) {
         if (roofMoveStart) {
           roofMoveStart = null;
           if (controls3d) controls3d.enabled = true;
@@ -12015,6 +12359,16 @@ app.get("/design", (req, res) => {
           dormerDraggingHandle = -1;
           dormerDraggingFaceIdx = -1;
           dormerDraggingDormerIdx = -1;
+          dormerDragStartVerts = null;
+          if (controls3d) controls3d.enabled = true;
+          canvas.style.cursor = '';
+          markDirty();
+        }
+        if (roofDraggingEdge >= 0) {
+          roofDraggingEdge = -1;
+          roofDraggingEdgeFaceIdx = -1;
+          roofEdgeDragStart = null;
+          roofEdgeDragOrigVerts = null;
           if (controls3d) controls3d.enabled = true;
           canvas.style.cursor = '';
           markDirty();
