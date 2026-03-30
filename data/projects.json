@@ -97,7 +97,7 @@
         }
       }
     ],
-    "activeDesignId": "mnb6ew4f8m3",
+    "activeDesignId": "mn9jvu8y3fu",
     "energyUsage": [],
     "calibration": {
       "tx": -0.3274675751393682,
@@ -322,7 +322,8 @@
           }
         }
       ]
-    }
+    },
+    "energyUsage": []
   },
   {
     "id": "mnc01zdwiub",

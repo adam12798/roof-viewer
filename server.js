@@ -6553,7 +6553,9 @@ app.get("/design", (req, res) => {
             </div>
           </div>
           <div id="roofEdgeLengthsList" style="margin-top:8px;"></div>
-          <button id="btnDeleteRoofFace" style="margin-top:10px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;">Delete Face</button>
+          <div id="roofSectionInfo" style="margin-top:8px;font-size:0.75rem;color:#00bfa5;font-weight:600;display:none;"></div>
+          <button id="btnDeleteRoofSection" style="margin-top:6px;width:100%;padding:6px;background:#e65100;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;display:none;">Delete Section</button>
+          <button id="btnDeleteRoofFace" style="margin-top:6px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;">Delete Face</button>
         </div>
 
         <!-- Setbacks -->
@@ -6916,7 +6918,10 @@ app.get("/design", (req, res) => {
     var roofTempVertices = [];
     var roofTempHandles = [];
     var roofTempLines = null;
+    var roofSnapGuides = [];       // THREE.Line objects for snap guide lines
+    var roofSnappedPos = null;     // snapped cursor position {x, z} or null
     var roofSelectedFace = -1;
+    var roofSelectedSection = -1;
     var roofDraggingHandle = -1;
     var roofDraggingFaceIdx = -1;
 
@@ -7966,7 +7971,7 @@ app.get("/design", (req, res) => {
         if (typeof clearAllRoofFaces === 'function') clearAllRoofFaces();
         if (design.roofFaces && design.roofFaces.length > 0 && typeof THREE !== 'undefined' && typeof finalizeRoofFace === 'function') {
           design.roofFaces.forEach(function(rf) {
-            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height);
+            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections);
           });
         }
       });
@@ -8934,7 +8939,7 @@ app.get("/design", (req, res) => {
 
     function serializeRoofFaces() {
       return roofFaces3d.map(function(f) {
-        return { vertices: f.vertices, pitch: f.pitch, azimuth: f.azimuth, height: f.height, color: f.color };
+        return { vertices: f.vertices, pitch: f.pitch, azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections };
       });
     }
 
@@ -9574,47 +9579,129 @@ app.get("/design", (req, res) => {
       return bestRect || pts;
     }
 
-    /* ── Build roof face mesh with satellite texture overlay ── */
-    function buildRoofFaceMesh(verts, color) {
-      var shape = new THREE.Shape();
-      shape.moveTo(verts[0].x, -verts[0].z);
-      for (var i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, -verts[i].z);
-      shape.closePath();
-      var geo = new THREE.ShapeGeometry(shape);
-      geo.rotateX(-Math.PI / 2);
+    /* ── Compute shared hip roof geometry ── */
+    function computeHipGeometry(verts, pitchDeg) {
+      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
+      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
+      var v0, v1, v2, v3, longLen, shortLen;
+      if (d01 >= d12) {
+        v0 = verts[0]; v1 = verts[1]; v2 = verts[2]; v3 = verts[3];
+        longLen = d01; shortLen = d12;
+      } else {
+        v0 = verts[1]; v1 = verts[2]; v2 = verts[3]; v3 = verts[0];
+        longLen = d12; shortLen = d01;
+      }
+      var inset = shortLen / 2;
+      var ldx = (v1.x - v0.x) / longLen, ldz = (v1.z - v0.z) / longLen;
+      var m0x = (v0.x + v3.x) / 2, m0z = (v0.z + v3.z) / 2;
+      var m1x = (v1.x + v2.x) / 2, m1z = (v1.z + v2.z) / 2;
+      var r0x = m0x + ldx * inset, r0z = m0z + ldz * inset;
+      var r1x = m1x - ldx * inset, r1z = m1z - ldz * inset;
+      return { v0: v0, v1: v1, v2: v2, v3: v3, r0x: r0x, r0z: r0z, r1x: r1x, r1z: r1z,
+               m0x: m0x, m0z: m0z, m1x: m1x, m1z: m1z, inset: inset, ldx: ldx, ldz: ldz };
+    }
 
-      // If satellite texture is available, compute UVs to map the correct portion
-      if (satTexture && satExtentM > 0) {
-        var uvAttr = geo.attributes.uv;
+    /* ── Build 3D hip-roof section meshes (returns array of meshes per section) ── */
+    function buildRoofSectionMeshes(verts, color, pitchDeg, deletedSections, selectedSection) {
+      var pitch = pitchDeg || 0;
+      var ds = deletedSections || [false, false, false, false];
+      var ss = (selectedSection !== undefined) ? selectedSection : -1;
+
+      // For non-rectangular or zero-pitch, use flat mesh — single section
+      if (verts.length !== 4 || pitch <= 0) {
+        var shape = new THREE.Shape();
+        shape.moveTo(verts[0].x, -verts[0].z);
+        for (var i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, -verts[i].z);
+        shape.closePath();
+        var geo = new THREE.ShapeGeometry(shape);
+        geo.rotateX(-Math.PI / 2);
+        return [_applyRoofSectionMaterial(geo, color, 0.05, ss === 0)];
+      }
+
+      var hip = computeHipGeometry(verts, pitch);
+      var ridgeY = hip.inset * Math.tan(pitch * Math.PI / 180) + 0.05;
+      var baseY = 0.05;
+
+      // When a hip triangle is deleted, trapezoids expand to fill the gap:
+      // Ridge endpoints shift to short-side midpoints at same height
+      var er0x = ds[0] ? hip.m0x : hip.r0x;
+      var er0z = ds[0] ? hip.m0z : hip.r0z;
+      var er1x = ds[1] ? hip.m1x : hip.r1x;
+      var er1z = ds[1] ? hip.m1z : hip.r1z;
+
+      // Section 0: Hip tri v0-R0-v3 (short side near v0/v3)
+      // Section 1: Hip tri v1-v2-R1 (short side near v1/v2)
+      // Section 2: Front trapezoid v0-v1-eR1-eR0 (long side v0-v1, expands when hip tris deleted)
+      // Section 3: Back trapezoid v3-eR0-eR1-v2 (long side v3-v2, expands when hip tris deleted)
+      var sectionPositions = [
+        [hip.v0.x, baseY, hip.v0.z, hip.r0x, ridgeY, hip.r0z, hip.v3.x, baseY, hip.v3.z],
+        [hip.v1.x, baseY, hip.v1.z, hip.v2.x, baseY, hip.v2.z, hip.r1x, ridgeY, hip.r1z],
+        [hip.v0.x, baseY, hip.v0.z, hip.v1.x, baseY, hip.v1.z, er1x, ridgeY, er1z,
+         hip.v0.x, baseY, hip.v0.z, er1x, ridgeY, er1z, er0x, ridgeY, er0z],
+        [hip.v3.x, baseY, hip.v3.z, er0x, ridgeY, er0z, er1x, ridgeY, er1z,
+         hip.v3.x, baseY, hip.v3.z, er1x, ridgeY, er1z, hip.v2.x, baseY, hip.v2.z]
+      ];
+
+      var meshes = [];
+      for (var i = 0; i < 4; i++) {
+        if (ds[i]) { meshes.push(null); continue; }
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(sectionPositions[i], 3));
+        geo.computeVertexNormals();
+        meshes.push(_applyRoofSectionMaterial(geo, color, 0, ss === i));
+      }
+      return meshes;
+    }
+
+    function _applyRoofSectionMaterial(geo, color, yOffset, isSelected) {
+      if (isSelected) {
+        // Aurora-style selected section: semi-transparent teal
         var posAttr = geo.attributes.position;
+        var uvs = new Float32Array(posAttr.count * 2);
+        for (var i = 0; i < posAttr.count; i++) {
+          uvs[i * 2] = 0; uvs[i * 2 + 1] = 0;
+        }
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        var mat = new THREE.MeshBasicMaterial({
+          color: 0x00bfa5, transparent: true, opacity: 0.55,
+          side: THREE.DoubleSide, depthWrite: true
+        });
+        var mesh = new THREE.Mesh(geo, mat);
+        mesh.position.y = yOffset;
+        return mesh;
+      }
+      return _applyRoofMaterial(geo, color, yOffset);
+    }
+
+    function _applyRoofMaterial(geo, color, yOffset) {
+      if (satTexture && satExtentM > 0) {
+        // Compute UVs from world XZ position → satellite texture coords
+        var posAttr = geo.attributes.position;
+        var uvs = new Float32Array(posAttr.count * 2);
         for (var i = 0; i < posAttr.count; i++) {
           var wx = posAttr.getX(i);
           var wz = posAttr.getZ(i);
-          // Map world coords to satellite texture UVs
-          // Ground plane: centered at origin, size satExtentM x satExtentM
-          var u = (wx + satExtentM / 2) / satExtentM;
-          var v = (-wz + satExtentM / 2) / satExtentM;
-          uvAttr.setXY(i, u, v);
+          uvs[i * 2]     = (wx + satExtentM / 2) / satExtentM;
+          uvs[i * 2 + 1] = (-wz + satExtentM / 2) / satExtentM;
         }
-        uvAttr.needsUpdate = true;
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
 
         var mat = new THREE.MeshBasicMaterial({
           map: satTexture,
-          side: THREE.DoubleSide, depthWrite: false
+          side: THREE.DoubleSide, depthWrite: true
         });
         var mesh = new THREE.Mesh(geo, mat);
-        mesh.position.y = 0.05;
+        mesh.position.y = yOffset;
         return mesh;
       }
 
-      // Fallback: solid color if no satellite texture
       var mat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(color),
         transparent: true, opacity: 0.50,
-        side: THREE.DoubleSide, depthWrite: false
+        side: THREE.DoubleSide, depthWrite: true
       });
       var mesh = new THREE.Mesh(geo, mat);
-      mesh.position.y = 0.05;
+      mesh.position.y = yOffset;
       return mesh;
     }
 
@@ -9630,49 +9717,48 @@ app.get("/design", (req, res) => {
       return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: color, linewidth: 3 }));
     }
 
-    /* ── Build hip roof interior lines (4 hips + 1 ridge) ── */
-    function buildHipRoofLines(verts, pitchDeg) {
+    /* ── Build hip roof interior lines (4 hips + 1 ridge), respecting deleted sections ── */
+    function buildHipRoofLines(verts, pitchDeg, deletedSections) {
       if (!verts || verts.length !== 4) return null;
+      var ds = deletedSections || [false, false, false, false];
 
-      // Determine which edges are long vs short
-      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
-      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
-
-      var v0, v1, v2, v3, longLen, shortLen;
-      if (d01 >= d12) {
-        // edges 0-1 and 3-2 are long sides
-        v0 = verts[0]; v1 = verts[1]; v2 = verts[2]; v3 = verts[3];
-        longLen = d01; shortLen = d12;
-      } else {
-        // edges 1-2 and 0-3 are long sides — rotate vertex assignment
-        v0 = verts[1]; v1 = verts[2]; v2 = verts[3]; v3 = verts[0];
-        longLen = d12; shortLen = d01;
-      }
-
-      // Ridge inset = shortLen/2 (45-degree hips)
-      var inset = shortLen / 2;
-      // Direction along long side (v0 → v1)
-      var ldx = (v1.x - v0.x) / longLen, ldz = (v1.z - v0.z) / longLen;
-      // Midpoints of short sides
-      var m0x = (v0.x + v3.x) / 2, m0z = (v0.z + v3.z) / 2;
-      var m1x = (v1.x + v2.x) / 2, m1z = (v1.z + v2.z) / 2;
-
-      // Ridge endpoints: inset from each short side along the long direction
-      var r0x = m0x + ldx * inset, r0z = m0z + ldz * inset;
-      var r1x = m1x - ldx * inset, r1z = m1z - ldz * inset;
-
-      // Ridge height based on pitch
-      var ridgeY = inset * Math.tan((pitchDeg || 10) * Math.PI / 180) + 0.12;
+      var hip = computeHipGeometry(verts, pitchDeg);
+      var ridgeY = hip.inset * Math.tan((pitchDeg || 10) * Math.PI / 180) + 0.12;
       var baseY = 0.12;
 
-      // 5 lines: 4 hips from corners to ridge endpoints + 1 ridge
-      var positions = [
-        v0.x, baseY, v0.z,  r0x, ridgeY, r0z,   // hip: v0 → R0
-        v3.x, baseY, v3.z,  r0x, ridgeY, r0z,   // hip: v3 → R0
-        v1.x, baseY, v1.z,  r1x, ridgeY, r1z,   // hip: v1 → R1
-        v2.x, baseY, v2.z,  r1x, ridgeY, r1z,   // hip: v2 → R1
-        r0x, ridgeY, r0z,   r1x, ridgeY, r1z    // ridge: R0 → R1
-      ];
+      // Ridge endpoints shift to midpoints when hip triangles are deleted
+      var re0x = ds[0] ? hip.m0x : hip.r0x;
+      var re0z = ds[0] ? hip.m0z : hip.r0z;
+      var re1x = ds[1] ? hip.m1x : hip.r1x;
+      var re1z = ds[1] ? hip.m1z : hip.r1z;
+
+      var positions = [];
+
+      // Hip line v0→R0: exists only if section 0 AND section 2 both exist
+      if (!ds[0] && !ds[2]) {
+        positions.push(hip.v0.x, baseY, hip.v0.z, hip.r0x, ridgeY, hip.r0z);
+      }
+      // Hip line v3→R0: exists only if section 0 AND section 3 both exist
+      if (!ds[0] && !ds[3]) {
+        positions.push(hip.v3.x, baseY, hip.v3.z, hip.r0x, ridgeY, hip.r0z);
+      }
+      // Hip line v1→R1: exists only if section 1 AND section 2 both exist
+      if (!ds[1] && !ds[2]) {
+        positions.push(hip.v1.x, baseY, hip.v1.z, hip.r1x, ridgeY, hip.r1z);
+      }
+      // Hip line v2→R1: exists only if section 1 AND section 3 both exist
+      if (!ds[1] && !ds[3]) {
+        positions.push(hip.v2.x, baseY, hip.v2.z, hip.r1x, ridgeY, hip.r1z);
+      }
+
+      // Ridge line always exists (extended when hip triangles deleted)
+      // Only draw if at least one non-deleted section remains
+      var anyAlive = !ds[0] || !ds[1] || !ds[2] || !ds[3];
+      if (anyAlive) {
+        positions.push(re0x, ridgeY, re0z, re1x, ridgeY, re1z);
+      }
+
+      if (positions.length === 0) return null;
 
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -9695,7 +9781,7 @@ app.get("/design", (req, res) => {
     }
 
     /* ── Finalize a roof face (add to scene + array) ── */
-    function finalizeRoofFace(verts, pitch, azimuth, height) {
+    function finalizeRoofFace(verts, pitch, azimuth, height, deletedSections) {
       var face = {
         id: 'rf_' + Date.now().toString(36) + '_' + roofFaces3d.length,
         vertices: verts,
@@ -9704,14 +9790,20 @@ app.get("/design", (req, res) => {
         height: height || 0,
         color: '#f5a623',
         mesh: null, edgeLines: null, hipLines: null,
+        sectionMeshes: [],
+        deletedSections: deletedSections || [false, false, false, false],
+        selectedSection: -1,
         handleMeshes: [], labelSprites: [],
         selected: false
       };
-      face.mesh = buildRoofFaceMesh(verts, face.color);
+      var usePitch = face.pitch || 10;
+      face.sectionMeshes = buildRoofSectionMeshes(verts, face.color, usePitch, face.deletedSections, -1);
+      face.mesh = new THREE.Group();
+      face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
       scene3d.add(face.mesh);
       face.edgeLines = buildRoofEdgeLines(verts, '#ffffff');
       scene3d.add(face.edgeLines);
-      face.hipLines = buildHipRoofLines(verts, 10);
+      face.hipLines = buildHipRoofLines(verts, usePitch, face.deletedSections);
       if (face.hipLines) scene3d.add(face.hipLines);
       face.handleMeshes = buildRoofHandles(verts);
       face.labelSprites = buildEdgeLabels(verts);
@@ -9728,12 +9820,14 @@ app.get("/design", (req, res) => {
       if (face.hipLines) scene3d.remove(face.hipLines);
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
 
-      var col = face.selected ? '#00e5ff' : face.color;
-      face.mesh = buildRoofFaceMesh(face.vertices, col);
+      var usePitch = face.pitch || 10;
+      face.sectionMeshes = buildRoofSectionMeshes(face.vertices, face.color, usePitch, face.deletedSections, face.selectedSection);
+      face.mesh = new THREE.Group();
+      face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
       scene3d.add(face.mesh);
       face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff');
       scene3d.add(face.edgeLines);
-      face.hipLines = buildHipRoofLines(face.vertices, 10);
+      face.hipLines = buildHipRoofLines(face.vertices, usePitch, face.deletedSections);
       if (face.hipLines) scene3d.add(face.hipLines);
       face.labelSprites = buildEdgeLabels(face.vertices);
 
@@ -9754,10 +9848,30 @@ app.get("/design", (req, res) => {
       });
       roofFaces3d = [];
       roofSelectedFace = -1;
+      roofSelectedSection = -1;
       // Remove outline reference lines
       var toRemove = [];
       scene3d.traverse(function(obj) { if (obj.userData && obj.userData.roofOutline) toRemove.push(obj); });
       toRemove.forEach(function(obj) { scene3d.remove(obj); });
+    }
+
+    /* ── Delete a single roof section within a face ── */
+    function deleteRoofSection(faceIdx, sectionIdx) {
+      if (faceIdx < 0 || faceIdx >= roofFaces3d.length) return;
+      var face = roofFaces3d[faceIdx];
+      if (!face.deletedSections || sectionIdx < 0 || sectionIdx >= face.deletedSections.length) return;
+      face.deletedSections[sectionIdx] = true;
+      face.selectedSection = -1;
+      roofSelectedSection = -1;
+
+      // If all sections deleted, remove the entire face
+      var allDeleted = face.deletedSections.every(function(d) { return d; });
+      if (allDeleted) {
+        deleteRoofFace(faceIdx);
+        return;
+      }
+      rebuildRoofFace(faceIdx);
+      updateRoofPropsPanel();
     }
 
     /* ── Delete a single roof face ── */
@@ -9770,33 +9884,43 @@ app.get("/design", (req, res) => {
       face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       roofFaces3d.splice(idx, 1);
-      if (roofSelectedFace === idx) roofSelectedFace = -1;
+      if (roofSelectedFace === idx) { roofSelectedFace = -1; roofSelectedSection = -1; }
       else if (roofSelectedFace > idx) roofSelectedFace--;
       updateRoofPropsPanel();
       markDirty();
     }
 
-    /* ── Select / Deselect face ── */
-    function selectRoofFace(idx) {
+    /* ── Select / Deselect face and section ── */
+    function selectRoofSection(faceIdx, sectionIdx) {
+      // Deselect previous
       if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
         var old = roofFaces3d[roofSelectedFace];
         old.selected = false;
+        old.selectedSection = -1;
         rebuildRoofFace(roofSelectedFace);
       }
-      roofSelectedFace = idx;
-      var face = roofFaces3d[idx];
+      roofSelectedFace = faceIdx;
+      roofSelectedSection = sectionIdx;
+      var face = roofFaces3d[faceIdx];
       face.selected = true;
-      rebuildRoofFace(idx);
+      face.selectedSection = sectionIdx;
+      rebuildRoofFace(faceIdx);
       updateRoofPropsPanel();
+    }
+
+    function selectRoofFace(idx) {
+      selectRoofSection(idx, -1);
     }
 
     function deselectRoofFace() {
       if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
         var old = roofFaces3d[roofSelectedFace];
         old.selected = false;
+        old.selectedSection = -1;
         rebuildRoofFace(roofSelectedFace);
       }
       roofSelectedFace = -1;
+      roofSelectedSection = -1;
       updateRoofPropsPanel();
     }
 
@@ -9827,6 +9951,21 @@ app.get("/design", (req, res) => {
         }
         edgeList.innerHTML = html;
       }
+
+      // Section info
+      var sectionNames = ['Hip Triangle A', 'Hip Triangle B', 'Front Trapezoid', 'Back Trapezoid'];
+      var sectionInfo = document.getElementById('roofSectionInfo');
+      var btnDelSection = document.getElementById('btnDeleteRoofSection');
+      if (sectionInfo && btnDelSection) {
+        if (roofSelectedSection >= 0 && roofSelectedSection < sectionNames.length) {
+          sectionInfo.style.display = '';
+          sectionInfo.textContent = 'Selected: ' + sectionNames[roofSelectedSection];
+          btnDelSection.style.display = '';
+        } else {
+          sectionInfo.style.display = 'none';
+          btnDelSection.style.display = 'none';
+        }
+      }
     }
 
     /* ── Find handle under cursor ── */
@@ -9846,21 +9985,35 @@ app.get("/design", (req, res) => {
       return null;
     }
 
-    /* ── Find face mesh under cursor ── */
+    /* ── Find face and section mesh under cursor ── */
     function findRoofFaceUnderCursor(event) {
       var canvas = document.getElementById('canvas3d');
       var rect = canvas.getBoundingClientRect();
       mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster3d.setFromCamera(mouse3d, camera3d);
-      var meshes = roofFaces3d.map(function(f) { return f.mesh; }).filter(Boolean);
-      var hits = raycaster3d.intersectObjects(meshes);
-      if (hits.length > 0) {
-        for (var i = 0; i < roofFaces3d.length; i++) {
-          if (roofFaces3d[i].mesh === hits[0].object) return i;
+
+      // Collect all section meshes for raycasting
+      var allMeshes = [];
+      var meshMap = [];
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var sm = roofFaces3d[fi].sectionMeshes;
+        if (!sm) continue;
+        for (var si = 0; si < sm.length; si++) {
+          if (sm[si]) {
+            allMeshes.push(sm[si]);
+            meshMap.push({ faceIdx: fi, sectionIdx: si });
+          }
         }
       }
-      return -1;
+
+      var hits = raycaster3d.intersectObjects(allMeshes);
+      if (hits.length > 0) {
+        for (var i = 0; i < allMeshes.length; i++) {
+          if (allMeshes[i] === hits[0].object) return meshMap[i];
+        }
+      }
+      return { faceIdx: -1, sectionIdx: -1 };
     }
 
     /* ── Drawing mode toggle ── */
@@ -9915,6 +10068,161 @@ app.get("/design", (req, res) => {
       roofTempHandles.forEach(function(h) { scene3d.remove(h); });
       roofTempHandles = [];
       if (roofTempLines) { scene3d.remove(roofTempLines); roofTempLines = null; }
+      clearSnapGuides();
+    }
+
+    /* ── Snap guides for roof vertex placement ── */
+    var SNAP_THRESHOLD = 0.8; // meters — how close cursor must be to snap
+    var GUIDE_EXTENT = 80;    // meters — how far guide lines extend
+    var snapGuideMat = null;  // shared material for guide lines
+
+    function getSnapGuideMat() {
+      if (!snapGuideMat) {
+        snapGuideMat = new THREE.LineDashedMaterial({
+          color: 0xff6600, dashSize: 0.5, gapSize: 0.3,
+          linewidth: 1, transparent: true, opacity: 0.85
+        });
+      }
+      return snapGuideMat;
+    }
+
+    function clearSnapGuides() {
+      roofSnapGuides.forEach(function(g) { scene3d.remove(g); });
+      roofSnapGuides = [];
+      roofSnappedPos = null;
+    }
+
+    function addGuideLine(x1, z1, x2, z2) {
+      // Use a thin box mesh for consistent visible width regardless of zoom
+      var dx = x2 - x1, dz = z2 - z1;
+      var len = Math.sqrt(dx * dx + dz * dz);
+      if (len < 0.01) return;
+      var angle = Math.atan2(dx, dz);
+
+      // Create a thin plane (width in world units based on camera distance for ~2px look)
+      var camDist = camera3d ? camera3d.position.distanceTo(controls3d ? controls3d.target : new THREE.Vector3()) : 200;
+      var thickness = camDist * 0.0015; // scales with zoom so it looks ~2-3px
+      thickness = Math.max(0.04, Math.min(thickness, 0.3));
+
+      var geo = new THREE.PlaneGeometry(thickness, len);
+      var mat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthTest: false });
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = -Math.PI / 2; // lay flat on XZ
+      mesh.rotation.z = -angle;
+      mesh.position.set((x1 + x2) / 2, 0.2, (z1 + z2) / 2);
+      mesh.renderOrder = 999;
+      scene3d.add(mesh);
+      roofSnapGuides.push(mesh);
+
+      // Also add a dashed line on top for the dash pattern
+      var lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.Float32BufferAttribute([x1, 0.25, z1, x2, 0.25, z2], 3));
+      var line = new THREE.Line(lineGeo, getSnapGuideMat().clone());
+      line.computeLineDistances();
+      line.renderOrder = 1000;
+      scene3d.add(line);
+      roofSnapGuides.push(line);
+    }
+
+    function computeSnapGuides(cursorX, cursorZ) {
+      clearSnapGuides();
+      if (roofTempVertices.length === 0) return { x: cursorX, z: cursorZ };
+
+      var snappedX = cursorX;
+      var snappedZ = cursorZ;
+      var snapX = false, snapZ = false;
+
+      // Check ALL vertices for X and Z alignment simultaneously
+      for (var i = 0; i < roofTempVertices.length; i++) {
+        var v = roofTempVertices[i];
+
+        // Vertical alignment (same X) — can snap X from one vertex
+        if (!snapX && Math.abs(cursorX - v.x) < SNAP_THRESHOLD) {
+          snappedX = v.x;
+          snapX = true;
+          addGuideLine(v.x, v.z - GUIDE_EXTENT, v.x, v.z + GUIDE_EXTENT);
+        }
+
+        // Horizontal alignment (same Z) — can snap Z from a different vertex
+        if (!snapZ && Math.abs(cursorZ - v.z) < SNAP_THRESHOLD) {
+          snappedZ = v.z;
+          snapZ = true;
+          addGuideLine(v.x - GUIDE_EXTENT, v.z, v.x + GUIDE_EXTENT, v.z);
+        }
+      }
+
+      // If we got both X and Z snaps (possibly from different vertices),
+      // that's the intersection point — perfect for rectangle corners
+      if (snapX && snapZ) {
+        roofSnappedPos = { x: snappedX, z: snappedZ };
+        return { x: snappedX, z: snappedZ };
+      }
+
+      // Check perpendicular/parallel alignment to existing edges
+      if (roofTempVertices.length >= 2) {
+        for (var i = 0; i < roofTempVertices.length - 1; i++) {
+          var a = roofTempVertices[i];
+          var b = roofTempVertices[i + 1];
+          var edgeDx = b.x - a.x;
+          var edgeDz = b.z - a.z;
+          var edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDz * edgeDz);
+          if (edgeLen < 0.01) continue;
+
+          var ux = edgeDx / edgeLen;
+          var uz = edgeDz / edgeLen;
+          var px = -uz;
+          var pz = ux;
+
+          // Check perpendicular alignment from each endpoint
+          if (!snapX || !snapZ) {
+            for (var j = 0; j < 2; j++) {
+              var vert = j === 0 ? a : b;
+              var toX = (snapX ? snappedX : cursorX) - vert.x;
+              var toZ = (snapZ ? snappedZ : cursorZ) - vert.z;
+              var perpDist = Math.abs(toX * ux + toZ * uz);
+              if (perpDist < SNAP_THRESHOLD) {
+                var projDist = toX * px + toZ * pz;
+                if (!snapX) snappedX = vert.x + px * projDist;
+                if (!snapZ) snappedZ = vert.z + pz * projDist;
+                addGuideLine(
+                  vert.x - px * GUIDE_EXTENT, vert.z - pz * GUIDE_EXTENT,
+                  vert.x + px * GUIDE_EXTENT, vert.z + pz * GUIDE_EXTENT
+                );
+                snapX = true; snapZ = true;
+                break;
+              }
+            }
+          }
+          if (snapX && snapZ) break;
+
+          // Check parallel alignment from last vertex
+          if (!snapX || !snapZ) {
+            var last = roofTempVertices[roofTempVertices.length - 1];
+            var toX2 = (snapX ? snappedX : cursorX) - last.x;
+            var toZ2 = (snapZ ? snappedZ : cursorZ) - last.z;
+            var parDist = Math.abs(toX2 * px + toZ2 * pz);
+            if (parDist < SNAP_THRESHOLD) {
+              var projDist2 = toX2 * ux + toZ2 * uz;
+              if (!snapX) snappedX = last.x + ux * projDist2;
+              if (!snapZ) snappedZ = last.z + uz * projDist2;
+              addGuideLine(
+                last.x - ux * GUIDE_EXTENT, last.z - uz * GUIDE_EXTENT,
+                last.x + ux * GUIDE_EXTENT, last.z + uz * GUIDE_EXTENT
+              );
+              snapX = true; snapZ = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (snapX || snapZ) {
+        roofSnappedPos = { x: snappedX, z: snappedZ };
+      } else {
+        roofSnappedPos = null;
+      }
+
+      return { x: snappedX, z: snappedZ };
     }
 
     /* ── Smart Roof auto-generate from Solar API ── */
@@ -10523,31 +10831,37 @@ app.get("/design", (req, res) => {
           var hit = raycastGroundPlane(e);
           if (!hit) return;
 
+          // Use snapped position if available
+          var px = roofSnappedPos ? roofSnappedPos.x : hit.x;
+          var pz = roofSnappedPos ? roofSnappedPos.z : hit.z;
+
           // Auto-close: if 3+ vertices and click is near the first vertex, close the polygon
           if (roofTempVertices.length >= 3) {
             var first = roofTempVertices[0];
-            var dx = hit.x - first.x, dz = hit.z - first.z;
+            var dx = px - first.x, dz = pz - first.z;
             if (Math.sqrt(dx * dx + dz * dz) < 1.0) {
               // Snap to rectangle and finalize
               var rectVerts = fitRectangle(roofTempVertices);
               finalizeRoofFace(rectVerts, 0, 180, 0);
               clearRoofPreview();
+              clearSnapGuides();
               roofTempVertices = [];
               return;
             }
           }
 
-          roofTempVertices.push({ x: hit.x, z: hit.z });
-          addRoofPreviewHandle(hit.x, hit.z);
+          roofTempVertices.push({ x: px, z: pz });
+          addRoofPreviewHandle(px, pz);
           updateRoofPreviewLines();
+          clearSnapGuides();
           return;
         }
 
-        // Not in drawing mode — check for face selection
+        // Not in drawing mode — check for face/section selection
         if (roofDraggingHandle >= 0) return; // was dragging, ignore click
-        var faceIdx = findRoofFaceUnderCursor(e);
-        if (faceIdx >= 0) {
-          selectRoofFace(faceIdx);
+        var hit = findRoofFaceUnderCursor(e);
+        if (hit.faceIdx >= 0) {
+          selectRoofSection(hit.faceIdx, hit.sectionIdx);
         } else if (roofSelectedFace >= 0) {
           deselectRoofFace();
         }
@@ -10580,18 +10894,23 @@ app.get("/design", (req, res) => {
         }
       });
 
-      // Mousemove: drag handle or show close hint
+      // Mousemove: drag handle, snap guides, or show close hint
       canvas.addEventListener('mousemove', function(e) {
-        // Highlight first vertex when hovering near it in drawing mode
-        if (roofDrawingMode && roofTempVertices.length >= 3 && roofTempHandles.length > 0) {
+        // Snap guides + highlight first vertex in drawing mode
+        if (roofDrawingMode && roofTempVertices.length > 0) {
           var hit = raycastGroundPlane(e);
           if (hit) {
-            var first = roofTempVertices[0];
-            var dx = hit.x - first.x, dz = hit.z - first.z;
-            var near = Math.sqrt(dx * dx + dz * dz) < 1.0;
-            roofTempHandles[0].material.color.set(near ? 0x00e5ff : 0xf5a623);
-            roofTempHandles[0].scale.setScalar(near ? 1.5 : 1.0);
-            canvas.style.cursor = near ? 'pointer' : 'crosshair';
+            computeSnapGuides(hit.x, hit.z);
+            if (roofTempVertices.length >= 3 && roofTempHandles.length > 0) {
+              var first = roofTempVertices[0];
+              var cx = roofSnappedPos ? roofSnappedPos.x : hit.x;
+              var cz = roofSnappedPos ? roofSnappedPos.z : hit.z;
+              var dx = cx - first.x, dz = cz - first.z;
+              var near = Math.sqrt(dx * dx + dz * dz) < 1.0;
+              roofTempHandles[0].material.color.set(near ? 0x00e5ff : 0xf5a623);
+              roofTempHandles[0].scale.setScalar(near ? 1.5 : 1.0);
+              canvas.style.cursor = near ? 'pointer' : 'crosshair';
+            }
           }
         }
         if (roofDraggingHandle < 0) return;
@@ -10652,7 +10971,11 @@ app.get("/design", (req, res) => {
 
         if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
           e.preventDefault();
-          deleteRoofFace(roofSelectedFace);
+          if (roofSelectedSection >= 0) {
+            deleteRoofSection(roofSelectedFace, roofSelectedSection);
+          } else {
+            deleteRoofFace(roofSelectedFace);
+          }
           return;
         }
       });
@@ -10681,7 +11004,7 @@ app.get("/design", (req, res) => {
       if (pitchInput) pitchInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
         roofFaces3d[roofSelectedFace].pitch = parseFloat(this.value) || 0;
-        markDirty();
+        rebuildRoofFace(roofSelectedFace);
       });
       if (azInput) azInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
@@ -10692,6 +11015,14 @@ app.get("/design", (req, res) => {
         if (roofSelectedFace < 0) return;
         roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
         markDirty();
+      });
+
+      // Delete section button
+      var btnDelSection = document.getElementById('btnDeleteRoofSection');
+      if (btnDelSection) btnDelSection.addEventListener('click', function() {
+        if (roofSelectedFace >= 0 && roofSelectedSection >= 0) {
+          deleteRoofSection(roofSelectedFace, roofSelectedSection);
+        }
       });
 
       // Delete face button

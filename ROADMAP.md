@@ -4,6 +4,18 @@
 
 ## Planned (Future)
 
+### Sun Exposure Overlay — Geometric (Phase 0, pre-shading)
+
+Color each roof section by sun quality based purely on cardinal direction + roof slope + latitude. No LiDAR, no tree shading, no API calls — just geometry.
+
+- **Sun score formula**: per-section azimuth score (south-facing=1.0, north=0.0) × 0.7 + tilt score (pitch matching latitude=optimal) × 0.3
+- **Section azimuths**: derived from face azimuth — front trapezoid = face azimuth, back = +180°, hip triangles = ±90°
+- **Color gradient**: bright gold `#FFEA00` (best) → gold → orange → dark red → black (worst)
+- **Toggle**: existing irradiance button (sun icon, shortcut "I") — add `id="btnSunExposure"`, gold active state
+- **State**: `sunExposureActive` flag, stores original materials in `userData.originalMaterial`, restores on toggle off
+- **Auto-refresh**: re-apply overlay in `rebuildRoofFace()` when active so pitch/azimuth changes update colors live
+- **Insertion points**: sun score functions after shade analysis section (~line 8189), toggle listener after btn3dView (~line 8611), keyboard shortcut in keydown handler (~line 7193)
+
 ### Shading Engine (5 phases)
 
 **Phase 1 — Google Solar Production (quick win, ~1 session)**
