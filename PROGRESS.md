@@ -5,6 +5,24 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-30 (Session 27)
+
+### Roof Edge Dragging
+- [x] **Draggable edges** — click and drag any roof edge to slide it along its perpendicular axis; both vertices move together, preserving edge length and orientation
+- [x] **Edge hover highlight** — hovering near an edge turns it cyan with a grab cursor; moving away restores original color
+- [x] **Click-anywhere detection** — proximity-based hit testing (10px threshold) lets users grab any point along the edge, not just the midpoint handle
+- [x] **Edge midpoint handles** — cyan box handles at each edge midpoint, visually distinct from white corner spheres
+- [x] **Perpendicular constraint math** — edge direction → 90° rotation → dot-product projection constrains movement to the normal axis only
+
+### Dormer Improvements
+- [x] **Realistic default sizing** — updated to average US dormer: 2.4m (8ft) wide × 1.5m (5ft) deep × 1.1m (3.5ft) walls (was 1.2m × 0.9m × 0.6m)
+- [x] **Perpendicular orientation** — `getRoofSlopeAngle()` now computes actual perpendicular to the roof face's eave edge using vertex geometry instead of relying on azimuth property
+
+### Critical Bug Fix: Pointer Events
+- [x] **Switched all drag handlers from mouse* to pointer* events** — OrbitControls was calling `preventDefault()` on `pointerdown`, which suppressed all `mousedown` events. This fix enables corner handle dragging, edge dragging, tree dragging, and space-bar panning that were previously broken.
+
+---
+
 ## Completed — 2026-03-30 (Session 26)
 
 ### Dormer System
