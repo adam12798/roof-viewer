@@ -5183,6 +5183,52 @@ app.get("/design", (req, res) => {
     }
     .tp-switch.on::after { transform: translateX(16px); }
 
+    /* ── Tree slider row ── */
+    .tp-slider-row {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0 8px;
+    }
+    .tp-slider-row.visible { display: flex; }
+    .tp-slider-btn {
+      width: 28px; height: 28px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #555;
+      font-size: 1rem; font-weight: 600;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .tp-slider-btn:hover { background: #f3f4f6; color: #111; }
+    .tp-slider-btn:active { background: #e5e7eb; }
+    .tp-slider {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      background: #e5e7eb;
+      border-radius: 2px;
+      outline: none;
+    }
+    .tp-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      background: #374151;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .tp-slider::-moz-range-thumb {
+      width: 14px; height: 14px;
+      background: #374151;
+      border-radius: 3px;
+      cursor: pointer;
+      border: none;
+    }
+
     /* ── PRODUCTION BOTTOM DRAWER ── */
     .prod-drawer {
       position: absolute;
@@ -5961,7 +6007,21 @@ app.get("/design", (req, res) => {
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
               Trees
             </div>
-            <span class="lp-subitem-key" style="margin-left:auto;">T</span>
+            <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+          </div>
+          <div class="lp-submenu" id="treesSubmenu">
+            <div class="lp-subitem" id="btnPlaceTree"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
+              Place tree</div><span class="lp-subitem-key">T</span>
+            </div>
+            <div class="lp-subitem" id="btnSelectAllTrees"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+              Select all trees</div>
+            </div>
+            <div class="lp-subitem" id="btnDeleteAllTrees"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+              Delete all trees</div>
+            </div>
           </div>
         </div>
         <div class="lp-item-wrap" id="wrapSiteComponents">
@@ -6149,6 +6209,12 @@ app.get("/design", (req, res) => {
         <div id="treeModeBanner" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#16a34a;color:#fff;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:none;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
           Tree Mode — Click to place center, move to set radius, click to confirm
+        </div>
+        <div id="treeBulkBar" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#dc2626;color:#fff;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:12px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:all;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
+          <span id="treeBulkCount">0</span> trees selected
+          <button id="btnBulkDeleteTrees" style="margin-left:4px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-weight:600;font-size:0.82rem;">Delete All</button>
+          <button id="btnBulkDeselectTrees" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:6px;padding:5px 14px;cursor:pointer;font-size:0.82rem;">Deselect</button>
         </div>
         <!-- Roof drawing banner -->
         <div id="roofModeBanner" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#f59e0b;color:#000;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:none;">
@@ -6390,12 +6456,22 @@ app.get("/design", (req, res) => {
             <span class="tp-unit">ft</span>
           </div>
         </div>
+        <div class="tp-slider-row" id="tpHeightSliderRow">
+          <button class="tp-slider-btn" data-input="tpHeight" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="tpHeightSlider" type="range" min="1" max="80" step="0.1">
+          <button class="tp-slider-btn" data-input="tpHeight" data-delta="0.5">+</button>
+        </div>
         <div class="tp-row">
           <span class="tp-label">Crown height</span>
           <div class="tp-input-wrap">
             <input class="tp-input" id="tpCrownHeight" type="number" step="0.1" min="0.5">
             <span class="tp-unit">ft</span>
           </div>
+        </div>
+        <div class="tp-slider-row" id="tpCrownHeightSliderRow">
+          <button class="tp-slider-btn" data-input="tpCrownHeight" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="tpCrownHeightSlider" type="range" min="0.5" max="60" step="0.1">
+          <button class="tp-slider-btn" data-input="tpCrownHeight" data-delta="0.5">+</button>
         </div>
         <div class="tp-row">
           <span class="tp-label">Crown diameter</span>
@@ -6404,12 +6480,22 @@ app.get("/design", (req, res) => {
             <span class="tp-unit">ft</span>
           </div>
         </div>
+        <div class="tp-slider-row" id="tpCrownDiamSliderRow">
+          <button class="tp-slider-btn" data-input="tpCrownDiam" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="tpCrownDiamSlider" type="range" min="1" max="100" step="0.1">
+          <button class="tp-slider-btn" data-input="tpCrownDiam" data-delta="0.5">+</button>
+        </div>
         <div class="tp-row">
           <span class="tp-label">Trunk diameter</span>
           <div class="tp-input-wrap">
             <input class="tp-input" id="tpTrunkDiam" type="number" step="0.1" min="0.1">
             <span class="tp-unit">ft</span>
           </div>
+        </div>
+        <div class="tp-slider-row" id="tpTrunkDiamSliderRow">
+          <button class="tp-slider-btn" data-input="tpTrunkDiam" data-delta="-0.1">&minus;</button>
+          <input class="tp-slider" id="tpTrunkDiamSlider" type="range" min="0.1" max="10" step="0.1">
+          <button class="tp-slider-btn" data-input="tpTrunkDiam" data-delta="0.1">+</button>
         </div>
         <div class="tp-toggle-row">
           <span class="tp-toggle-label">Remove trunk</span>
@@ -6992,6 +7078,7 @@ app.get("/design", (req, res) => {
     var submenus = [
       { wrap: 'wrapRoof',           item: 'menuRoof',           sub: 'roofSubmenu' },
       { wrap: 'wrapObstructions',   item: 'menuObstructions',   sub: 'obstructionsSubmenu' },
+      { wrap: 'wrapTrees',          item: 'menuTrees',          sub: 'treesSubmenu' },
       { wrap: 'wrapSiteComponents', item: 'menuSiteComponents', sub: 'siteComponentsSubmenu' },
       { wrap: 'wrapFire',           item: 'menuFire',           sub: 'fireSubmenu' },
       { wrap: 'menuPanelsWrap',     item: 'menuPanels',         sub: 'panelsSubmenu' },
@@ -7039,16 +7126,48 @@ app.get("/design", (req, res) => {
       }
     });
 
-    /* ── Tree tool toggle ── */
-    (function() {
-      var menuTrees = document.getElementById('menuTrees');
-      if (menuTrees) {
-        menuTrees.addEventListener('click', function(e) {
-          e.stopPropagation();
-          toggleTreeMode();
+    /* ── Tree submenu item handlers ── */
+    document.getElementById('btnPlaceTree').addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeAllSubmenus();
+      toggleTreeMode();
+    });
+    document.getElementById('btnSelectAllTrees').addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeAllSubmenus();
+      selectAllTrees();
+    });
+    document.getElementById('btnDeleteAllTrees').addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeAllSubmenus();
+      deleteAllTrees();
+    });
+
+    /* ── Bulk bar button handlers ── */
+    document.getElementById('btnBulkDeleteTrees').addEventListener('click', function() {
+      if (multiSelectedTrees.length > 0) {
+        var sorted = multiSelectedTrees.slice().sort(function(a, b) { return b - a; });
+        sorted.forEach(function(i) {
+          if (i >= 0 && i < trees3d.length) {
+            if (trees3d[i].mesh) scene3d.remove(trees3d[i].mesh);
+            trees3d.splice(i, 1);
+          }
         });
+        multiSelectedTrees = [];
+        hoveredTreeIdx = -1;
+        selectedTreeIdx = -1;
+        document.getElementById('treeBulkBar').style.display = 'none';
+        document.getElementById('treePanel').classList.add('hidden');
+        markDirty();
+      } else if (allTreesSelected) {
+        deleteAllTrees();
       }
-    })();
+    });
+    document.getElementById('btnBulkDeselectTrees').addEventListener('click', function() {
+      if (multiSelectedTrees.length > 0) clearMultiSelect();
+      else deselectAllTrees();
+    });
+
     function toggleTreeMode() {
       treePlacingMode = !treePlacingMode;
       var menuTrees = document.getElementById('menuTrees');
@@ -7071,6 +7190,10 @@ app.get("/design", (req, res) => {
     document.addEventListener('keydown', function(e) {
       if ((e.key === 't' || e.key === 'T') && !e.target.matches('input,textarea,select')) {
         toggleTreeMode();
+      }
+      if (e.key === 'Escape' && allTreesSelected) {
+        deselectAllTrees();
+        return;
       }
       if (e.key === 'Escape' && treePlacingMode) {
         if (treePlaceStep === 1) {
@@ -8093,6 +8216,7 @@ app.get("/design", (req, res) => {
     var vertExag = 2.0;
     var lidarActive = true;
     var satExtentM = 0; // satellite ground plane extent in meters
+    var satTexture = null; // satellite texture for roof face overlays
     var lidarExtentMX = 0, lidarExtentMY = 0; // LiDAR/RGB image extent in meters
     var lidarCenterOffX = 0, lidarCenterOffZ = 0; // RGB image center offset from design point (meters)
 
@@ -8430,6 +8554,7 @@ app.get("/design", (req, res) => {
       img.onload = function() {
         var texture = new THREE.Texture(img);
         texture.needsUpdate = true;
+        satTexture = texture; // store for roof face overlays
         var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
         groundPlane3d = new THREE.Mesh(geo, mat);
         groundPlane3d.position.set(0, -0.5, 0);
@@ -8761,10 +8886,12 @@ app.get("/design", (req, res) => {
 
       var canopyY = sceneHeight * 0.7;
       var canopyBottom = canopyY - radius;
-      var trunkGeo = new THREE.CylinderGeometry(trunkR, trunkR * 1.2, trunkH, 8);
+      var trunkBottom = -1.1;
+      var actualTrunkH = canopyBottom - trunkBottom;
+      var trunkGeo = new THREE.CylinderGeometry(trunkR, trunkR * 1.2, actualTrunkH, 8);
       var trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, transparent: isPreview, opacity: isPreview ? 0.3 : 1.0 });
       var trunk = new THREE.Mesh(trunkGeo, trunkMat);
-      trunk.position.set(center.x, canopyBottom - trunkH / 2, center.z);
+      trunk.position.set(center.x, trunkBottom + actualTrunkH / 2, center.z);
       group.add(trunk);
 
       var canopyGeo = new THREE.SphereGeometry(radius, 16, 12);
@@ -8853,6 +8980,40 @@ app.get("/design", (req, res) => {
       if (t.mesh) scene3d.remove(t.mesh);
       trees3d.splice(idx, 1);
       hoveredTreeIdx = -1;
+      if (allTreesSelected) deselectAllTrees();
+      markDirty();
+    }
+
+    var allTreesSelected = false;
+
+    function selectAllTrees() {
+      if (trees3d.length === 0) return;
+      allTreesSelected = true;
+      for (var i = 0; i < trees3d.length; i++) setTreeHighlight(i, true);
+      var bar = document.getElementById('treeBulkBar');
+      var count = document.getElementById('treeBulkCount');
+      if (bar) bar.style.display = 'flex';
+      if (count) count.textContent = trees3d.length;
+    }
+
+    function deselectAllTrees() {
+      allTreesSelected = false;
+      for (var i = 0; i < trees3d.length; i++) setTreeHighlight(i, false);
+      var bar = document.getElementById('treeBulkBar');
+      if (bar) bar.style.display = 'none';
+    }
+
+    function deleteAllTrees() {
+      if (trees3d.length === 0) return;
+      for (var i = trees3d.length - 1; i >= 0; i--) {
+        if (trees3d[i].mesh) scene3d.remove(trees3d[i].mesh);
+      }
+      trees3d.length = 0;
+      hoveredTreeIdx = -1;
+      allTreesSelected = false;
+      closeTreePanel();
+      var bar = document.getElementById('treeBulkBar');
+      if (bar) bar.style.display = 'none';
       markDirty();
     }
 
@@ -8865,7 +9026,8 @@ app.get("/design", (req, res) => {
       var dragStartPos = null;
 
       canvas.addEventListener('mousedown', function(e) {
-        if (!treePlacingMode || !camera3d || space3dHeld || treePlaceStep !== 0) return;
+        if (!camera3d || space3dHeld || treePlaceStep !== 0) return;
+        if (roofDrawingMode) return;
         if (e.button !== 0) return; // left click only
         if (hoveredTreeIdx >= 0) {
           e.preventDefault();
@@ -8954,17 +9116,17 @@ app.get("/design", (req, res) => {
           return;
         }
 
-        // Tree hover highlight (active in tree mode when not mid-placement)
-        if (treePlacingMode && treePlaceStep === 0) {
+        // Tree hover highlight (works in and outside tree mode)
+        if (!roofDrawingMode && treePlaceStep === 0) {
           var idx = findTreeUnderCursor(e);
           if (idx !== hoveredTreeIdx) {
-            if (hoveredTreeIdx >= 0) setTreeHighlight(hoveredTreeIdx, false);
+            if (hoveredTreeIdx >= 0 && !allTreesSelected && hoveredTreeIdx !== selectedTreeIdx && multiSelectedTrees.indexOf(hoveredTreeIdx) < 0) setTreeHighlight(hoveredTreeIdx, false);
             hoveredTreeIdx = idx;
             if (hoveredTreeIdx >= 0) {
               setTreeHighlight(hoveredTreeIdx, true);
               canvas.style.cursor = 'grab';
             } else {
-              canvas.style.cursor = 'crosshair';
+              canvas.style.cursor = treePlacingMode ? 'crosshair' : '';
             }
           }
         }
@@ -8986,13 +9148,41 @@ app.get("/design", (req, res) => {
       var copiedTree = null;
       document.addEventListener('keydown', function(e) {
         if (e.target.matches('input,textarea,select')) return;
-        if ((e.key === 'Delete' || e.key === 'Backspace') && treePlacingMode && hoveredTreeIdx >= 0) {
+        // Bulk delete all trees
+        if ((e.key === 'Delete' || e.key === 'Backspace') && allTreesSelected) {
           e.preventDefault();
-          deleteTree(hoveredTreeIdx);
+          deleteAllTrees();
+          return;
+        }
+        // Delete multi-selected trees
+        if ((e.key === 'Delete' || e.key === 'Backspace') && multiSelectedTrees.length > 0) {
+          e.preventDefault();
+          // Delete in reverse index order to avoid index shifting
+          var sorted = multiSelectedTrees.slice().sort(function(a, b) { return b - a; });
+          sorted.forEach(function(i) {
+            if (i >= 0 && i < trees3d.length) {
+              if (trees3d[i].mesh) scene3d.remove(trees3d[i].mesh);
+              trees3d.splice(i, 1);
+            }
+          });
+          multiSelectedTrees = [];
+          hoveredTreeIdx = -1;
+          selectedTreeIdx = -1;
+          var bar = document.getElementById('treeBulkBar');
+          if (bar) bar.style.display = 'none';
+          document.getElementById('treePanel').classList.add('hidden');
+          markDirty();
+          return;
+        }
+        // Delete hovered or selected tree
+        if ((e.key === 'Delete' || e.key === 'Backspace') && (hoveredTreeIdx >= 0 || selectedTreeIdx >= 0)) {
+          e.preventDefault();
+          var delIdx = hoveredTreeIdx >= 0 ? hoveredTreeIdx : selectedTreeIdx;
+          deleteTree(delIdx);
           closeTreePanel();
         }
         // Cmd/Ctrl+C — copy selected or hovered tree
-        if ((e.metaKey || e.ctrlKey) && e.key === 'c' && treePlacingMode) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
           var idx = selectedTreeIdx >= 0 ? selectedTreeIdx : hoveredTreeIdx;
           if (idx >= 0 && idx < trees3d.length) {
             var t = trees3d[idx];
@@ -9000,7 +9190,7 @@ app.get("/design", (req, res) => {
           }
         }
         // Cmd/Ctrl+V — paste tree at slight offset from source or center
-        if ((e.metaKey || e.ctrlKey) && e.key === 'v' && treePlacingMode && copiedTree) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'v' && copiedTree) {
           e.preventDefault();
           var sourceIdx = selectedTreeIdx >= 0 ? selectedTreeIdx : hoveredTreeIdx;
           var baseCenter;
@@ -9030,42 +9220,118 @@ app.get("/design", (req, res) => {
         }
       });
 
-      // Click existing tree to select & show panel
+      // Click existing tree to select & show panel (works in and outside tree mode)
       canvas.addEventListener('click', function(e) {
-        if (!treePlacingMode || treePlaceStep !== 0) return;
+        if (treePlaceStep !== 0 || roofDrawingMode || space3dHeld) return;
         var idx = findTreeUnderCursor(e);
-        if (idx >= 0) { selectTree(idx); }
+        if (idx >= 0) {
+          if (e.metaKey || e.ctrlKey) {
+            // Cmd/Ctrl+click: add/remove from multi-selection
+            addToMultiSelect(idx);
+          } else {
+            selectTree(idx);
+          }
+          e.stopImmediatePropagation();
+        }
       });
     })();
 
     /* ── Tree Properties Panel Logic ── */
     var selectedTreeIdx = -1;
+    var multiSelectedTrees = []; // indices of multi-selected trees
     var M_TO_FT = 3.28084;
     var FT_TO_M = 1 / M_TO_FT;
 
+    function clearMultiSelect() {
+      multiSelectedTrees.forEach(function(i) {
+        if (i >= 0 && i < trees3d.length) setTreeHighlight(i, false);
+      });
+      multiSelectedTrees = [];
+      var bar = document.getElementById('treeBulkBar');
+      if (bar) bar.style.display = 'none';
+    }
+
+    function addToMultiSelect(idx) {
+      if (multiSelectedTrees.indexOf(idx) >= 0) {
+        // Already selected — deselect it
+        multiSelectedTrees.splice(multiSelectedTrees.indexOf(idx), 1);
+        setTreeHighlight(idx, false);
+      } else {
+        multiSelectedTrees.push(idx);
+        setTreeHighlight(idx, true);
+      }
+      if (multiSelectedTrees.length > 0) {
+        var bar = document.getElementById('treeBulkBar');
+        var count = document.getElementById('treeBulkCount');
+        if (bar) bar.style.display = 'flex';
+        if (count) count.textContent = multiSelectedTrees.length;
+      } else {
+        var bar = document.getElementById('treeBulkBar');
+        if (bar) bar.style.display = 'none';
+      }
+      // If exactly one in multi-select, show its props; otherwise hide panel
+      if (multiSelectedTrees.length === 1) {
+        selectTreeSingle(multiSelectedTrees[0]);
+      } else {
+        selectedTreeIdx = -1;
+        document.getElementById('treePanel').classList.add('hidden');
+      }
+    }
+
     function selectTree(idx) {
+      // Clear any multi-selection
+      clearMultiSelect();
+      // Unhighlight previous selection
+      if (selectedTreeIdx >= 0 && selectedTreeIdx < trees3d.length) {
+        setTreeHighlight(selectedTreeIdx, false);
+      }
+      selectTreeSingle(idx);
+    }
+
+    function selectTreeSingle(idx) {
+      // Unhighlight previous if different
+      if (selectedTreeIdx >= 0 && selectedTreeIdx !== idx && selectedTreeIdx < trees3d.length) {
+        setTreeHighlight(selectedTreeIdx, false);
+      }
       selectedTreeIdx = idx;
+      setTreeHighlight(idx, true);
       var t = trees3d[idx];
       var sceneHeight = t.height * vertExag;
-      var crownH = sceneHeight * 0.7; // canopyY = sceneHeight * 0.7, canopy center
+      var crownH = sceneHeight * 0.7;
       var crownDiam = t.radius * 2;
       var trunkDiam = t.radius * 0.15 * 2;
       var removeTrunk = t.removeTrunk || false;
 
-      document.getElementById('tpHeight').value = (t.height * M_TO_FT).toFixed(1);
-      document.getElementById('tpCrownHeight').value = (crownH / vertExag * M_TO_FT).toFixed(1);
-      document.getElementById('tpCrownDiam').value = (crownDiam * M_TO_FT).toFixed(1);
-      document.getElementById('tpTrunkDiam').value = (trunkDiam * M_TO_FT).toFixed(1);
+      var hFt = (t.height * M_TO_FT).toFixed(1);
+      var chFt = (crownH / vertExag * M_TO_FT).toFixed(1);
+      var cdFt = (crownDiam * M_TO_FT).toFixed(1);
+      var tdFt = (trunkDiam * M_TO_FT).toFixed(1);
+      document.getElementById('tpHeight').value = hFt;
+      document.getElementById('tpCrownHeight').value = chFt;
+      document.getElementById('tpCrownDiam').value = cdFt;
+      document.getElementById('tpTrunkDiam').value = tdFt;
+      // Sync sliders
+      document.getElementById('tpHeightSlider').value = hFt;
+      document.getElementById('tpCrownHeightSlider').value = chFt;
+      document.getElementById('tpCrownDiamSlider').value = cdFt;
+      document.getElementById('tpTrunkDiamSlider').value = tdFt;
       var sw = document.getElementById('tpRemoveTrunk');
       sw.classList.toggle('on', removeTrunk);
+      // Hide any open slider rows
+      ['tpHeightSliderRow','tpCrownHeightSliderRow','tpCrownDiamSliderRow','tpTrunkDiamSliderRow'].forEach(function(id) {
+        document.getElementById(id).classList.remove('visible');
+      });
 
       document.getElementById('treePanel').classList.remove('hidden');
-      // hide right panel if showing
       document.getElementById('rightPanel').classList.add('hidden');
     }
 
     function closeTreePanel() {
+      if (selectedTreeIdx >= 0 && selectedTreeIdx < trees3d.length) {
+        setTreeHighlight(selectedTreeIdx, false);
+      }
       selectedTreeIdx = -1;
+      clearMultiSelect();
       document.getElementById('treePanel').classList.add('hidden');
     }
 
@@ -9155,6 +9421,55 @@ app.get("/design", (req, res) => {
       rebuildSelectedTree();
     });
 
+    /* ── Slider show/hide on input focus ── */
+    var sliderPairs = [
+      { input: 'tpHeight',      slider: 'tpHeightSlider',      row: 'tpHeightSliderRow' },
+      { input: 'tpCrownHeight', slider: 'tpCrownHeightSlider', row: 'tpCrownHeightSliderRow' },
+      { input: 'tpCrownDiam',   slider: 'tpCrownDiamSlider',   row: 'tpCrownDiamSliderRow' },
+      { input: 'tpTrunkDiam',   slider: 'tpTrunkDiamSlider',   row: 'tpTrunkDiamSliderRow' }
+    ];
+    sliderPairs.forEach(function(p) {
+      var inp = document.getElementById(p.input);
+      var slider = document.getElementById(p.slider);
+      var row = document.getElementById(p.row);
+      // Show slider on focus
+      inp.addEventListener('focus', function() {
+        // Hide all other slider rows
+        sliderPairs.forEach(function(x) { document.getElementById(x.row).classList.remove('visible'); });
+        slider.value = parseFloat(inp.value) || 0;
+        row.classList.add('visible');
+      });
+      // Sync slider → input and trigger live update
+      slider.addEventListener('input', function() {
+        inp.value = parseFloat(slider.value).toFixed(1);
+        inp.dispatchEvent(new Event('input'));
+      });
+    });
+    // +/- buttons
+    document.querySelectorAll('.tp-slider-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var inp = document.getElementById(btn.getAttribute('data-input'));
+        var delta = parseFloat(btn.getAttribute('data-delta'));
+        var val = parseFloat(inp.value) + delta;
+        var min = parseFloat(inp.min) || 0;
+        if (val < min) val = min;
+        inp.value = val.toFixed(1);
+        inp.dispatchEvent(new Event('input'));
+        // Update slider too
+        sliderPairs.forEach(function(p) {
+          if (p.input === btn.getAttribute('data-input')) {
+            document.getElementById(p.slider).value = val;
+          }
+        });
+      });
+    });
+    // Click outside tree panel closes sliders
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('.tree-panel')) {
+        sliderPairs.forEach(function(p) { document.getElementById(p.row).classList.remove('visible'); });
+      }
+    });
+
     // Remove trunk toggle
     document.getElementById('tpRemoveTrunk').addEventListener('click', function() {
       if (selectedTreeIdx < 0) return;
@@ -9220,17 +9535,82 @@ app.get("/design", (req, res) => {
       return labels;
     }
 
-    /* ── Build semi-transparent face mesh ── */
+    /* ── Fit oriented minimum bounding rectangle to a set of points ── */
+    function fitRectangle(pts) {
+      if (pts.length < 2) return pts;
+      var hull = convexHull2d(pts);
+      if (hull.length < 2) return pts;
+
+      var bestArea = Infinity, bestRect = null;
+      for (var i = 0; i < hull.length; i++) {
+        var a = hull[i], b = hull[(i + 1) % hull.length];
+        var angle = Math.atan2(b.z - a.z, b.x - a.x);
+        var cos = Math.cos(-angle), sin = Math.sin(-angle);
+
+        // Rotate all hull points to align this edge with X axis
+        var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (var j = 0; j < hull.length; j++) {
+          var rx = hull[j].x * cos - hull[j].z * sin;
+          var rz = hull[j].x * sin + hull[j].z * cos;
+          if (rx < minX) minX = rx;
+          if (rx > maxX) maxX = rx;
+          if (rz < minZ) minZ = rz;
+          if (rz > maxZ) maxZ = rz;
+        }
+
+        var area = (maxX - minX) * (maxZ - minZ);
+        if (area < bestArea) {
+          bestArea = area;
+          // Rotate the 4 corners back to original orientation
+          var cosB = Math.cos(angle), sinB = Math.sin(angle);
+          bestRect = [
+            { x: minX * cosB - minZ * sinB, z: minX * sinB + minZ * cosB },
+            { x: maxX * cosB - minZ * sinB, z: maxX * sinB + minZ * cosB },
+            { x: maxX * cosB - maxZ * sinB, z: maxX * sinB + maxZ * cosB },
+            { x: minX * cosB - maxZ * sinB, z: minX * sinB + maxZ * cosB }
+          ];
+        }
+      }
+      return bestRect || pts;
+    }
+
+    /* ── Build roof face mesh with satellite texture overlay ── */
     function buildRoofFaceMesh(verts, color) {
       var shape = new THREE.Shape();
-      shape.moveTo(verts[0].x, verts[0].z);
-      for (var i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, verts[i].z);
+      shape.moveTo(verts[0].x, -verts[0].z);
+      for (var i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, -verts[i].z);
       shape.closePath();
       var geo = new THREE.ShapeGeometry(shape);
       geo.rotateX(-Math.PI / 2);
+
+      // If satellite texture is available, compute UVs to map the correct portion
+      if (satTexture && satExtentM > 0) {
+        var uvAttr = geo.attributes.uv;
+        var posAttr = geo.attributes.position;
+        for (var i = 0; i < posAttr.count; i++) {
+          var wx = posAttr.getX(i);
+          var wz = posAttr.getZ(i);
+          // Map world coords to satellite texture UVs
+          // Ground plane: centered at origin, size satExtentM x satExtentM
+          var u = (wx + satExtentM / 2) / satExtentM;
+          var v = (-wz + satExtentM / 2) / satExtentM;
+          uvAttr.setXY(i, u, v);
+        }
+        uvAttr.needsUpdate = true;
+
+        var mat = new THREE.MeshBasicMaterial({
+          map: satTexture,
+          side: THREE.DoubleSide, depthWrite: false
+        });
+        var mesh = new THREE.Mesh(geo, mat);
+        mesh.position.y = 0.05;
+        return mesh;
+      }
+
+      // Fallback: solid color if no satellite texture
       var mat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(color),
-        transparent: true, opacity: 0.22,
+        transparent: true, opacity: 0.50,
         side: THREE.DoubleSide, depthWrite: false
       });
       var mesh = new THREE.Mesh(geo, mat);
@@ -9247,7 +9627,56 @@ app.get("/design", (req, res) => {
       }
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: color, linewidth: 2 }));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: color, linewidth: 3 }));
+    }
+
+    /* ── Build hip roof interior lines (4 hips + 1 ridge) ── */
+    function buildHipRoofLines(verts, pitchDeg) {
+      if (!verts || verts.length !== 4) return null;
+
+      // Determine which edges are long vs short
+      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
+      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
+
+      var v0, v1, v2, v3, longLen, shortLen;
+      if (d01 >= d12) {
+        // edges 0-1 and 3-2 are long sides
+        v0 = verts[0]; v1 = verts[1]; v2 = verts[2]; v3 = verts[3];
+        longLen = d01; shortLen = d12;
+      } else {
+        // edges 1-2 and 0-3 are long sides — rotate vertex assignment
+        v0 = verts[1]; v1 = verts[2]; v2 = verts[3]; v3 = verts[0];
+        longLen = d12; shortLen = d01;
+      }
+
+      // Ridge inset = shortLen/2 (45-degree hips)
+      var inset = shortLen / 2;
+      // Direction along long side (v0 → v1)
+      var ldx = (v1.x - v0.x) / longLen, ldz = (v1.z - v0.z) / longLen;
+      // Midpoints of short sides
+      var m0x = (v0.x + v3.x) / 2, m0z = (v0.z + v3.z) / 2;
+      var m1x = (v1.x + v2.x) / 2, m1z = (v1.z + v2.z) / 2;
+
+      // Ridge endpoints: inset from each short side along the long direction
+      var r0x = m0x + ldx * inset, r0z = m0z + ldz * inset;
+      var r1x = m1x - ldx * inset, r1z = m1z - ldz * inset;
+
+      // Ridge height based on pitch
+      var ridgeY = inset * Math.tan((pitchDeg || 10) * Math.PI / 180) + 0.12;
+      var baseY = 0.12;
+
+      // 5 lines: 4 hips from corners to ridge endpoints + 1 ridge
+      var positions = [
+        v0.x, baseY, v0.z,  r0x, ridgeY, r0z,   // hip: v0 → R0
+        v3.x, baseY, v3.z,  r0x, ridgeY, r0z,   // hip: v3 → R0
+        v1.x, baseY, v1.z,  r1x, ridgeY, r1z,   // hip: v1 → R1
+        v2.x, baseY, v2.z,  r1x, ridgeY, r1z,   // hip: v2 → R1
+        r0x, ridgeY, r0z,   r1x, ridgeY, r1z    // ridge: R0 → R1
+      ];
+
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
     }
 
     /* ── Build vertex handle spheres ── */
@@ -9274,7 +9703,7 @@ app.get("/design", (req, res) => {
         azimuth: azimuth || 180,
         height: height || 0,
         color: '#f5a623',
-        mesh: null, edgeLines: null,
+        mesh: null, edgeLines: null, hipLines: null,
         handleMeshes: [], labelSprites: [],
         selected: false
       };
@@ -9282,6 +9711,8 @@ app.get("/design", (req, res) => {
       scene3d.add(face.mesh);
       face.edgeLines = buildRoofEdgeLines(verts, '#ffffff');
       scene3d.add(face.edgeLines);
+      face.hipLines = buildHipRoofLines(verts, 10);
+      if (face.hipLines) scene3d.add(face.hipLines);
       face.handleMeshes = buildRoofHandles(verts);
       face.labelSprites = buildEdgeLabels(verts);
       roofFaces3d.push(face);
@@ -9294,6 +9725,7 @@ app.get("/design", (req, res) => {
       var face = roofFaces3d[idx];
       if (face.mesh) scene3d.remove(face.mesh);
       if (face.edgeLines) scene3d.remove(face.edgeLines);
+      if (face.hipLines) scene3d.remove(face.hipLines);
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
 
       var col = face.selected ? '#00e5ff' : face.color;
@@ -9301,6 +9733,8 @@ app.get("/design", (req, res) => {
       scene3d.add(face.mesh);
       face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff');
       scene3d.add(face.edgeLines);
+      face.hipLines = buildHipRoofLines(face.vertices, 10);
+      if (face.hipLines) scene3d.add(face.hipLines);
       face.labelSprites = buildEdgeLabels(face.vertices);
 
       face.vertices.forEach(function(v, i) {
@@ -9314,6 +9748,7 @@ app.get("/design", (req, res) => {
       roofFaces3d.forEach(function(face) {
         if (face.mesh) scene3d.remove(face.mesh);
         if (face.edgeLines) scene3d.remove(face.edgeLines);
+        if (face.hipLines) scene3d.remove(face.hipLines);
         face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
         face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       });
@@ -9331,6 +9766,7 @@ app.get("/design", (req, res) => {
       var face = roofFaces3d[idx];
       if (face.mesh) scene3d.remove(face.mesh);
       if (face.edgeLines) scene3d.remove(face.edgeLines);
+      if (face.hipLines) scene3d.remove(face.hipLines);
       face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       roofFaces3d.splice(idx, 1);
@@ -9555,11 +9991,13 @@ app.get("/design", (req, res) => {
     }
 
     /* Marching squares contour tracing on binary grid → boundary points */
-    function traceContour(grid, gridSize, minX, minZ, step) {
+    function traceContour(grid, numRows, minX, minZ, step, numCols) {
+      var rows = numRows;
+      var cols = numCols || numRows; // support separate row/col counts
       // Find a starting edge cell
       var startR = -1, startC = -1;
-      for (var r = 0; r < gridSize - 1 && startR < 0; r++) {
-        for (var c = 0; c < gridSize - 1; c++) {
+      for (var r = 0; r < rows - 1 && startR < 0; r++) {
+        for (var c = 0; c < cols - 1; c++) {
           var val = (grid[r][c] ? 8 : 0) | (grid[r][c + 1] ? 4 : 0) |
                     (grid[r + 1][c + 1] ? 2 : 0) | (grid[r + 1][c] ? 1 : 0);
           if (val > 0 && val < 15) { startR = r; startC = c; break; }
@@ -9567,21 +10005,22 @@ app.get("/design", (req, res) => {
       }
       if (startR < 0) return [];
 
-      // Walk the contour
+      // Walk the contour using marching squares with direction tracking
       var boundary = [];
       var visited = {};
       var r = startR, c = startC;
-      var maxIter = gridSize * gridSize;
+      var maxIter = rows * cols;
+      var prevDr = 0, prevDc = 1; // initial direction: right
 
       for (var iter = 0; iter < maxIter; iter++) {
         var key = r + ',' + c;
         if (visited[key] && iter > 2) break;
         visited[key] = true;
 
-        var tl = (r >= 0 && c >= 0 && r < gridSize && c < gridSize) ? grid[r][c] : 0;
-        var tr = (r >= 0 && c + 1 < gridSize) ? grid[r][c + 1] : 0;
-        var br = (r + 1 < gridSize && c + 1 < gridSize) ? grid[r + 1][c + 1] : 0;
-        var bl = (r + 1 < gridSize && c >= 0) ? grid[r + 1][c] : 0;
+        var tl = (r >= 0 && c >= 0 && r < rows && c < cols) ? grid[r][c] : 0;
+        var tr = (r >= 0 && c + 1 < cols) ? grid[r][c + 1] : 0;
+        var br = (r + 1 < rows && c + 1 < cols) ? grid[r + 1][c + 1] : 0;
+        var bl = (r + 1 < rows && c >= 0) ? grid[r + 1][c] : 0;
         var val = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
 
         // Emit midpoint of the cell
@@ -9589,16 +10028,26 @@ app.get("/design", (req, res) => {
         var cz = minZ + (r + 0.5) * step;
         boundary.push({ x: cx, z: cz });
 
-        // March direction based on case
-        if (val === 1 || val === 5 || val === 13) { r++; }
-        else if (val === 2 || val === 3 || val === 7) { c++; }
-        else if (val === 4 || val === 10 || val === 14) { r--; }
-        else if (val === 8 || val === 12 || val === 11) { c--; }
-        else if (val === 6) { c++; }
-        else if (val === 9) { r++; }
+        // March direction based on case (with direction tracking for ambiguous cases)
+        var dr = 0, dc = 0;
+        if (val === 1 || val === 5 || val === 13) { dr = 1; }
+        else if (val === 2 || val === 3 || val === 7) { dc = 1; }
+        else if (val === 4 || val === 10 || val === 14) { dr = -1; }
+        else if (val === 8 || val === 12 || val === 11) { dc = -1; }
+        else if (val === 6) {
+          // tr+br filled (left boundary): go up for clockwise, use prev direction for ambiguous
+          if (prevDr === 1) { dc = 1; } else { dr = -1; }
+        }
+        else if (val === 9) {
+          // tl+bl filled (right boundary): go down for clockwise, use prev direction for ambiguous
+          if (prevDr === -1) { dc = -1; } else { dr = 1; }
+        }
         else break;
 
-        if (r < -1 || r >= gridSize || c < -1 || c >= gridSize) break;
+        prevDr = dr; prevDc = dc;
+        r += dr; c += dc;
+
+        if (r < -1 || r >= rows || c < -1 || c >= cols) break;
       }
 
       return boundary;
@@ -9791,10 +10240,12 @@ app.get("/design", (req, res) => {
     }
 
     /* Flood-fill from a grid cell: spread to neighbors within elevation tolerance */
-    function floodFillRoof(grid, startRow, startCol, elevTol) {
+    function floodFillRoof(grid, startRow, startCol, elevTol, maxRadius) {
       var rows = grid.rows, cols = grid.cols, elev = grid.elev;
       if (startRow < 0 || startRow >= rows || startCol < 0 || startCol >= cols) return [];
       if (elev[startRow][startCol] <= grid.groundElev + 1.0) return [];
+
+      var maxCells = maxRadius ? Math.ceil(maxRadius / grid.cellSize) : Infinity;
 
       var visited = [];
       for (var r = 0; r < rows; r++) {
@@ -9811,6 +10262,11 @@ app.get("/design", (req, res) => {
         var cell = queue.shift();
         var cellElev = elev[cell.r][cell.c];
         if (cellElev <= grid.groundElev + 1.0) continue; // below building threshold
+
+        // Max radius constraint from click point
+        var dr = cell.r - startRow, dc = cell.c - startCol;
+        if (dr * dr + dc * dc > maxCells * maxCells) continue;
+
         filled.push(cell);
 
         for (var d = 0; d < 4; d++) {
@@ -9831,20 +10287,29 @@ app.get("/design", (req, res) => {
     function cellsToBoundary(cells, grid) {
       if (cells.length < 3) return [];
 
-      // Build binary grid from filled cells
-      var rows = grid.rows, cols = grid.cols;
-      var binary = [];
-      for (var r = 0; r < rows; r++) {
-        binary[r] = [];
-        for (var c = 0; c < cols; c++) binary[r][c] = 0;
-      }
+      // Build set of filled cells for fast lookup
+      var filledSet = {};
       for (var i = 0; i < cells.length; i++) {
-        binary[cells[i].r][cells[i].c] = 1;
+        filledSet[cells[i].r + ',' + cells[i].c] = true;
       }
 
-      // Trace contour
-      var boundary = traceContour(binary, rows, grid.minX, grid.minZ, grid.cellSize);
-      return boundary;
+      // Find boundary cells (filled cells with at least one empty 4-neighbor)
+      var boundaryPts = [];
+      for (var i = 0; i < cells.length; i++) {
+        var r = cells[i].r, c = cells[i].c;
+        if (!filledSet[(r-1)+','+c] || !filledSet[(r+1)+','+c] ||
+            !filledSet[r+','+(c-1)] || !filledSet[r+','+(c+1)]) {
+          boundaryPts.push({
+            x: grid.minX + c * grid.cellSize,
+            z: grid.minZ + r * grid.cellSize
+          });
+        }
+      }
+
+      if (boundaryPts.length < 3) return [];
+
+      // Use convex hull for clean building outline
+      return convexHull2d(boundaryPts);
     }
 
     /* Split a footprint polygon into faces using Solar API segment centroids */
@@ -9925,12 +10390,31 @@ app.get("/design", (req, res) => {
       // Build elevation grid
       var grid = buildElevGrid(lidarRawPoints);
 
+      // Account for LiDAR position offset (auto-align / calibration)
+      var lidarOffX = lidarPoints ? lidarPoints.position.x : 0;
+      var lidarOffZ = lidarPoints ? lidarPoints.position.z : 0;
+      var adjX = worldX - lidarOffX;
+      var adjZ = worldZ - lidarOffZ;
+
       // Find grid cell nearest to click
-      var clickCol = Math.round((worldX - grid.minX) / grid.cellSize);
-      var clickRow = Math.round((worldZ - grid.minZ) / grid.cellSize);
+      var clickCol = Math.round((adjX - grid.minX) / grid.cellSize);
+      var clickRow = Math.round((adjZ - grid.minZ) / grid.cellSize);
+
+      console.log('=== ROOF DETECT DEBUG ===');
+      console.log('Click world:', worldX.toFixed(2), worldZ.toFixed(2));
+      console.log('LiDAR offset:', lidarOffX.toFixed(2), lidarOffZ.toFixed(2));
+      console.log('Adjusted click:', adjX.toFixed(2), adjZ.toFixed(2));
+      console.log('Grid: rows=' + grid.rows + ' cols=' + grid.cols + ' cellSize=' + grid.cellSize);
+      console.log('Grid extent X: ' + grid.minX.toFixed(2) + ' to ' + (grid.minX + grid.cols * grid.cellSize).toFixed(2));
+      console.log('Grid extent Z: ' + grid.minZ.toFixed(2) + ' to ' + (grid.minZ + grid.rows * grid.cellSize).toFixed(2));
+      console.log('Click cell: row=' + clickRow + ' col=' + clickCol);
+      console.log('Cell elev:', (clickRow >= 0 && clickRow < grid.rows && clickCol >= 0 && clickCol < grid.cols) ? grid.elev[clickRow][clickCol].toFixed(2) : 'OUT OF BOUNDS');
+      console.log('Ground elev:', grid.groundElev.toFixed(2), 'threshold:', (grid.groundElev + 1.0).toFixed(2));
 
       // Flood-fill from click: follow roof surface, stop at edges
-      var filled = floodFillRoof(grid, clickRow, clickCol, 1.0);
+      var filled = floodFillRoof(grid, clickRow, clickCol, 0.6, 15);
+
+      console.log('Flood fill cells:', filled.length);
 
       if (filled.length < 8) {
         var banner = document.getElementById('roofModeBanner');
@@ -9938,12 +10422,41 @@ app.get("/design", (req, res) => {
         return;
       }
 
+      // Compute filled region extent
+      var fMinR = Infinity, fMaxR = -Infinity, fMinC = Infinity, fMaxC = -Infinity;
+      for (var fi = 0; fi < filled.length; fi++) {
+        if (filled[fi].r < fMinR) fMinR = filled[fi].r;
+        if (filled[fi].r > fMaxR) fMaxR = filled[fi].r;
+        if (filled[fi].c < fMinC) fMinC = filled[fi].c;
+        if (filled[fi].c > fMaxC) fMaxC = filled[fi].c;
+      }
+      console.log('Filled extent: rows ' + fMinR + '-' + fMaxR + ' (' + ((fMaxR-fMinR)*grid.cellSize).toFixed(1) + 'm), cols ' + fMinC + '-' + fMaxC + ' (' + ((fMaxC-fMinC)*grid.cellSize).toFixed(1) + 'm)');
+
       // Trace the boundary of the flood-filled region
       var boundary = cellsToBoundary(filled, grid);
+      console.log('Boundary points (raw):', boundary.length);
       if (boundary.length < 3) return;
+
+      // Log boundary extent
+      var bMinX = Infinity, bMaxX = -Infinity, bMinZ = Infinity, bMaxZ = -Infinity;
+      for (var bi = 0; bi < boundary.length; bi++) {
+        if (boundary[bi].x < bMinX) bMinX = boundary[bi].x;
+        if (boundary[bi].x > bMaxX) bMaxX = boundary[bi].x;
+        if (boundary[bi].z < bMinZ) bMinZ = boundary[bi].z;
+        if (boundary[bi].z > bMaxZ) bMaxZ = boundary[bi].z;
+      }
+      console.log('Boundary extent: X ' + bMinX.toFixed(2) + ' to ' + bMaxX.toFixed(2) + ' (' + (bMaxX-bMinX).toFixed(1) + 'm), Z ' + bMinZ.toFixed(2) + ' to ' + bMaxZ.toFixed(2) + ' (' + (bMaxZ-bMinZ).toFixed(1) + 'm)');
+
       boundary = douglasPeucker(boundary, 0.4);
       boundary = orthogonalize(boundary);
+      console.log('Boundary points (simplified):', boundary.length);
       if (boundary.length < 3) return;
+
+      // Shift boundary vertices by LiDAR offset so they align with satellite
+      for (var bi = 0; bi < boundary.length; bi++) {
+        boundary[bi].x += lidarOffX;
+        boundary[bi].z += lidarOffZ;
+      }
 
       // Split by Solar API segments
       var segs = solarData ? ((solarData.solarPotential || {}).roofSegmentStats || []) : [];
@@ -10009,6 +10522,21 @@ app.get("/design", (req, res) => {
         if (roofDrawingMode) {
           var hit = raycastGroundPlane(e);
           if (!hit) return;
+
+          // Auto-close: if 3+ vertices and click is near the first vertex, close the polygon
+          if (roofTempVertices.length >= 3) {
+            var first = roofTempVertices[0];
+            var dx = hit.x - first.x, dz = hit.z - first.z;
+            if (Math.sqrt(dx * dx + dz * dz) < 1.0) {
+              // Snap to rectangle and finalize
+              var rectVerts = fitRectangle(roofTempVertices);
+              finalizeRoofFace(rectVerts, 0, 180, 0);
+              clearRoofPreview();
+              roofTempVertices = [];
+              return;
+            }
+          }
+
           roofTempVertices.push({ x: hit.x, z: hit.z });
           addRoofPreviewHandle(hit.x, hit.z);
           updateRoofPreviewLines();
@@ -10033,7 +10561,8 @@ app.get("/design", (req, res) => {
         if (roofTempHandles.length > 0) {
           scene3d.remove(roofTempHandles.pop());
         }
-        finalizeRoofFace(roofTempVertices.slice(), 0, 180, 0);
+        var rectVerts = fitRectangle(roofTempVertices);
+        finalizeRoofFace(rectVerts, 0, 180, 0);
         clearRoofPreview();
         roofTempVertices = [];
       });
@@ -10051,8 +10580,20 @@ app.get("/design", (req, res) => {
         }
       });
 
-      // Mousemove: drag handle
+      // Mousemove: drag handle or show close hint
       canvas.addEventListener('mousemove', function(e) {
+        // Highlight first vertex when hovering near it in drawing mode
+        if (roofDrawingMode && roofTempVertices.length >= 3 && roofTempHandles.length > 0) {
+          var hit = raycastGroundPlane(e);
+          if (hit) {
+            var first = roofTempVertices[0];
+            var dx = hit.x - first.x, dz = hit.z - first.z;
+            var near = Math.sqrt(dx * dx + dz * dz) < 1.0;
+            roofTempHandles[0].material.color.set(near ? 0x00e5ff : 0xf5a623);
+            roofTempHandles[0].scale.setScalar(near ? 1.5 : 1.0);
+            canvas.style.cursor = near ? 'pointer' : 'crosshair';
+          }
+        }
         if (roofDraggingHandle < 0) return;
         var hit = raycastGroundPlane(e);
         if (!hit) return;
@@ -10078,7 +10619,8 @@ app.get("/design", (req, res) => {
 
         if (e.key === 'Enter' && roofDrawingMode && roofTempVertices.length >= 3) {
           e.preventDefault();
-          finalizeRoofFace(roofTempVertices.slice(), 0, 180, 0);
+          var rectVerts = fitRectangle(roofTempVertices);
+          finalizeRoofFace(rectVerts, 0, 180, 0);
           clearRoofPreview();
           roofTempVertices = [];
           return;

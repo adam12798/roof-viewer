@@ -5,6 +5,69 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-29 (Session 23)
+
+### Manual Roof Drawing — Rectangle Snap + Hip Roof
+- [x] **Best-fit rectangle snap** — `fitRectangle()` computes oriented minimum bounding rectangle from clicked points
+- [x] **Auto-close polygon** — clicking near the first vertex (within 1m) closes and finalizes; first handle highlights cyan when close
+- [x] **Satellite texture overlay** — roof face meshes use the satellite image texture with computed UVs instead of solid color fill
+- [x] **Fixed ShapeGeometry Z-flip** — negated Z in shape construction to correct fill/edge misalignment (`-verts[i].z`)
+- [x] **Hip roof wireframe** — `buildHipRoofLines()` generates 5 interior lines on each rectangle:
+  - 4 hip lines from each corner at 45° to the nearest ridge endpoint
+  - 1 ridge line running parallel to the longest sides, elevated at 10° pitch
+  - Ridge height = `(shortSide/2) * tan(10°)`
+  - Creates 4 interior areas: 2 trapezoids (long sides) + 2 triangles (short ends)
+- [x] Hip lines rebuild on vertex drag, removed on face delete
+- [x] Stored satellite texture globally (`satTexture`) for roof face reuse
+
+### SmartRoof Fixes
+- [x] **Fixed marching squares contour tracing** — case 6 (left boundary) had wrong direction, added direction tracking for ambiguous cases
+- [x] **Replaced marching squares with convex hull boundary** — `cellsToBoundary()` now extracts boundary cells and computes convex hull (more robust for irregular DSM shapes)
+- [x] **LiDAR offset compensation** — click coordinates adjusted by auto-align/calibration offset before grid lookup; boundary vertices re-offset for scene alignment
+- [x] **Flood fill max radius** — 15m constraint prevents leaking to trees/neighbors
+- [x] **Tighter elevation tolerance** — reduced from 1.0m to 0.6m between adjacent cells
+- [x] `traceContour()` now accepts separate rows/cols parameters
+
+---
+
+## Completed — 2026-03-29 (Session 22)
+
+### CAD Modeling Engine — SmartRoof
+- [x] Roof face drawing state variables and data model (`roofFaces3d[]` array)
+- [x] **Manual roof face drawing** — click vertices on 3D ground plane, double-click/Enter to complete polygon
+- [x] Semi-transparent colored face meshes (THREE.ShapeGeometry) with white edge outlines
+- [x] Draggable white vertex handle spheres — click and drag to reshape faces, edges update live
+- [x] Edge measurement labels (THREE.Sprite text) showing distances in feet on every edge
+- [x] Face selection — click face to highlight cyan, right panel shows "Edge & face" properties
+- [x] Right panel: editable Pitch, Azimuth, Eave Height + read-only Area (ft²) and edge lengths
+- [x] Delete face via Delete/Backspace key or red "Delete Face" button in properties panel
+- [x] Roof drawing mode banner (gold/orange, matches Aurora style)
+- [x] Wired left panel Roof submenu items: Smart roof (R), Manual roof face, Flat roof with IDs and click handlers
+- [x] Keyboard shortcuts: Escape (cancel/deselect), Enter (complete polygon), Delete (remove face)
+- [x] Mutual exclusion: roof drawing mode deactivates tree mode and vice versa
+- [x] Persistence: roof faces serialize/deserialize with design save/load (`roofFaces` in PUT endpoint)
+
+### SmartRoof Auto-Detect (v1 → v2 → v3)
+- [x] v1: Solar API rectangle placement (replaced)
+- [x] v2: RANSAC plane detection + convex hull (replaced — grabbed trees, planes too noisy)
+- [x] v3: **Elevation flood-fill** from click point + Solar API segment partitioning
+  - Click on building → flood-fill DSM grid following roof surface (±0.6m neighbor tolerance, 15m max radius)
+  - Stops at roof edges where elevation drops to ground
+  - Boundary extracted via convex hull of boundary cells (replaced marching squares)
+  - Douglas-Peucker simplification + orthogonalization (snap near-90° angles)
+  - Splits footprint into faces using Solar API segment centroids (Voronoi partition)
+  - Each face gets pitch/azimuth from Google's roofSegmentStats
+- [x] Detection algorithms: `buildElevGrid()`, `floodFillRoof()`, `cellsToBoundary()`, `splitBySegments()`
+- [x] Supporting algorithms: `douglasPeucker()`, `convexHull2d()`, `ransacPlanes()`, `traceContour()`, `orthogonalize()`
+- [x] Stored `lidarRawPoints` globally for detection access
+- [x] Detect mode UX: banner "Click on the building to detect roof faces", crosshair cursor, Esc to exit
+
+### ViewCube Sensitivity
+- [x] 3D viewcube tilt sensitivity increased from 0.3 to 0.8
+- [x] 2D map viewcube tilt sensitivity increased from 0.3 to 1.5
+
+---
+
 ## Completed — 2026-03-29 (Session 21)
 
 ### LiDAR Calibration Rewrite
@@ -894,7 +957,7 @@ npm start
 - [ ] **Phase 2:** Module selection — dropdown in design tool replaces hardcoded 400W panel, stats recalculate live
 - [ ] **Phase 3:** Inverter & stringing — string sizing, AutoStringer, DC/AC ratio validation, color-coded strings
 - [ ] **Phase 4:** Obstruction & tree tools — draw chimneys/vents/skylights, panels auto-avoid them
-- [ ] **Phase 5:** Roof modeling — editable tilt/azimuth, 3D pitch rendering, snap-to-LiDAR, SmartRoof auto-detect
+- [x] **Phase 5:** Roof modeling — manual drawing, SmartRoof detect, edge/face properties, persistence *(core done, detection accuracy WIP)*
 - [ ] **Phase 6:** BOM generation — full bill of materials, CSV export, Sales Mode slide
 
 ---

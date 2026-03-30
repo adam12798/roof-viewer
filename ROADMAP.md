@@ -78,12 +78,17 @@
 - Tree tool: circular obstruction with canopy radius + height (shade casting connects to Shading Engine Phase 4)
 - Save `obstructions[]` with design
 
-**Phase 5 — Roof Modeling Improvements (~1-2 sessions)**
-- Roof face properties panel on segment select: editable tilt, azimuth, area, roof type label
-- 3D tilt rendering: rotate segment group by pitch angle in Three.js
-- Snap-to-point: click near LiDAR building points to snap vertices to real roof edges
-- SmartRoof (stretch): basic RANSAC plane detection on building-classified LiDAR points → auto-create segments
-- LAZ file processing for full USGS 3DEP point cloud support
+**Phase 5 — Roof Modeling Improvements (~1-2 sessions)** 🔧 In progress (2026-03-29)
+- ✅ Manual roof face drawing in 3D (click vertices, dblclick/Enter to complete)
+- ✅ Draggable vertex handles, live edge measurements (ft), face selection (cyan highlight)
+- ✅ Edge & face properties panel (Pitch, Azimuth, Height, Area)
+- ✅ SmartRoof click-to-detect: flood-fill DSM + Solar API segment splitting
+- ✅ Persistence: roof faces save/load with design
+- Remaining: improve SmartRoof detection accuracy (higher-res imagery, better edge snapping)
+- Remaining: 3D tilt rendering — rotate face mesh by pitch angle in Three.js
+- Remaining: ridge/valley line rendering between adjacent faces
+- Remaining: snap-to-point — click near LiDAR points to snap vertices to real edges
+- Remaining: LAZ file processing for full USGS 3DEP point cloud support
 
 **Phase 6 — BOM Generation (~1 session)**
 - `generateBOM()` computes full bill of materials from design equipment + panel count
@@ -115,7 +120,7 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - **Remove 2D map view** — The 2D CSS-transform map view is obsolete and should be removed. The 3D LiDAR/Three.js viewer is the primary interface going forward.
 - **Bill savings tab** — Build out the Bill savings view in the production panel dropdown.
 - **Simulate system** — Connect the Simulate system button to a real simulation backend.
-- **Sidebar-driven tools** — Wire Roof/Obstructions/Trees sidebar items to trigger drawing modes (replacing removed draw-toolbar)
+- ~~**Sidebar-driven tools**~~ ✅ Partially done (2026-03-29) — Roof submenu wired (Smart roof, Manual, Flat). Obstructions still need wiring.
 - **Scroll zoom 1:1** — Apply same dynamic scale to scroll/pinch zoom for consistent feel
 - **Animated camera transitions** — Smooth tween between ViewCube positions instead of instant snap
 
