@@ -1,7 +1,27 @@
 # Solar CRM — Build Progress
 
 ## Overview
-A solar proposal and CRM web app built with Node.js + Express, served locally at `http://localhost:3000`. Data is stored in `data/projects.json`. Google Maps APIs handle geocoding, satellite imagery, and interactive maps.
+A solar proposal and CRM web app built with Node.js + Express, served locally at `http://localhost:3001`. Data is stored in `data/projects.json`. Google Maps server-side APIs handle geocoding and satellite imagery. 3D design tool uses Three.js with LiDAR point cloud.
+
+---
+
+## Completed — 2026-03-29 (Session 24)
+
+### 2D Map View Removal
+- [x] Removed Google Maps JavaScript API (`drawing` + `geometry` libraries)
+- [x] Removed `initMap()`, `map` instance, `drawingManager`, `segments[]`, `selectedSegment`
+- [x] Removed 2D panel fill (`fillPanels`, `clearPanels`, `addDimensionLabels`, `addAzimuthArrow`)
+- [x] Removed 2D ViewCube (CSS transform orbit), zoom controls (tile + CSS deep zoom)
+- [x] Removed `serializeSegments()`, `getCurrentStats()`, `updateStats()`, `selectSegment()`
+- [x] Stubbed out shade overlay map polygon functions (`drawSolarRoofSegments`, `setShadeOverlay`, `clearShadeOverlay`, `highlightSolarSegment`)
+- [x] Cleaned up orphaned CSS (`.map-3d-scene`, `.map-3d-plane`, `#map`)
+- [x] Preserved server-side `/api/geocode` and `/api/satellite` endpoints (no JS API dependency)
+- [x] Preserved shade analysis panel UI + data loading
+- [x] Design save/load updated — no longer serializes/restores 2D segments
+
+### UX Fix — Input Focus Blur
+- [x] Clicking the 3D canvas now blurs any focused input/textarea/select
+- [x] Fixes spacebar pan and other keyboard shortcuts being captured by side panel inputs
 
 ---
 

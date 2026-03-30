@@ -4802,22 +4802,6 @@ app.get("/design", (req, res) => {
       min-width: 0;
       overflow: hidden;
     }
-    .map-3d-scene {
-      position: absolute;
-      inset: 0;
-      perspective: 1200px;
-      overflow: visible;
-      z-index: 0;
-    }
-    .map-3d-plane {
-      position: relative;
-      width: 100%;
-      height: 100%;
-      transform-style: preserve-3d;
-      transform-origin: center center;
-      transition: transform 0.25s ease;
-    }
-    #map { width: 100%; height: 100%; }
     /* Ensure overlays sit above the 3D scene */
     .draw-toolbar, .lp-toggle-float { z-index: 10; }
     .map-bottom { z-index: 20; }
@@ -5068,6 +5052,131 @@ app.get("/design", (req, res) => {
       pointer-events: none;
       transform: translateX(12px);
     }
+
+    /* ── EDGE & FACE SIDE PANEL (Aurora-style) ── */
+    .ef-panel {
+      width: 280px;
+      background: #fff;
+      border-radius: 10px 0 0 10px;
+      box-shadow: -4px 0 16px rgba(0,0,0,0.12);
+      display: flex;
+      flex-direction: column;
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 35;
+      color: #111;
+      overflow-y: auto;
+      overflow-x: hidden;
+      transition: opacity 0.2s, transform 0.2s;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .ef-panel.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(12px);
+    }
+    .ef-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 16px 12px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    .ef-header h3 { font-size: 0.95rem; font-weight: 600; margin: 0; color: #111; }
+    .ef-delete-btn {
+      background: none; border: none; cursor: pointer; color: #999; padding: 4px; border-radius: 4px;
+    }
+    .ef-delete-btn:hover { color: #dc2626; background: #fef2f2; }
+    .ef-section { padding: 14px 16px; border-bottom: 1px solid #f0f0f0; }
+    .ef-section:last-child { border-bottom: none; }
+    .ef-section-title { font-size: 0.78rem; font-weight: 700; color: #333; margin-bottom: 12px; }
+    .ef-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .ef-row:last-child { margin-bottom: 0; }
+    .ef-label { font-size: 0.82rem; color: #555; }
+    .ef-value { font-size: 0.82rem; color: #111; font-weight: 500; }
+    .ef-input {
+      width: 72px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px;
+      font-size: 0.82rem; text-align: right; color: #111; background: #fff; outline: none;
+    }
+    .ef-input:focus { border-color: #4a90e2; }
+    .ef-unit { font-size: 0.75rem; color: #999; margin-left: 4px; min-width: 16px; }
+    .ef-checkbox-row { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+    .ef-checkbox-row label { font-size: 0.78rem; color: #777; cursor: pointer; }
+    .ef-section-label { font-size: 0.72rem; color: #00bfa5; font-weight: 600; margin-bottom: 8px; }
+
+    /* ── SMARTROOF SIDE PANEL ── */
+    .sr-panel {
+      width: 300px;
+      background: #fff;
+      border-radius: 10px 0 0 10px;
+      box-shadow: -4px 0 16px rgba(0,0,0,0.12);
+      display: flex;
+      flex-direction: column;
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 36;
+      color: #111;
+      overflow-y: auto;
+      overflow-x: hidden;
+      transition: opacity 0.2s, transform 0.2s;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .sr-panel.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(12px);
+    }
+    .sr-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 16px 12px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    .sr-header h3 { font-size: 0.95rem; font-weight: 600; margin: 0; color: #111; }
+    .sr-header-icons { display: flex; gap: 4px; }
+    .sr-header-icons button {
+      background: none; border: none; cursor: pointer; color: #666; padding: 4px; border-radius: 4px;
+    }
+    .sr-header-icons button:hover { color: #111; background: #f5f5f5; }
+    .sr-section { padding: 14px 16px; border-bottom: 1px solid #f0f0f0; }
+    .sr-section:last-child { border-bottom: none; }
+    .sr-btn {
+      width: 100%; padding: 10px; background: #fff; color: #111;
+      border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem;
+      font-weight: 500; cursor: pointer; text-align: center;
+    }
+    .sr-btn:hover { background: #f5f5f5; }
+    .sr-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .sr-row:last-child { margin-bottom: 0; }
+    .sr-label { font-size: 0.85rem; color: #555; }
+    .sr-value { font-size: 0.85rem; color: #111; font-weight: 500; }
+    .sr-input {
+      width: 80px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px;
+      font-size: 0.85rem; text-align: right; color: #111; background: #fafafa; outline: none;
+    }
+    .sr-input:focus { border-color: #4a90e2; }
+    .sr-unit { font-size: 0.75rem; color: #999; margin-left: 4px; }
+    .sr-prop-title {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+    }
+    .sr-prop-title span { font-size: 0.88rem; font-weight: 600; color: #222; }
+    .sr-prop-title button {
+      background: none; border: none; cursor: pointer; color: #999; padding: 2px;
+    }
+    .sr-prop-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+    .sr-prop-label { font-size: 0.82rem; color: #666; }
+    .sr-prop-value { font-size: 0.82rem; color: #999; }
+    .sr-type-btn {
+      padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; cursor: pointer;
+      background: #fff; color: #666; font-size: 0.85rem;
+    }
+    .sr-type-btn.active { border-color: #111; background: #333; color: #fff; }
 
     /* ── TREE PROPERTIES PANEL ── */
     .tree-panel {
@@ -6197,12 +6306,7 @@ app.get("/design", (req, res) => {
 
     <!-- MAP -->
     <div class="map-wrap" style="position:relative;">
-      <div class="map-3d-scene" id="map3dScene">
-        <div class="map-3d-plane" id="map3dPlane">
-          <div id="map"></div>
-        </div>
-      </div>
-      <!-- LiDAR 3D viewer — sits on top of map, hidden until toggled -->
+      <!-- 3D viewer -->
       <div id="viewer3d" style="position:absolute;inset:0;z-index:10;">
         <canvas id="canvas3d" style="width:100%;height:100%;display:block;"></canvas>
         <!-- Tree mode banner -->
@@ -6311,15 +6415,8 @@ app.get("/design", (req, res) => {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M13 5l7 7-7 7"/><path d="M5 5l7 7-7 7"/></svg>
       </button>
 
-      <!-- Drawing toolbar -->
-      <!-- Hidden draw toolbar — buttons referenced by JS, kept in DOM -->
-      <div class="draw-toolbar" style="display:none;">
-        <button class="draw-btn active" id="btnSelect" title="Select/Move"></button>
-        <button class="draw-btn" id="btnDrawRoof" title="Draw Roof Segment"></button>
-        <button class="draw-btn" id="btnPanels" title="Auto-fill Panels"></button>
-        <button class="draw-btn" id="btnDelete" title="Delete selected"></button>
-        <button class="draw-btn" id="btnShade" title="Shade Analysis"></button>
-      </div>
+      <!-- Hidden shade button — referenced by shade analysis JS -->
+      <button id="btnShade" style="display:none;"></button>
 
       <!-- Shade analysis floating panel -->
       <div class="shade-panel" id="shadePanel" style="display:none;">
@@ -6367,32 +6464,6 @@ app.get("/design", (req, res) => {
         </div>
       </div>
 
-      <!-- ViewCube — bottom left (hidden when 3D viewer is active) -->
-      <div class="map-controls-bl" style="display:none;">
-        <div class="viewcube-wrap" id="viewcubeWrap">
-          <div class="viewcube-ring"></div>
-          <div class="vc-north-arrow" id="vcNorthArrow"></div>
-          <div class="viewcube-compass" id="vcCompass">
-            <span class="vc-n">S</span>
-            <span class="vc-s"></span>
-            <span class="vc-e">E</span>
-            <span class="vc-w">W</span>
-          </div>
-          <div class="viewcube-scene">
-            <div class="viewcube" id="viewcube">
-              <div class="vc-face vc-top" data-view="top">N</div>
-              <div class="vc-face vc-bottom" data-view="bottom">S</div>
-              <div class="vc-face vc-front" data-view="front">TOP</div>
-              <div class="vc-face vc-back" data-view="back">BOT</div>
-              <div class="vc-face vc-left" data-view="left">W</div>
-              <div class="vc-face vc-right" data-view="right">E</div>
-            </div>
-          </div>
-        </div>
-        <div class="tilt-slider-wrap">
-          <input type="range" class="tilt-slider" id="tiltSlider" min="0" max="45" value="30" title="Tilt"/>
-        </div>
-      </div>
 
       <!-- Bottom map bar -->
       <div class="map-bottom">
@@ -6519,42 +6590,52 @@ app.get("/design", (req, res) => {
       </div>
       <div class="rp-body" id="rpBody">
 
-        <!-- Edge & Face Properties (shown when roof face selected) -->
+        <!-- Roof Face Information (shown when roof face/section selected) -->
         <div class="rp-section" id="roofPropsSection" style="display:none;">
-          <div class="rp-section-title" style="color:#00e5ff;">Edge & Face</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
-            <div>
-              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Pitch</div>
+          <div class="rp-section-title" style="color:#00e5ff;" id="roofPropsTitle">Roof face information</div>
+          <div id="roofSectionInfo" style="margin-bottom:8px;font-size:0.8rem;color:#00bfa5;font-weight:600;display:none;"></div>
+          <div style="font-size:0.7rem;color:#999;margin-bottom:4px;font-weight:600;">Characteristics</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Azimuth</span>
               <div style="display:flex;align-items:center;gap:4px;">
-                <input class="rp-input" type="number" id="roofPropPitch" value="0" step="1" min="0" max="90" style="width:100%;"/>
-                <span style="font-size:0.75rem;color:#888;">deg</span>
+                <input class="rp-input" type="number" id="roofPropAzimuth" value="180" step="1" min="0" max="360" style="width:70px;text-align:right;"/>
+                <span style="font-size:0.75rem;color:#888;min-width:24px;" id="roofPropAzDir"></span>
               </div>
             </div>
-            <div>
-              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Azimuth</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Pitch</span>
               <div style="display:flex;align-items:center;gap:4px;">
-                <input class="rp-input" type="number" id="roofPropAzimuth" value="180" step="1" min="0" max="360" style="width:100%;"/>
-                <span style="font-size:0.75rem;color:#888;">deg</span>
+                <input class="rp-input" type="number" id="roofPropPitch" value="0" step="1" min="0" max="90" style="width:70px;text-align:right;"/>
+                <span style="font-size:0.75rem;color:#888;min-width:24px;">deg</span>
               </div>
             </div>
-            <div>
-              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Eave Height</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Slope</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropSlope">0 / 12</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Area</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropArea">0 ft&sup2;</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Eave Height</span>
               <div style="display:flex;align-items:center;gap:4px;">
-                <input class="rp-input" type="number" id="roofPropHeight" value="0" step="0.5" min="0" style="width:100%;"/>
-                <span style="font-size:0.75rem;color:#888;">ft</span>
+                <input class="rp-input" type="number" id="roofPropHeight" value="0" step="0.5" min="0" style="width:70px;text-align:right;"/>
+                <span style="font-size:0.75rem;color:#888;min-width:24px;">ft</span>
               </div>
             </div>
-            <div>
-              <div style="font-size:0.7rem;color:#999;margin-bottom:2px;">Area</div>
-              <div style="display:flex;align-items:center;gap:4px;">
-                <input class="rp-input" type="number" id="roofPropArea" readonly style="width:100%;background:rgba(255,255,255,0.03);"/>
-                <span style="font-size:0.75rem;color:#888;">ft&sup2;</span>
-              </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Modules</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropModules">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:0.8rem;color:#ccc;">Module coverage</span>
+              <span style="font-size:0.8rem;color:#eee;" id="roofPropCoverage">0.00%</span>
             </div>
           </div>
           <div id="roofEdgeLengthsList" style="margin-top:8px;"></div>
-          <div id="roofSectionInfo" style="margin-top:8px;font-size:0.75rem;color:#00bfa5;font-weight:600;display:none;"></div>
-          <button id="btnDeleteRoofSection" style="margin-top:6px;width:100%;padding:6px;background:#e65100;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;display:none;">Delete Section</button>
+          <button id="btnDeleteRoofSection" style="margin-top:8px;width:100%;padding:6px;background:#e65100;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;display:none;">Delete Section</button>
           <button id="btnDeleteRoofFace" style="margin-top:6px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:0.8rem;font-weight:600;cursor:pointer;">Delete Face</button>
         </div>
 
@@ -6804,6 +6885,125 @@ app.get("/design", (req, res) => {
 
     </div>
 
+    <!-- EDGE & FACE SIDE PANEL (Aurora-style) -->
+    <div class="ef-panel hidden" id="efPanel">
+      <div class="ef-header">
+        <h3>Edge & face</h3>
+        <button class="ef-delete-btn" id="efDeleteBtn" title="Delete section">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+        </button>
+      </div>
+
+      <div class="ef-section">
+        <div class="ef-section-label" id="efSectionName"></div>
+        <div class="ef-section-title">Face</div>
+        <div class="ef-row">
+          <span class="ef-label">Pitch</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="efPitch" value="0" step="1" min="0" max="90"/>
+            <span class="ef-unit">deg</span>
+          </div>
+        </div>
+        <div class="ef-row">
+          <span class="ef-label">Slope</span>
+          <span class="ef-value" id="efSlope">0 / 12</span>
+        </div>
+        <div class="ef-checkbox-row">
+          <input type="checkbox" id="efApplyAllFaces"/>
+          <label for="efApplyAllFaces">Apply to all faces</label>
+        </div>
+        <div class="ef-row">
+          <span class="ef-label">Azimuth</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="efAzimuth" value="180" step="1" min="0" max="360"/>
+            <span class="ef-unit" id="efAzDir"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ef-section">
+        <div class="ef-section-title">Edge</div>
+        <div class="ef-row">
+          <span class="ef-label">Height</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="efHeight" value="0" step="0.5" min="0"/>
+            <span class="ef-unit">ft</span>
+          </div>
+        </div>
+        <div class="ef-checkbox-row">
+          <input type="checkbox" id="efApplyAllEdges"/>
+          <label for="efApplyAllEdges">Apply to all edges</label>
+        </div>
+      </div>
+
+      <div class="ef-section">
+        <div class="ef-section-title">Length</div>
+        <div id="efEdgeLengths"></div>
+      </div>
+    </div>
+
+    <!-- SMARTROOF SIDE PANEL -->
+    <div class="sr-panel hidden" id="smartRoofPanel">
+      <div class="sr-header">
+        <h3>SmartRoof</h3>
+        <div class="sr-header-icons">
+          <button id="srDuplicateBtn" title="Duplicate roof">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+          <button id="srDeleteBtn" title="Delete roof">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="sr-section">
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button class="sr-btn" id="srFitLidarBtn">Fit to LIDAR</button>
+          <button class="sr-btn" id="srEditRoofBtn">Edit roof</button>
+          <button class="sr-btn" id="srMoveBtn">Move</button>
+        </div>
+      </div>
+
+      <div class="sr-section">
+        <div class="sr-row">
+          <span class="sr-label">Roof type</span>
+          <div style="display:flex;gap:4px;">
+            <button class="sr-type-btn active" id="srTypeHip" title="Hip roof">
+              <svg width="16" height="14" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 18L12 4l10 14H2z"/></svg>
+            </button>
+            <button class="sr-type-btn" id="srTypeFlat" title="Flat roof">
+              <svg width="16" height="14" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="sr-row">
+          <span class="sr-label">Height to roof base</span>
+          <div style="display:flex;align-items:center;">
+            <input class="sr-input" type="number" id="srHeight" value="0" step="0.5" min="0"/>
+            <span class="sr-unit">ft</span>
+          </div>
+        </div>
+        <div class="sr-row">
+          <span class="sr-label">Stories</span>
+          <input class="sr-input" type="number" id="srStories" value="0" step="1" min="0"/>
+        </div>
+      </div>
+
+      <div class="sr-section">
+        <div class="sr-prop-title">
+          <span>Roof properties</span>
+          <button title="Edit properties">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </button>
+        </div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Roof surface</span><span class="sr-prop-value">&mdash;</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing type</span><span class="sr-prop-value">&mdash;</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing size</span><span class="sr-prop-value">&mdash;</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Framing spacing</span><span class="sr-prop-value">&mdash;</span></div>
+        <div class="sr-prop-row"><span class="sr-prop-label">Decking</span><span class="sr-prop-value">&mdash;</span></div>
+      </div>
+    </div>
+
   </div><!-- /workspace -->
 
   <!-- PRODUCTION BOTTOM DRAWER -->
@@ -6897,10 +7097,6 @@ app.get("/design", (req, res) => {
     }).catch(function(){});
     var designLat = ${parseFloat(lat)};
     var designLng = ${parseFloat(lng)};
-    var map, marker, drawingManager;
-    var segments = [];
-    var selectedSegment = null;
-    var currentMode = 'select';
 
     /* ── Tree placement state ── */
     var trees3d = [];
@@ -6910,6 +7106,10 @@ app.get("/design", (req, res) => {
     var treePreviewCircle = null;
     var treePreviewMesh = null;
     var space3dHeld = false;
+
+    /* ── ViewCube drag state (shared so canvas handlers can check it) ── */
+    var vcDragging3d = false, vcDidDrag3d = false, vcDragEndTime3d = 0;
+    function isViewCubeBusy() { return vcDragging3d || (Date.now() - vcDragEndTime3d < 200); }
 
     /* ── Roof face drawing state ── */
     var roofFaces3d = [];
@@ -6922,8 +7122,19 @@ app.get("/design", (req, res) => {
     var roofSnappedPos = null;     // snapped cursor position {x, z} or null
     var roofSelectedFace = -1;
     var roofSelectedSection = -1;
+    var roofEditMode = false; // false = whole-structure mode, true = section-editing mode
+    var roofMovingMode = false; // true when user is dragging to move the roof footprint
+    var roofMoveStart = null; // {x, z} world coords at drag start
     var roofDraggingHandle = -1;
     var roofDraggingFaceIdx = -1;
+    var roofUndoStack = [];
+    var roofRedoStack = [];
+    var ROOF_UNDO_MAX = 50;
+
+    /* ── Unified undo stack — captures all interactable actions ── */
+    var undoStack = [];
+    var redoStack = [];
+    var UNDO_MAX = 80;
 
     /* ── Production bottom drawer ── */
     var prodDrawer = document.getElementById('prodDrawer');
@@ -7211,509 +7422,8 @@ app.get("/design", (req, res) => {
       }
     });
 
-    /* ── Draw toolbar ── */
-    var drawBtns = ['btnSelect','btnDrawRoof','btnPanels','btnDelete'];
-    drawBtns.forEach(function(id) {
-      document.getElementById(id).addEventListener('click', function() {
-        drawBtns.forEach(function(b){ document.getElementById(b).classList.remove('active'); });
-        this.classList.add('active');
-        setMode(id);
-      });
-    });
 
-    function setMode(id) {
-      currentMode = id;
-      if (!drawingManager) return;
-      if (id === 'btnDrawRoof') {
-        drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
-      } else {
-        drawingManager.setDrawingMode(null);
-      }
-      if (id === 'btnPanels') {
-        if (selectedSegment) {
-          fillPanels(selectedSegment);
-          addDimensionLabels(selectedSegment);
-          addAzimuthArrow(selectedSegment);
-        } else {
-          segments.forEach(function(seg) {
-            fillPanels(seg);
-            addDimensionLabels(seg);
-            addAzimuthArrow(seg);
-          });
-        }
-        updateStats();
-      }
-    }
 
-    /* ── Map init ── */
-    function initMap() {
-      var pos = { lat: ${parseFloat(lat)}, lng: ${parseFloat(lng)} };
-      map = new google.maps.Map(document.getElementById('map'), {
-        center: pos,
-        zoom: 20,
-        maxZoom: 22,
-        minZoom: 18,
-        mapTypeId: 'satellite',
-        tilt: 0,
-        disableDefaultUI: true,
-        gestureHandling: 'greedy',
-        draggable: false,
-        scrollwheel: true,
-        disableDoubleClickZoom: true,
-        keyboardShortcuts: false,
-      });
-
-      /* Drawing manager for roof segments */
-      drawingManager = new google.maps.drawing.DrawingManager({
-        drawingMode: null,
-        drawingControl: false,
-        polygonOptions: {
-          strokeColor: '#f5a623',
-          strokeOpacity: 1,
-          strokeWeight: 2,
-          fillColor: '#f5a623',
-          fillOpacity: 0.18,
-          editable: true,
-          draggable: true,
-          zIndex: 1,
-        },
-      });
-      drawingManager.setMap(map);
-
-      google.maps.event.addListener(drawingManager, 'polygoncomplete', function(polygon) {
-        segments.push(polygon);
-        markDirty();
-        drawingManager.setDrawingMode(null);
-        document.getElementById('btnDrawRoof').classList.remove('active');
-        document.getElementById('btnSelect').classList.add('active');
-        currentMode = 'btnSelect';
-        polygon.addListener('click', function() { selectSegment(polygon); });
-        // Auto-fill panels and add dimension labels on draw
-        fillPanels(polygon);
-        addDimensionLabels(polygon);
-        addAzimuthArrow(polygon);
-        updateStats();
-      });
-
-      /* Zoom: Google tiles 18-21, then CSS deep zoom beyond */
-      var extraZoom = 0;
-      var maxExtraZoom = 20;
-      var maxTileZoom = 22;
-
-      function applyExtraZoom() {
-        var scale = Math.pow(2, extraZoom);
-        var mapEl = document.getElementById('map');
-        mapEl.style.transform = extraZoom > 0 ? 'scale(' + scale + ')' : '';
-        mapEl.style.transformOrigin = 'center center';
-      }
-
-      function updateZoomLabel() {
-        var el = document.getElementById('zoomLabel');
-        if (el) {
-          if (extraZoom > 0) {
-            el.textContent = maxTileZoom + '+' + extraZoom + 'x';
-            el.style.display = '';
-          } else {
-            el.style.display = 'none';
-          }
-        }
-      }
-
-      document.getElementById('zoomIn').addEventListener('click', function() {
-        if (extraZoom > 0 || map.getZoom() >= maxTileZoom) {
-          if (extraZoom < maxExtraZoom) {
-            extraZoom++;
-            applyExtraZoom();
-          }
-        } else {
-          map.setZoom(map.getZoom() + 1);
-        }
-        updateZoomLabel();
-      });
-      document.getElementById('zoomOut').addEventListener('click', function() {
-        if (extraZoom > 0) {
-          extraZoom--;
-          applyExtraZoom();
-        } else {
-          if (map.getZoom() > 18) map.setZoom(map.getZoom() - 1);
-        }
-        updateZoomLabel();
-      });
-
-      /* ── Scroll/pinch zoom with static image deep zoom ── */
-      var wheelAccum = 0;
-      var wheelThreshold = 80;
-      document.getElementById('map').parentNode.addEventListener('wheel', function(e) {
-        /* Zooming in past tile max → switch to static image zoom */
-        if ((map.getZoom() >= maxTileZoom || extraZoom > 0) && e.deltaY < 0) {
-          e.stopPropagation();
-          e.preventDefault();
-          wheelAccum += Math.abs(e.deltaY);
-          if (wheelAccum >= wheelThreshold) {
-            wheelAccum = 0;
-            if (extraZoom < maxExtraZoom) {
-              extraZoom++;
-              applyExtraZoom();
-              updateZoomLabel();
-            }
-          }
-        } else if (extraZoom > 0 && e.deltaY > 0) {
-          e.stopPropagation();
-          e.preventDefault();
-          wheelAccum += Math.abs(e.deltaY);
-          if (wheelAccum >= wheelThreshold) {
-            wheelAccum = 0;
-            extraZoom--;
-            applyExtraZoom();
-            updateZoomLabel();
-          }
-        }
-      }, { passive: false, capture: true });
-
-      /* ── Scroll zoom on tilted map ── */
-      document.getElementById('map3dScene').addEventListener('wheel', function(e) {
-        if (vcRotX > 0 || vcRotZ !== 0) {
-          e.preventDefault();
-          if (e.deltaY < 0) {
-            if (map.getZoom() < maxTileZoom) {
-              map.setZoom(map.getZoom() + 1);
-            } else if (extraZoom < maxExtraZoom) {
-              extraZoom++;
-              applyExtraZoom();
-            }
-          } else {
-            if (extraZoom > 0) {
-              extraZoom--;
-              applyExtraZoom();
-            } else {
-              map.setZoom(Math.max(map.getZoom() - 1, 18));
-            }
-          }
-          updateZoomLabel();
-        }
-      }, { passive: false });
-
-      /* ── ViewCube — 3D CAD orbit ── */
-      var vcRotX = 30;  // tilt: 0 = top-down, 90 = eye-level — default dice-on-table
-      var vcRotZ = 0;   // heading/spin around vertical axis
-      var vcCube = document.getElementById('viewcube');
-      var vcWrap = document.getElementById('viewcubeWrap');
-      var vcNorth = document.getElementById('vcNorthArrow');
-      var vcCompassEl = document.getElementById('vcCompass');
-      var tiltSlider = document.getElementById('tiltSlider');
-      var map3dPlane = document.getElementById('map3dPlane');
-      var map3dScene = document.getElementById('map3dScene');
-      var vcDragging = false;
-      var vcStartX = 0, vcStartY = 0;
-      var vcStartRotX = 0, vcStartRotZ = 0;
-      var vcPanX = 0, vcPanY = 0;
-
-      function updateViewCube() {
-        // Clamp tilt: 0 = flat top-down, 80 = near eye-level
-        vcRotX = Math.max(0, Math.min(90, vcRotX));
-        // Normalize heading
-        vcRotZ = ((vcRotZ % 360) + 360) % 360;
-
-        // Update the cube to mirror the camera angle
-        vcCube.style.transform = 'rotateX(' + vcRotX + 'deg) rotateZ(' + vcRotZ + 'deg)';
-        vcNorth.style.transform = 'translateX(-50%) rotate(' + vcRotZ + 'deg)';
-        vcCompassEl.style.transform = 'rotate(' + vcRotZ + 'deg)';
-
-        // Apply 3D transform to the map plane (the "flat paper")
-        var perspVal = 1200 - (vcRotX * 6);
-        if (perspVal < 400) perspVal = 400;
-        map3dScene.style.perspective = perspVal + 'px';
-        map3dPlane.style.transform = 'translate(' + vcPanX + 'px, ' + vcPanY + 'px) rotateX(' + vcRotX + 'deg) rotateZ(' + vcRotZ + 'deg)';
-
-        tiltSlider.value = vcRotX;
-      }
-
-      /* ── Spacebar + drag to pan the 2D view ── */
-      var spaceHeld = false;
-      var spacePanning = false;
-      var spStartX = 0, spStartY = 0;
-      var spStartPanX = 0, spStartPanY = 0;
-
-      document.addEventListener('keydown', function(e) {
-        if (e.code === 'Space' && !e.repeat && !e.target.matches('input,textarea,select')) {
-          e.preventDefault();
-          spaceHeld = true;
-          map3dScene.style.cursor = 'grab';
-        }
-      });
-      document.addEventListener('keyup', function(e) {
-        if (e.code === 'Space') {
-          e.preventDefault();
-          spaceHeld = false;
-          spacePanning = false;
-          map3dScene.style.cursor = '';
-        }
-      });
-
-      /* Prevent spacebar from triggering click on focused toolbar buttons */
-      document.addEventListener('keydown', function(e) {
-        if (e.code === 'Space' && e.target.matches('button')) {
-          e.preventDefault();
-        }
-      });
-
-      map3dScene.addEventListener('mousedown', function(e) {
-        if (spaceHeld) {
-          spacePanning = true;
-          spStartX = e.clientX;
-          spStartY = e.clientY;
-          spStartPanX = vcPanX;
-          spStartPanY = vcPanY;
-          map3dScene.style.cursor = 'grabbing';
-          map3dPlane.style.transition = 'none';
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      });
-
-      document.addEventListener('mousemove', function(e) {
-        if (spacePanning) {
-          vcPanX = spStartPanX + (e.clientX - spStartX);
-          vcPanY = spStartPanY + (e.clientY - spStartY);
-          updateViewCube();
-        }
-      });
-
-      document.addEventListener('mouseup', function() {
-        if (spacePanning) {
-          spacePanning = false;
-          map3dScene.style.cursor = spaceHeld ? 'grab' : '';
-          map3dPlane.style.transition = 'transform 0.25s ease';
-        }
-      });
-
-      // Drag to orbit — works from anywhere on the cube
-      var vcDidDrag = false;
-      vcWrap.addEventListener('mousedown', function(e) {
-        vcDragging = true;
-        vcDidDrag = false;
-        vcStartX = e.clientX;
-        vcStartY = e.clientY;
-        vcStartRotX = vcRotX;
-        vcStartRotZ = vcRotZ;
-        map3dPlane.style.transition = 'none';
-        e.preventDefault();
-      });
-
-      document.addEventListener('mousemove', function(e) {
-        if (!vcDragging) return;
-        var dx = e.clientX - vcStartX;
-        var dy = e.clientY - vcStartY;
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) vcDidDrag = true;
-        vcRotZ = vcStartRotZ - dx * 0.6;
-        vcRotX = Math.max(0, Math.min(90, vcStartRotX - dy * 1.5));
-        updateViewCube();
-      });
-
-      document.addEventListener('mouseup', function() {
-        if (vcDragging) {
-          vcDragging = false;
-          map3dPlane.style.transition = 'transform 0.25s ease';
-        }
-      });
-
-      // Face clicks — maintain current tilt, just rotate cardinal direction
-      // Top/bottom reset tilt; sides keep current tilt and only change heading
-      function handleFaceClick(view) {
-        map3dPlane.style.transition = 'transform 0.4s ease';
-        if (view === 'top') { vcRotX = 0; vcRotZ = 0; }
-        else if (view === 'bottom') { vcRotX = 90; vcRotZ = vcRotZ; }
-        else {
-          // Keep current tilt, but if flat (0), bump to dice-on-table angle
-          if (vcRotX < 10) vcRotX = 30;
-          if (view === 'front') vcRotZ = 0;           // S (self) — facing user
-          else if (view === 'back') vcRotZ = 180;
-          else if (view === 'left') vcRotZ = 90;      // W — twist left
-          else if (view === 'right') vcRotZ = -90;    // E — twist right
-        }
-        updateViewCube();
-        setTimeout(function() { map3dPlane.style.transition = 'transform 0.25s ease'; }, 450);
-      }
-
-      vcCube.querySelectorAll('.vc-face').forEach(function(face) {
-        face.addEventListener('click', function(e) {
-          if (vcDidDrag) return;
-          e.stopPropagation();
-          handleFaceClick(this.dataset.view);
-        });
-      });
-
-      // Tilt slider
-      tiltSlider.addEventListener('input', function() {
-        vcRotX = parseFloat(this.value);
-        updateViewCube();
-      });
-      // Update slider range for full tilt
-      tiltSlider.max = 90;
-
-      // Apply default dice-on-table orientation on load
-      updateViewCube();
-
-      // Double-click to reset to dice-on-table default
-      vcWrap.addEventListener('dblclick', function() {
-        map3dPlane.style.transition = 'transform 0.4s ease';
-        vcRotX = 30;
-        vcRotZ = 0;
-        vcPanX = 0;
-        vcPanY = 0;
-        updateViewCube();
-        setTimeout(function() { map3dPlane.style.transition = 'transform 0.25s ease'; }, 450);
-      });
-
-      /* Delete button */
-      document.getElementById('btnDelete').addEventListener('click', function() {
-        if (selectedSegment) {
-          clearSegmentOverlays(selectedSegment);
-          selectedSegment.setMap(null);
-          segments = segments.filter(function(s){ return s !== selectedSegment; });
-          selectedSegment = null;
-          updateStats();
-        }
-      });
-
-      /* Simulate button */
-      document.getElementById('simulateBtn').addEventListener('click', function() {
-        updateStats();
-        document.getElementById('simBadge').style.display = 'flex';
-        document.getElementById('statSavings').classList.remove('dim');
-      });
-    }
-
-    /* ── Panel fill ── */
-    function fillPanels(polygon) {
-      clearPanels(polygon);
-      var path = polygon.getPath();
-      var pts = [];
-      for (var i = 0; i < path.getLength(); i++) {
-        pts.push({ lat: path.getAt(i).lat(), lng: path.getAt(i).lng() });
-      }
-      var minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-      pts.forEach(function(p) {
-        if (p.lat < minLat) minLat = p.lat;
-        if (p.lat > maxLat) maxLat = p.lat;
-        if (p.lng < minLng) minLng = p.lng;
-        if (p.lng > maxLng) maxLng = p.lng;
-      });
-      var lat0 = (minLat + maxLat) / 2;
-      var mPerLat = 111000;
-      var mPerLng = 111000 * Math.cos(lat0 * Math.PI / 180);
-      // Panel: 1.0m tall × 1.7m wide (landscape) with 0.04m gap
-      var pH = 1.0 / mPerLat;
-      var pW = 1.7 / mPerLng;
-      var gH = 0.04 / mPerLat;
-      var gW = 0.04 / mPerLng;
-      var stepH = pH + gH;
-      var stepW = pW + gW;
-      polygon._panels = [];
-      var lat = minLat + gH;
-      while (lat + pH <= maxLat - gH) {
-        var lng = minLng + gW;
-        while (lng + pW <= maxLng - gW) {
-          var cLat = lat + pH / 2;
-          var cLng = lng + pW / 2;
-          if (pointInPolygon({ lat: cLat, lng: cLng }, pts)) {
-            var panel = new google.maps.Polygon({
-              paths: [
-                { lat: lat,      lng: lng },
-                { lat: lat,      lng: lng + pW },
-                { lat: lat + pH, lng: lng + pW },
-                { lat: lat + pH, lng: lng },
-              ],
-              strokeColor: '#f5a623',
-              strokeOpacity: 0.7,
-              strokeWeight: 0.5,
-              fillColor: '#1e2a3a',
-              fillOpacity: 0.92,
-              map: map,
-              zIndex: 3,
-              clickable: false,
-            });
-            polygon._panels.push(panel);
-          }
-          lng += stepW;
-        }
-        lat += stepH;
-      }
-    }
-
-    function clearPanels(polygon) {
-      if (polygon._panels) {
-        polygon._panels.forEach(function(p) { p.setMap(null); });
-      }
-      polygon._panels = [];
-    }
-
-    function clearSegmentOverlays(polygon) {
-      clearPanels(polygon);
-      if (polygon._dimMarkers) {
-        polygon._dimMarkers.forEach(function(m) { m.setMap(null); });
-        polygon._dimMarkers = [];
-      }
-      if (polygon._azimuth) {
-        polygon._azimuth.setMap(null);
-        polygon._azimuth = null;
-      }
-    }
-
-    /* ── Dimension labels ── */
-    function addDimensionLabels(polygon) {
-      if (polygon._dimMarkers) {
-        polygon._dimMarkers.forEach(function(m) { m.setMap(null); });
-      }
-      polygon._dimMarkers = [];
-      var path = polygon.getPath();
-      var n = path.getLength();
-      for (var i = 0; i < n; i++) {
-        var p1 = path.getAt(i);
-        var p2 = path.getAt((i + 1) % n);
-        var dist = google.maps.geometry.spherical.computeDistanceBetween(p1, p2);
-        var feet = (dist * 3.28084).toFixed(1);
-        var midLat = (p1.lat() + p2.lat()) / 2;
-        var midLng = (p1.lng() + p2.lng()) / 2;
-        var m = new google.maps.Marker({
-          position: { lat: midLat, lng: midLng },
-          map: map,
-          label: {
-            text: feet + ' ft',
-            color: '#00e5ff',
-            fontSize: '11px',
-            fontWeight: '700',
-            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-          },
-          icon: { path: google.maps.SymbolPath.CIRCLE, scale: 0 },
-          zIndex: 10,
-          clickable: false,
-        });
-        polygon._dimMarkers.push(m);
-      }
-    }
-
-    /* ── Azimuth arrow ── */
-    function addAzimuthArrow(polygon) {
-      if (polygon._azimuth) polygon._azimuth.setMap(null);
-      var path = polygon.getPath();
-      var n = path.getLength();
-      var sumLat = 0, sumLng = 0;
-      for (var i = 0; i < n; i++) { sumLat += path.getAt(i).lat(); sumLng += path.getAt(i).lng(); }
-      var centLat = sumLat / n, centLng = sumLng / n;
-      var arrowSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="30" viewBox="0 0 22 30"><polygon points="11,2 20,26 11,20 2,26" fill="#f5a623" stroke="white" stroke-width="1.5"/></svg>';
-      polygon._azimuth = new google.maps.Marker({
-        position: { lat: centLat, lng: centLng },
-        map: map,
-        icon: {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(arrowSvg),
-          scaledSize: new google.maps.Size(22, 30),
-          anchor: new google.maps.Point(11, 15),
-        },
-        zIndex: 5,
-        clickable: false,
-      });
-    }
 
     /* ── Point-in-polygon (ray casting) ── */
     function pointInPolygon(point, polygon) {
@@ -7728,26 +7438,6 @@ app.get("/design", (req, res) => {
       return inside;
     }
 
-    /* ── Stats ── */
-    function updateStats() {
-      var totalPanels = 0;
-      segments.forEach(function(seg) {
-        if (seg._panels) totalPanels += seg._panels.length;
-      });
-      if (totalPanels === 0) return;
-      var kw = (totalPanels * 0.4).toFixed(2);
-      document.getElementById('statSize').textContent = kw + ' kW';
-      document.getElementById('statProd').textContent = '95%';
-      document.getElementById('statSavings').textContent = '85%';
-    }
-
-    function selectSegment(polygon) {
-      if (selectedSegment && selectedSegment !== polygon) {
-        selectedSegment.setOptions({ strokeColor: '#f5a623', fillColor: '#f5a623', strokeWeight: 2, fillOpacity: 0.12 });
-      }
-      selectedSegment = polygon;
-      polygon.setOptions({ strokeColor: '#7c3aed', fillColor: '#f5a623', strokeWeight: 2.5, fillOpacity: 0.12 });
-    }
 
     /* ── Dropdowns ── */
     var allDropdownWraps = ['salesModeWrap', 'notifWrap', 'profileWrap'];
@@ -7802,29 +7492,9 @@ app.get("/design", (req, res) => {
       if (pendingNav) pendingNav();
     }
 
-    /* Serialize current segments to JSON for saving */
-    function serializeSegments() {
-      return segments.map(function(seg) {
-        var path = seg.getPath().getArray().map(function(ll) { return { lat: ll.lat(), lng: ll.lng() }; });
-        return {
-          path: path,
-          panelCount: seg._panels ? seg._panels.length : 0,
-          tilt: seg._tilt || 0,
-          azimuth: seg._azimuth || 180
-        };
-      });
-    }
-
-    function getCurrentStats() {
-      var totalPanels = 0;
-      segments.forEach(function(seg) { if (seg._panels) totalPanels += seg._panels.length; });
-      var kw = parseFloat((totalPanels * 0.4).toFixed(2));
-      return { cost: Math.round(kw * 2300), offset: ${energyOffset || 0}, kw: kw };
-    }
-
     function saveCurrentDesign(callback) {
       if (!projectId || !currentDesignId) { if (callback) callback(); return; }
-      var data = { segments: serializeSegments(), stats: getCurrentStats(), trees: serializeTrees(), roofFaces: serializeRoofFaces() };
+      var data = { trees: serializeTrees(), roofFaces: serializeRoofFaces() };
       fetch('/api/projects/' + projectId + '/designs/' + currentDesignId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -7874,16 +7544,6 @@ app.get("/design", (req, res) => {
     }
 
     function loadDesign(designId) {
-      /* Clear existing segments from map */
-      segments.forEach(function(seg) {
-        if (seg._panels) seg._panels.forEach(function(p) { p.setMap(null); });
-        if (seg._dimLabels) seg._dimLabels.forEach(function(l) { l.setMap(null); });
-        if (seg._azArrow) seg._azArrow.setMap(null);
-        seg.setMap(null);
-      });
-      segments = [];
-      selectedSegment = null;
-
       /* Fetch design data */
       fetch('/api/projects/' + projectId + '/designs/active', {
         method: 'PATCH',
@@ -7920,33 +7580,6 @@ app.get("/design", (req, res) => {
           }
         });
 
-        /* Restore segments on map */
-        if (design.segments && design.segments.length > 0) {
-          design.segments.forEach(function(segData) {
-            var path = segData.path.map(function(p) { return new google.maps.LatLng(p.lat, p.lng); });
-            var polygon = new google.maps.Polygon({
-              paths: path,
-              strokeColor: '#f5a623',
-              strokeOpacity: 1,
-              strokeWeight: 2,
-              fillColor: '#f5a623',
-              fillOpacity: 0.18,
-              editable: true,
-              draggable: true,
-              zIndex: 1,
-              map: map
-            });
-            polygon._tilt = segData.tilt || 0;
-            polygon._azimuth = segData.azimuth || 180;
-            segments.push(polygon);
-            polygon.addListener('click', function() { selectSegment(polygon); });
-            fillPanels(polygon);
-            addDimensionLabels(polygon);
-            addAzimuthArrow(polygon);
-          });
-          updateStats();
-        }
-
         /* Restore trees in 3D view */
         trees3d.forEach(function(t) { if (t.mesh) scene3d.remove(t.mesh); });
         trees3d = [];
@@ -7971,7 +7604,7 @@ app.get("/design", (req, res) => {
         if (typeof clearAllRoofFaces === 'function') clearAllRoofFaces();
         if (design.roofFaces && design.roofFaces.length > 0 && typeof THREE !== 'undefined' && typeof finalizeRoofFace === 'function') {
           design.roofFaces.forEach(function(rf) {
-            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections);
+            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
           });
         }
       });
@@ -8108,48 +7741,6 @@ app.get("/design", (req, res) => {
     }
 
     function drawSolarRoofSegments(roofSegs) {
-      solarRoofPolygons.forEach(function(p) { p.setMap(null); });
-      solarRoofPolygons = [];
-      var maxSun = (solarData.solarPotential && solarData.solarPotential.maxSunshineHoursPerYear) || 1;
-
-      roofSegs.forEach(function(seg) {
-        var center = seg.center;
-        if (!center) return;
-        var areaM2 = (seg.stats && seg.stats.areaMeters2) || 50;
-        var side = Math.sqrt(areaM2) / 2;
-        var azRad = (seg.azimuthDegrees || 0) * Math.PI / 180;
-        var cLat = center.latitude;
-        var cLng = center.longitude;
-        var mPerDegLat = 111320;
-        var mPerDegLng = 111320 * Math.cos(cLat * Math.PI / 180);
-        var dLat = side / mPerDegLat;
-        var dLng = side / mPerDegLng;
-
-        var corners = [[-1,-1],[-1,1],[1,1],[1,-1]].map(function(c) {
-          var x = c[0] * dLng;
-          var y = c[1] * dLat;
-          var rx = x * Math.cos(azRad) - y * Math.sin(azRad);
-          var ry = x * Math.sin(azRad) + y * Math.cos(azRad);
-          return { lat: cLat + ry, lng: cLng + rx };
-        });
-
-        var sunHrs = (seg.stats && seg.stats.sunshineQuantiles)
-          ? seg.stats.sunshineQuantiles[Math.floor(seg.stats.sunshineQuantiles.length / 2)] : 0;
-        var ratio = Math.min(sunHrs / maxSun, 1);
-        var r = Math.round(255 * (1 - ratio));
-        var g = Math.round(200 * ratio);
-        var color = 'rgb(' + r + ',' + g + ',50)';
-
-        var poly = new google.maps.Polygon({
-          paths: corners,
-          strokeColor: color, strokeOpacity: 0.9, strokeWeight: 2,
-          fillColor: color, fillOpacity: 0.25,
-          map: null,
-          zIndex: 5,
-          clickable: false,
-        });
-        solarRoofPolygons.push(poly);
-      });
     }
 
     function setShadeOverlay(type) {
@@ -8157,54 +7748,14 @@ app.get("/design", (req, res) => {
       document.querySelectorAll('.shade-overlay-btn').forEach(function(b) { b.classList.remove('active'); });
       var btnId = 'btnOverlay' + type.charAt(0).toUpperCase() + type.slice(1);
       document.getElementById(btnId).classList.add('active');
-
-      if (type === 'none') { clearShadeOverlay(); return; }
-
-      var segs = (solarData.solarPotential && solarData.solarPotential.roofSegmentStats) || [];
-      var maxSun = (solarData.solarPotential && solarData.solarPotential.maxSunshineHoursPerYear) || 1;
-
-      solarRoofPolygons.forEach(function(p, i) {
-        p.setMap(map);
-        var seg = segs[i];
-        var sunHrs = (seg && seg.stats && seg.stats.sunshineQuantiles)
-          ? seg.stats.sunshineQuantiles[Math.floor(seg.stats.sunshineQuantiles.length / 2)] : 0;
-        var ratio = Math.min(sunHrs / maxSun, 1);
-
-        if (type === 'shade') {
-          var sr = 1 - ratio;
-          var cr = Math.round(80 + 100 * sr);
-          var cg = Math.round(50 * (1 - sr));
-          var cb = Math.round(150 + 100 * sr);
-          var c = 'rgb(' + cr + ',' + cg + ',' + cb + ')';
-          p.setOptions({ fillColor: c, strokeColor: c, fillOpacity: 0.35 });
-        } else {
-          var r = Math.round(255 * (1 - ratio));
-          var g = Math.round(200 * ratio);
-          var c2 = 'rgb(' + r + ',' + g + ',50)';
-          p.setOptions({ fillColor: c2, strokeColor: c2, fillOpacity: 0.25 });
-        }
-      });
     }
 
     function clearShadeOverlay() {
-      solarRoofPolygons.forEach(function(p) { p.setMap(null); });
     }
 
     function highlightSolarSegment(i) {
-      solarRoofPolygons.forEach(function(p) { p.setMap(map); });
-      var poly = solarRoofPolygons[i];
-      if (!poly) return;
-      poly.setOptions({ fillOpacity: 0.6, strokeWeight: 3 });
-      setTimeout(function() {
-        poly.setOptions({ fillOpacity: shadeOverlayType === 'shade' ? 0.35 : 0.25, strokeWeight: 2 });
-        if (shadeOverlayType === 'none') clearShadeOverlay();
-      }, 1500);
-      var bounds = new google.maps.LatLngBounds();
-      poly.getPath().forEach(function(pt) { bounds.extend(pt); });
-      map.panTo(bounds.getCenter());
     }
   </script>
-  <script src="https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=drawing,geometry&callback=initMap" async defer></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
@@ -8218,7 +7769,7 @@ app.get("/design", (req, res) => {
     var lidarPoints = null;
     var groundPlane3d = null;
     var groundLevel = 0;
-    var vertExag = 2.0;
+    var vertExag = 1.0;
     var lidarActive = true;
     var satExtentM = 0; // satellite ground plane extent in meters
     var satTexture = null; // satellite texture for roof face overlays
@@ -8279,6 +7830,15 @@ app.get("/design", (req, res) => {
         RIGHT: THREE.MOUSE.ROTATE
       };
       canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+      // Blur any focused input when clicking the 3D canvas so keyboard shortcuts work
+      // (document-level handler covers canvas, viewer, calibration panels, etc.)
+      document.addEventListener('mousedown', function(e) {
+        if (e.target.matches('input,textarea,select,[contenteditable]')) return;
+        if (document.activeElement && document.activeElement.matches('input,textarea,select,[contenteditable]')) {
+          document.activeElement.blur();
+        }
+      });
 
       // Spacebar + drag = pan in 3D view
       var space3dPanning = false;
@@ -8409,7 +7969,7 @@ app.get("/design", (req, res) => {
       });
 
       // ── Drag-to-orbit state (matches 2D viewcube controls) ──
-      var vcDragging3d = false, vcDidDrag3d = false;
+      vcDragging3d = false; vcDidDrag3d = false;
       var vcStartX3d = 0, vcStartY3d = 0;
       var vcStartAzimuth3d = 0, vcStartPolar3d = 0;
       var vcPointerId3d = -1;
@@ -8437,6 +7997,18 @@ app.get("/design", (req, res) => {
       }
 
       // Drag: use pointer capture so moves work even when cursor leaves the cube
+      function endViewCubeDrag() {
+        if (!vcDragging3d) return;
+        vcDragging3d = false;
+        vcDragEndTime3d = Date.now();
+        if (vcPointerId3d >= 0) {
+          try { wrap3d.releasePointerCapture(vcPointerId3d); } catch(ex) {}
+        }
+        vcPointerId3d = -1;
+        wrap3d.style.cursor = 'grab';
+        if (controls3d) controls3d.enabled = true;
+      }
+
       wrap3d.addEventListener('pointerdown', function(e) {
         if (!camera3d || !controls3d) return;
         e.stopPropagation();
@@ -8451,6 +8023,7 @@ app.get("/design", (req, res) => {
         vcPointerId3d = e.pointerId;
         wrap3d.setPointerCapture(e.pointerId);
         wrap3d.style.cursor = 'grabbing';
+        controls3d.enabled = false;
       });
 
       wrap3d.addEventListener('pointermove', function(e) {
@@ -8469,12 +8042,15 @@ app.get("/design", (req, res) => {
       });
 
       wrap3d.addEventListener('pointerup', function(e) {
-        if (vcDragging3d) {
-          vcDragging3d = false;
-          if (vcPointerId3d >= 0) wrap3d.releasePointerCapture(vcPointerId3d);
-          vcPointerId3d = -1;
-          wrap3d.style.cursor = 'grab';
-        }
+        endViewCubeDrag();
+      });
+
+      wrap3d.addEventListener('pointercancel', function(e) {
+        endViewCubeDrag();
+      });
+
+      wrap3d.addEventListener('lostpointercapture', function(e) {
+        endViewCubeDrag();
       });
 
       // ── Face clicks — keep current tilt for sides, reset for top/bottom (matches 2D cube) ──
@@ -8939,7 +8515,7 @@ app.get("/design", (req, res) => {
 
     function serializeRoofFaces() {
       return roofFaces3d.map(function(f) {
-        return { vertices: f.vertices, pitch: f.pitch, azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections };
+        return { vertices: f.vertices, pitch: f.pitch, sectionPitches: f.sectionPitches, azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections };
       });
     }
 
@@ -9037,6 +8613,7 @@ app.get("/design", (req, res) => {
         if (hoveredTreeIdx >= 0) {
           e.preventDefault();
           e.stopPropagation();
+          pushUndo();
           draggingTreeIdx = hoveredTreeIdx;
           isDragging = false;
           var hit = raycastGroundPlane(e);
@@ -9086,6 +8663,7 @@ app.get("/design", (req, res) => {
           var radius = Math.sqrt(dx * dx + dz * dz);
           radius = Math.max(0.5, Math.min(radius, 15));
           removeTreePreview();
+          pushUndo();
           finalizeTree(treeCenterPoint, radius);
           treeCenterPoint = null;
           treePlaceStep = 0;
@@ -9122,7 +8700,7 @@ app.get("/design", (req, res) => {
         }
 
         // Tree hover highlight (works in and outside tree mode)
-        if (!roofDrawingMode && treePlaceStep === 0) {
+        if (!roofDrawingMode && treePlaceStep === 0 && !isViewCubeBusy()) {
           var idx = findTreeUnderCursor(e);
           if (idx !== hoveredTreeIdx) {
             if (hoveredTreeIdx >= 0 && !allTreesSelected && hoveredTreeIdx !== selectedTreeIdx && multiSelectedTrees.indexOf(hoveredTreeIdx) < 0) setTreeHighlight(hoveredTreeIdx, false);
@@ -9156,12 +8734,14 @@ app.get("/design", (req, res) => {
         // Bulk delete all trees
         if ((e.key === 'Delete' || e.key === 'Backspace') && allTreesSelected) {
           e.preventDefault();
+          pushUndo();
           deleteAllTrees();
           return;
         }
         // Delete multi-selected trees
         if ((e.key === 'Delete' || e.key === 'Backspace') && multiSelectedTrees.length > 0) {
           e.preventDefault();
+          pushUndo();
           // Delete in reverse index order to avoid index shifting
           var sorted = multiSelectedTrees.slice().sort(function(a, b) { return b - a; });
           sorted.forEach(function(i) {
@@ -9182,6 +8762,7 @@ app.get("/design", (req, res) => {
         // Delete hovered or selected tree
         if ((e.key === 'Delete' || e.key === 'Backspace') && (hoveredTreeIdx >= 0 || selectedTreeIdx >= 0)) {
           e.preventDefault();
+          pushUndo();
           var delIdx = hoveredTreeIdx >= 0 ? hoveredTreeIdx : selectedTreeIdx;
           deleteTree(delIdx);
           closeTreePanel();
@@ -9197,6 +8778,7 @@ app.get("/design", (req, res) => {
         // Cmd/Ctrl+V — paste tree at slight offset from source or center
         if ((e.metaKey || e.ctrlKey) && e.key === 'v' && copiedTree) {
           e.preventDefault();
+          pushUndo();
           var sourceIdx = selectedTreeIdx >= 0 ? selectedTreeIdx : hoveredTreeIdx;
           var baseCenter;
           if (sourceIdx >= 0 && sourceIdx < trees3d.length) {
@@ -9227,7 +8809,7 @@ app.get("/design", (req, res) => {
 
       // Click existing tree to select & show panel (works in and outside tree mode)
       canvas.addEventListener('click', function(e) {
-        if (treePlaceStep !== 0 || roofDrawingMode || space3dHeld) return;
+        if (treePlaceStep !== 0 || roofDrawingMode || space3dHeld || isViewCubeBusy()) return;
         var idx = findTreeUnderCursor(e);
         if (idx >= 0) {
           if (e.metaKey || e.ctrlKey) {
@@ -9363,6 +8945,7 @@ app.get("/design", (req, res) => {
     // Delete button
     document.getElementById('tpDelete').addEventListener('click', function() {
       if (selectedTreeIdx >= 0) {
+        pushUndo();
         deleteTree(selectedTreeIdx);
         closeTreePanel();
       }
@@ -9597,8 +9180,13 @@ app.get("/design", (req, res) => {
       var m1x = (v1.x + v2.x) / 2, m1z = (v1.z + v2.z) / 2;
       var r0x = m0x + ldx * inset, r0z = m0z + ldz * inset;
       var r1x = m1x - ldx * inset, r1z = m1z - ldz * inset;
+      // Peak = midpoint of ridge, Mf = midpoint of v0-v1 (front), Mb = midpoint of v3-v2 (back)
+      var px = (r0x + r1x) / 2, pz = (r0z + r1z) / 2;
+      var mfx = (v0.x + v1.x) / 2, mfz = (v0.z + v1.z) / 2;
+      var mbx = (v3.x + v2.x) / 2, mbz = (v3.z + v2.z) / 2;
       return { v0: v0, v1: v1, v2: v2, v3: v3, r0x: r0x, r0z: r0z, r1x: r1x, r1z: r1z,
-               m0x: m0x, m0z: m0z, m1x: m1x, m1z: m1z, inset: inset, ldx: ldx, ldz: ldz };
+               m0x: m0x, m0z: m0z, m1x: m1x, m1z: m1z, inset: inset, ldx: ldx, ldz: ldz,
+               px: px, pz: pz, mfx: mfx, mfz: mfz, mbx: mbx, mbz: mbz };
     }
 
     /* ── Build 3D hip-roof section meshes (returns array of meshes per section) ── */
@@ -9615,57 +9203,131 @@ app.get("/design", (req, res) => {
         shape.closePath();
         var geo = new THREE.ShapeGeometry(shape);
         geo.rotateX(-Math.PI / 2);
-        return [_applyRoofSectionMaterial(geo, color, 0.05, ss === 0)];
+        return [_applyRoofSectionMaterial(geo, color, 0.05, ss === 0 || ss === -2)];
       }
 
       var hip = computeHipGeometry(verts, pitch);
       var ridgeY = hip.inset * Math.tan(pitch * Math.PI / 180) + 0.05;
       var baseY = 0.05;
 
-      // When a hip triangle is deleted, trapezoids expand to fill the gap:
-      // Ridge endpoints shift to short-side midpoints at same height
-      var er0x = ds[0] ? hip.m0x : hip.r0x;
-      var er0z = ds[0] ? hip.m0z : hip.r0z;
-      var er1x = ds[1] ? hip.m1x : hip.r1x;
-      var er1z = ds[1] ? hip.m1z : hip.r1z;
-
-      // Section 0: Hip tri v0-R0-v3 (short side near v0/v3)
-      // Section 1: Hip tri v1-v2-R1 (short side near v1/v2)
-      // Section 2: Front trapezoid v0-v1-eR1-eR0 (long side v0-v1, expands when hip tris deleted)
-      // Section 3: Back trapezoid v3-eR0-eR1-v2 (long side v3-v2, expands when hip tris deleted)
-      var sectionPositions = [
-        [hip.v0.x, baseY, hip.v0.z, hip.r0x, ridgeY, hip.r0z, hip.v3.x, baseY, hip.v3.z],
-        [hip.v1.x, baseY, hip.v1.z, hip.v2.x, baseY, hip.v2.z, hip.r1x, ridgeY, hip.r1z],
-        [hip.v0.x, baseY, hip.v0.z, hip.v1.x, baseY, hip.v1.z, er1x, ridgeY, er1z,
-         hip.v0.x, baseY, hip.v0.z, er1x, ridgeY, er1z, er0x, ridgeY, er0z],
-        [hip.v3.x, baseY, hip.v3.z, er0x, ridgeY, er0z, er1x, ridgeY, er1z,
-         hip.v3.x, baseY, hip.v3.z, er1x, ridgeY, er1z, hip.v2.x, baseY, hip.v2.z]
-      ];
+      // Compute section geometry based on deletion pattern
+      var sectionPositions = computeSectionGeometry(hip, ds, ridgeY, baseY);
 
       var meshes = [];
       for (var i = 0; i < 4; i++) {
-        if (ds[i]) { meshes.push(null); continue; }
+        if (ds[i] || !sectionPositions[i]) { meshes.push(null); continue; }
         var geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(sectionPositions[i], 3));
         geo.computeVertexNormals();
-        meshes.push(_applyRoofSectionMaterial(geo, color, 0, ss === i));
+        meshes.push(_applyRoofSectionMaterial(geo, color, 0, ss === i || ss === -2));
       }
       return meshes;
     }
 
+    /* ── Compute section vertex positions based on deletion pattern ── */
+    function computeSectionGeometry(hip, ds, ridgeY, baseY) {
+      var h = hip;
+      var rY = ridgeY, bY = baseY;
+      // Helper to build triangle positions
+      function tri(ax,ay,az, bx,by,bz, cx,cy,cz) {
+        return [ax,ay,az, bx,by,bz, cx,cy,cz];
+      }
+      // Helper to build quad positions (2 triangles)
+      function quad(ax,ay,az, bx,by,bz, cx,cy,cz, dx,dy,dz) {
+        return [ax,ay,az, bx,by,bz, cx,cy,cz, ax,ay,az, cx,cy,cz, dx,dy,dz];
+      }
+
+      var anyTrapDel = ds[2] || ds[3];
+      var bothTrapDel = ds[2] && ds[3];
+
+      // Case: no trapezoids deleted — original hip roof logic (with hip tri expansion)
+      if (!anyTrapDel) {
+        var er0x = ds[0] ? h.m0x : h.r0x;
+        var er0z = ds[0] ? h.m0z : h.r0z;
+        var er1x = ds[1] ? h.m1x : h.r1x;
+        var er1z = ds[1] ? h.m1z : h.r1z;
+        return [
+          // S0: hip tri v0-R0-v3
+          tri(h.v0.x,bY,h.v0.z, h.r0x,rY,h.r0z, h.v3.x,bY,h.v3.z),
+          // S1: hip tri v1-v2-R1
+          tri(h.v1.x,bY,h.v1.z, h.v2.x,bY,h.v2.z, h.r1x,rY,h.r1z),
+          // S2: front trap v0-v1-eR1-eR0
+          quad(h.v0.x,bY,h.v0.z, h.v1.x,bY,h.v1.z, er1x,rY,er1z, er0x,rY,er0z),
+          // S3: back trap v3-eR0-eR1-v2
+          quad(h.v3.x,bY,h.v3.z, er0x,rY,er0z, er1x,rY,er1z, h.v2.x,bY,h.v2.z)
+        ];
+      }
+
+      // Case: both trapezoids deleted — two rectangles split at Mf/Mb
+      // Each rectangle slopes from its outer edge (base) up to the center line (ridge)
+      if (bothTrapDel) {
+        return [
+          // S0: rect v0-Mf-Mb-v3 — slopes from v0/v3 (base) up to Mf/Mb (ridge)
+          quad(h.v0.x,bY,h.v0.z, h.mfx,rY,h.mfz, h.mbx,rY,h.mbz, h.v3.x,bY,h.v3.z),
+          // S1: rect Mf-v1-v2-Mb — slopes from v1/v2 (base) up to Mf/Mb (ridge)
+          quad(h.mfx,rY,h.mfz, h.v1.x,bY,h.v1.z, h.v2.x,bY,h.v2.z, h.mbx,rY,h.mbz),
+          null, null
+        ];
+      }
+
+      // Case: only front trap (S2) deleted — ridge collapses to peak P
+      if (ds[2] && !ds[3]) {
+        return [
+          // S0: trap v0-Mf-P-v3
+          quad(h.v0.x,bY,h.v0.z, h.mfx,bY,h.mfz, h.px,rY,h.pz, h.v3.x,bY,h.v3.z),
+          // S1: trap Mf-v1-v2-P
+          quad(h.mfx,bY,h.mfz, h.v1.x,bY,h.v1.z, h.v2.x,bY,h.v2.z, h.px,rY,h.pz),
+          null,
+          // S3: tri v3-P-v2
+          tri(h.v3.x,bY,h.v3.z, h.px,rY,h.pz, h.v2.x,bY,h.v2.z)
+        ];
+      }
+
+      // Case: only back trap (S3) deleted — ridge collapses to peak P
+      if (!ds[2] && ds[3]) {
+        return [
+          // S0: trap v0-P-Mb-v3
+          quad(h.v0.x,bY,h.v0.z, h.px,rY,h.pz, h.mbx,bY,h.mbz, h.v3.x,bY,h.v3.z),
+          // S1: trap v1-v2-Mb-P
+          quad(h.v1.x,bY,h.v1.z, h.v2.x,bY,h.v2.z, h.mbx,bY,h.mbz, h.px,rY,h.pz),
+          // S2: tri v0-v1-P
+          tri(h.v0.x,bY,h.v0.z, h.v1.x,bY,h.v1.z, h.px,rY,h.pz),
+          null
+        ];
+      }
+
+      return [null, null, null, null];
+    }
+
     function _applyRoofSectionMaterial(geo, color, yOffset, isSelected) {
       if (isSelected) {
-        // Aurora-style selected section: semi-transparent teal
+        // Apply satellite texture with teal tint overlay
         var posAttr = geo.attributes.position;
         var uvs = new Float32Array(posAttr.count * 2);
-        for (var i = 0; i < posAttr.count; i++) {
-          uvs[i * 2] = 0; uvs[i * 2 + 1] = 0;
+        if (satTexture && satExtentM > 0) {
+          for (var i = 0; i < posAttr.count; i++) {
+            var wx = posAttr.getX(i);
+            var wz = posAttr.getZ(i);
+            uvs[i * 2]     = (wx + satExtentM / 2) / satExtentM;
+            uvs[i * 2 + 1] = (-wz + satExtentM / 2) / satExtentM;
+          }
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+          var mat = new THREE.MeshBasicMaterial({
+            map: satTexture, color: 0x00bfa5,
+            side: THREE.DoubleSide, depthWrite: true,
+            polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+          });
+        } else {
+          for (var i = 0; i < posAttr.count; i++) {
+            uvs[i * 2] = 0; uvs[i * 2 + 1] = 0;
+          }
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+          var mat = new THREE.MeshBasicMaterial({
+            color: 0x00bfa5,
+            side: THREE.DoubleSide, depthWrite: true,
+            polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+          });
         }
-        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-        var mat = new THREE.MeshBasicMaterial({
-          color: 0x00bfa5, transparent: true, opacity: 0.55,
-          side: THREE.DoubleSide, depthWrite: true
-        });
         var mesh = new THREE.Mesh(geo, mat);
         mesh.position.y = yOffset;
         return mesh;
@@ -9688,7 +9350,8 @@ app.get("/design", (req, res) => {
 
         var mat = new THREE.MeshBasicMaterial({
           map: satTexture,
-          side: THREE.DoubleSide, depthWrite: true
+          side: THREE.DoubleSide, depthWrite: true,
+          polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
         });
         var mesh = new THREE.Mesh(geo, mat);
         mesh.position.y = yOffset;
@@ -9698,7 +9361,8 @@ app.get("/design", (req, res) => {
       var mat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(color),
         transparent: true, opacity: 0.50,
-        side: THREE.DoubleSide, depthWrite: true
+        side: THREE.DoubleSide, depthWrite: true,
+        polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
       });
       var mesh = new THREE.Mesh(geo, mat);
       mesh.position.y = yOffset;
@@ -9710,14 +9374,15 @@ app.get("/design", (req, res) => {
       var positions = [];
       for (var i = 0; i < verts.length; i++) {
         var a = verts[i], b = verts[(i + 1) % verts.length];
-        positions.push(a.x, 0.12, a.z, b.x, 0.12, b.z);
+        positions.push(a.x, 0.15, a.z, b.x, 0.15, b.z);
       }
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: color, linewidth: 3 }));
+      var mat = new THREE.LineBasicMaterial({ color: color, linewidth: 3 });
+      return new THREE.LineSegments(geo, mat);
     }
 
-    /* ── Build hip roof interior lines (4 hips + 1 ridge), respecting deleted sections ── */
+    /* ── Build hip roof interior lines, respecting deleted sections ── */
     function buildHipRoofLines(verts, pitchDeg, deletedSections) {
       if (!verts || verts.length !== 4) return null;
       var ds = deletedSections || [false, false, false, false];
@@ -9726,43 +9391,52 @@ app.get("/design", (req, res) => {
       var ridgeY = hip.inset * Math.tan((pitchDeg || 10) * Math.PI / 180) + 0.12;
       var baseY = 0.12;
 
-      // Ridge endpoints shift to midpoints when hip triangles are deleted
-      var re0x = ds[0] ? hip.m0x : hip.r0x;
-      var re0z = ds[0] ? hip.m0z : hip.r0z;
-      var re1x = ds[1] ? hip.m1x : hip.r1x;
-      var re1z = ds[1] ? hip.m1z : hip.r1z;
-
       var positions = [];
+      var anyTrapDel = ds[2] || ds[3];
+      var bothTrapDel = ds[2] && ds[3];
 
-      // Hip line v0→R0: exists only if section 0 AND section 2 both exist
-      if (!ds[0] && !ds[2]) {
-        positions.push(hip.v0.x, baseY, hip.v0.z, hip.r0x, ridgeY, hip.r0z);
-      }
-      // Hip line v3→R0: exists only if section 0 AND section 3 both exist
-      if (!ds[0] && !ds[3]) {
-        positions.push(hip.v3.x, baseY, hip.v3.z, hip.r0x, ridgeY, hip.r0z);
-      }
-      // Hip line v1→R1: exists only if section 1 AND section 2 both exist
-      if (!ds[1] && !ds[2]) {
-        positions.push(hip.v1.x, baseY, hip.v1.z, hip.r1x, ridgeY, hip.r1z);
-      }
-      // Hip line v2→R1: exists only if section 1 AND section 3 both exist
-      if (!ds[1] && !ds[3]) {
-        positions.push(hip.v2.x, baseY, hip.v2.z, hip.r1x, ridgeY, hip.r1z);
-      }
+      if (!anyTrapDel) {
+        // No trapezoids deleted — standard hip roof lines
+        var re0x = ds[0] ? hip.m0x : hip.r0x;
+        var re0z = ds[0] ? hip.m0z : hip.r0z;
+        var re1x = ds[1] ? hip.m1x : hip.r1x;
+        var re1z = ds[1] ? hip.m1z : hip.r1z;
 
-      // Ridge line always exists (extended when hip triangles deleted)
-      // Only draw if at least one non-deleted section remains
-      var anyAlive = !ds[0] || !ds[1] || !ds[2] || !ds[3];
-      if (anyAlive) {
-        positions.push(re0x, ridgeY, re0z, re1x, ridgeY, re1z);
+        if (!ds[0] && !ds[2]) positions.push(hip.v0.x,baseY,hip.v0.z, hip.r0x,ridgeY,hip.r0z);
+        if (!ds[0] && !ds[3]) positions.push(hip.v3.x,baseY,hip.v3.z, hip.r0x,ridgeY,hip.r0z);
+        if (!ds[1] && !ds[2]) positions.push(hip.v1.x,baseY,hip.v1.z, hip.r1x,ridgeY,hip.r1z);
+        if (!ds[1] && !ds[3]) positions.push(hip.v2.x,baseY,hip.v2.z, hip.r1x,ridgeY,hip.r1z);
+        // Ridge line
+        var anyAlive = !ds[0] || !ds[1] || !ds[2] || !ds[3];
+        if (anyAlive) positions.push(re0x,ridgeY,re0z, re1x,ridgeY,re1z);
+
+      } else if (bothTrapDel) {
+        // Both trapezoids deleted — vertical divider Mf→Mb
+        if (!ds[0] || !ds[1]) {
+          positions.push(hip.mfx,baseY,hip.mfz, hip.mbx,baseY,hip.mbz);
+        }
+
+      } else if (ds[2] && !ds[3]) {
+        // Front trap deleted — ridge collapsed to peak P
+        // Lines: Mf→P (divider between S0/S1), v3→P and v2→P (borders with S3 triangle)
+        if (!ds[0] && !ds[1]) positions.push(hip.mfx,baseY,hip.mfz, hip.px,ridgeY,hip.pz);
+        if (!ds[0] && !ds[3]) positions.push(hip.v3.x,baseY,hip.v3.z, hip.px,ridgeY,hip.pz);
+        if (!ds[1] && !ds[3]) positions.push(hip.v2.x,baseY,hip.v2.z, hip.px,ridgeY,hip.pz);
+
+      } else if (!ds[2] && ds[3]) {
+        // Back trap deleted — ridge collapsed to peak P
+        // Lines: Mb→P (divider between S0/S1), v0→P and v1→P (borders with S2 triangle)
+        if (!ds[0] && !ds[1]) positions.push(hip.mbx,baseY,hip.mbz, hip.px,ridgeY,hip.pz);
+        if (!ds[0] && !ds[2]) positions.push(hip.v0.x,baseY,hip.v0.z, hip.px,ridgeY,hip.pz);
+        if (!ds[1] && !ds[2]) positions.push(hip.v1.x,baseY,hip.v1.z, hip.px,ridgeY,hip.pz);
       }
 
       if (positions.length === 0) return null;
 
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
+      var mat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+      return new THREE.LineSegments(geo, mat);
     }
 
     /* ── Build vertex handle spheres ── */
@@ -9780,14 +9454,75 @@ app.get("/design", (req, res) => {
       return handles;
     }
 
+    /* ── Build vertical walls beneath roof ── */
+    function buildRoofWalls(verts, pitchDeg, deletedSections, wallHeight) {
+      var group = new THREE.Group();
+      var wallMat = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, side: THREE.DoubleSide });
+
+      function addWall(ax, ay, az, bx, by, bz) {
+        var positions = new Float32Array([
+          ax, ay, az,  bx, by, bz,  bx, 0, bz,
+          ax, ay, az,  bx, 0, bz,   ax, 0, az
+        ]);
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.computeVertexNormals();
+        group.add(new THREE.Mesh(geo, wallMat));
+      }
+
+      var pitch = pitchDeg || 10;
+      var ds = deletedSections || [false, false, false, false];
+      var wH = wallHeight || 3.0;
+
+      if (verts.length === 4 && pitch > 0) {
+        var hip = computeHipGeometry(verts, pitch);
+        var ridgeY = hip.inset * Math.tan(pitch * Math.PI / 180) + 0.05;
+        var baseY = 0.05;
+        var sectionPositions = computeSectionGeometry(hip, ds, ridgeY, baseY);
+
+        for (var si = 0; si < 4; si++) {
+          if (ds[si] || !sectionPositions[si]) continue;
+          var pos = sectionPositions[si];
+          var unique = [];
+          for (var j = 0; j < pos.length; j += 3) {
+            var vx = pos[j], vy = pos[j+1], vz = pos[j+2];
+            var dup = false;
+            for (var k = 0; k < unique.length; k++) {
+              if (Math.abs(vx - unique[k].x) < 0.01 && Math.abs(vy - unique[k].y) < 0.01 && Math.abs(vz - unique[k].z) < 0.01) { dup = true; break; }
+            }
+            if (!dup) unique.push({ x: vx, y: vy, z: vz });
+          }
+          for (var j = 0; j < unique.length; j++) {
+            var a = unique[j], b = unique[(j + 1) % unique.length];
+            addWall(a.x, a.y + wH, a.z, b.x, b.y + wH, b.z);
+          }
+        }
+      } else {
+        var baseY = 0.05;
+        for (var i = 0; i < verts.length; i++) {
+          var a = verts[i], b = verts[(i + 1) % verts.length];
+          addWall(a.x, baseY + wH, a.z, b.x, baseY + wH, b.z);
+        }
+      }
+      return group;
+    }
+
+    function getRoofWallHeight(face) {
+      return face.height > 0 ? face.height : 3.0;
+    }
+
     /* ── Finalize a roof face (add to scene + array) ── */
-    function finalizeRoofFace(verts, pitch, azimuth, height, deletedSections) {
+    function finalizeRoofFace(verts, pitch, azimuth, height, deletedSections, sectionPitches) {
+      var p = pitch || 0;
+      var sp = sectionPitches || [p, p, p, p];
       var face = {
         id: 'rf_' + Date.now().toString(36) + '_' + roofFaces3d.length,
         vertices: verts,
-        pitch: pitch || 0,
+        pitch: p,
+        sectionPitches: sp.slice(),
         azimuth: azimuth || 180,
         height: height || 0,
+        stories: 0,
         color: '#f5a623',
         mesh: null, edgeLines: null, hipLines: null,
         sectionMeshes: [],
@@ -9797,15 +9532,29 @@ app.get("/design", (req, res) => {
         selected: false
       };
       var usePitch = face.pitch || 10;
+      var wH = getRoofWallHeight(face);
+
+      // Build walls
+      face.wallMesh = buildRoofWalls(verts, usePitch, face.deletedSections, wH);
+      scene3d.add(face.wallMesh);
+
+      // Build roof sections (lifted by wall height)
       face.sectionMeshes = buildRoofSectionMeshes(verts, face.color, usePitch, face.deletedSections, -1);
       face.mesh = new THREE.Group();
       face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
+      face.mesh.position.y = wH;
       scene3d.add(face.mesh);
+
       face.edgeLines = buildRoofEdgeLines(verts, '#ffffff');
+      face.edgeLines.position.y = wH;
       scene3d.add(face.edgeLines);
+
       face.hipLines = buildHipRoofLines(verts, usePitch, face.deletedSections);
-      if (face.hipLines) scene3d.add(face.hipLines);
+      if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
+
       face.handleMeshes = buildRoofHandles(verts);
+      face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
+
       face.labelSprites = buildEdgeLabels(verts);
       roofFaces3d.push(face);
       markDirty();
@@ -9818,21 +9567,34 @@ app.get("/design", (req, res) => {
       if (face.mesh) scene3d.remove(face.mesh);
       if (face.edgeLines) scene3d.remove(face.edgeLines);
       if (face.hipLines) scene3d.remove(face.hipLines);
+      if (face.wallMesh) scene3d.remove(face.wallMesh);
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
 
       var usePitch = face.pitch || 10;
-      face.sectionMeshes = buildRoofSectionMeshes(face.vertices, face.color, usePitch, face.deletedSections, face.selectedSection);
+      var wH = getRoofWallHeight(face);
+
+      // Rebuild walls
+      face.wallMesh = buildRoofWalls(face.vertices, usePitch, face.deletedSections, wH);
+      scene3d.add(face.wallMesh);
+
+      // Rebuild roof sections (lifted). Use -2 to highlight ALL sections in whole-structure mode
+      var selSec = (face.selected && !roofEditMode) ? -2 : face.selectedSection;
+      face.sectionMeshes = buildRoofSectionMeshes(face.vertices, face.color, usePitch, face.deletedSections, selSec);
       face.mesh = new THREE.Group();
       face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
+      face.mesh.position.y = wH;
       scene3d.add(face.mesh);
+
       face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff');
+      face.edgeLines.position.y = wH;
       scene3d.add(face.edgeLines);
+
       face.hipLines = buildHipRoofLines(face.vertices, usePitch, face.deletedSections);
-      if (face.hipLines) scene3d.add(face.hipLines);
+      if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
       face.labelSprites = buildEdgeLabels(face.vertices);
 
       face.vertices.forEach(function(v, i) {
-        face.handleMeshes[i].position.set(v.x, 0.18, v.z);
+        face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
       });
       markDirty();
     }
@@ -9843,6 +9605,7 @@ app.get("/design", (req, res) => {
         if (face.mesh) scene3d.remove(face.mesh);
         if (face.edgeLines) scene3d.remove(face.edgeLines);
         if (face.hipLines) scene3d.remove(face.hipLines);
+        if (face.wallMesh) scene3d.remove(face.wallMesh);
         face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
         face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       });
@@ -9860,6 +9623,7 @@ app.get("/design", (req, res) => {
       if (faceIdx < 0 || faceIdx >= roofFaces3d.length) return;
       var face = roofFaces3d[faceIdx];
       if (!face.deletedSections || sectionIdx < 0 || sectionIdx >= face.deletedSections.length) return;
+      pushUndo();
       face.deletedSections[sectionIdx] = true;
       face.selectedSection = -1;
       roofSelectedSection = -1;
@@ -9877,10 +9641,12 @@ app.get("/design", (req, res) => {
     /* ── Delete a single roof face ── */
     function deleteRoofFace(idx) {
       if (idx < 0 || idx >= roofFaces3d.length) return;
+      pushUndo();
       var face = roofFaces3d[idx];
       if (face.mesh) scene3d.remove(face.mesh);
       if (face.edgeLines) scene3d.remove(face.edgeLines);
       if (face.hipLines) scene3d.remove(face.hipLines);
+      if (face.wallMesh) scene3d.remove(face.wallMesh);
       face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
       face.labelSprites.forEach(function(s) { scene3d.remove(s); });
       roofFaces3d.splice(idx, 1);
@@ -9906,6 +9672,15 @@ app.get("/design", (req, res) => {
       face.selectedSection = sectionIdx;
       rebuildRoofFace(faceIdx);
       updateRoofPropsPanel();
+      // Show ef-panel when a section is selected
+      var efPanel = document.getElementById('efPanel');
+      if (efPanel) {
+        if (sectionIdx >= 0) {
+          efPanel.classList.remove('hidden');
+        } else {
+          efPanel.classList.add('hidden');
+        }
+      }
     }
 
     function selectRoofFace(idx) {
@@ -9921,7 +9696,218 @@ app.get("/design", (req, res) => {
       }
       roofSelectedFace = -1;
       roofSelectedSection = -1;
+      roofEditMode = false;
+      roofMovingMode = false;
       updateRoofPropsPanel();
+      // Hide all panels
+      var efPanel = document.getElementById('efPanel');
+      if (efPanel) efPanel.classList.add('hidden');
+      var srPanel = document.getElementById('smartRoofPanel');
+      if (srPanel) srPanel.classList.add('hidden');
+      var roofProps = document.getElementById('roofPropsSection');
+      if (roofProps) roofProps.style.display = 'none';
+    }
+
+    /* ── Whole-structure selection (SmartRoof mode) ── */
+    function selectRoofWhole(faceIdx) {
+      // Deselect previous
+      if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
+        var old = roofFaces3d[roofSelectedFace];
+        old.selected = false;
+        old.selectedSection = -1;
+        rebuildRoofFace(roofSelectedFace);
+      }
+      roofSelectedFace = faceIdx;
+      roofSelectedSection = -1;
+      roofEditMode = false;
+      var face = roofFaces3d[faceIdx];
+      face.selected = true;
+      face.selectedSection = -1;
+      rebuildRoofFace(faceIdx);
+
+      // Show SmartRoof side panel, hide section panels
+      var srPanel = document.getElementById('smartRoofPanel');
+      var roofProps = document.getElementById('roofPropsSection');
+      var efPanel = document.getElementById('efPanel');
+      if (srPanel) {
+        srPanel.classList.remove('hidden');
+        // Populate values
+        var srH = document.getElementById('srHeight');
+        if (srH) srH.value = (face.height * 3.28084).toFixed(1);
+        var srS = document.getElementById('srStories');
+        if (srS) srS.value = face.stories || 0;
+      }
+      if (roofProps) roofProps.style.display = 'none';
+      if (efPanel) efPanel.classList.add('hidden');
+    }
+
+    /* ── Enter face-edit mode from SmartRoof ── */
+    function enterRoofEditMode() {
+      if (roofSelectedFace < 0) return;
+      roofEditMode = true;
+      // Rebuild to remove whole-structure highlight
+      rebuildRoofFace(roofSelectedFace);
+      // Hide SmartRoof panel, show section panel
+      var srPanel = document.getElementById('smartRoofPanel');
+      if (srPanel) srPanel.classList.add('hidden');
+      var roofProps = document.getElementById('roofPropsSection');
+      if (roofProps) roofProps.style.display = '';
+      updateRoofPropsPanel();
+    }
+
+    /* ── Undo / Redo system ── */
+    function captureRoofSnapshot() {
+      return {
+        faces: roofFaces3d.map(function(f) {
+          return {
+            vertices: f.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+            pitch: f.pitch,
+            sectionPitches: f.sectionPitches ? f.sectionPitches.slice() : null,
+            azimuth: f.azimuth,
+            height: f.height,
+            color: f.color,
+            deletedSections: f.deletedSections.slice()
+          };
+        }),
+        selectedFace: roofSelectedFace,
+        selectedSection: roofSelectedSection
+      };
+    }
+
+    function restoreRoofSnapshot(snapshot) {
+      clearAllRoofFaces();
+      snapshot.faces.forEach(function(rf) {
+        finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+      });
+      roofSelectedFace = snapshot.selectedFace;
+      roofSelectedSection = snapshot.selectedSection;
+      if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
+        var face = roofFaces3d[roofSelectedFace];
+        face.selected = true;
+        face.selectedSection = roofSelectedSection;
+        rebuildRoofFace(roofSelectedFace);
+      }
+      updateRoofPropsPanel();
+    }
+
+    function pushRoofUndo() {
+      roofUndoStack.push(captureRoofSnapshot());
+      if (roofUndoStack.length > ROOF_UNDO_MAX) roofUndoStack.shift();
+      roofRedoStack = [];
+      updateUndoRedoButtons();
+    }
+
+    function roofUndo() {
+      if (roofUndoStack.length === 0) return;
+      roofRedoStack.push(captureRoofSnapshot());
+      restoreRoofSnapshot(roofUndoStack.pop());
+      updateUndoRedoButtons();
+      markDirty();
+    }
+
+    function roofRedo() {
+      if (roofRedoStack.length === 0) return;
+      roofUndoStack.push(captureRoofSnapshot());
+      restoreRoofSnapshot(roofRedoStack.pop());
+      updateUndoRedoButtons();
+      markDirty();
+    }
+
+    /* ── Unified undo/redo — wraps all interactable actions ── */
+    function captureTreeSnapshot() {
+      return trees3d.map(function(t) {
+        return { center: {x: t.center.x, z: t.center.z}, radius: t.radius, height: t.height, lat: t.lat, lng: t.lng };
+      });
+    }
+
+    function restoreTreeSnapshot(snap) {
+      trees3d.forEach(function(t) { if (t.mesh) scene3d.remove(t.mesh); });
+      trees3d = [];
+      snap.forEach(function(td) {
+        var sceneH = td.height * vertExag;
+        var mesh = buildTreeGroup({ x: td.center.x, z: td.center.z }, td.radius, sceneH, false);
+        scene3d.add(mesh);
+        trees3d.push({ center: {x: td.center.x, z: td.center.z}, radius: td.radius, height: td.height, mesh: mesh, lat: td.lat, lng: td.lng });
+      });
+      hoveredTreeIdx = -1;
+      selectedTreeIdx = -1;
+    }
+
+    function captureFullSnapshot() {
+      return {
+        roof: captureRoofSnapshot(),
+        trees: captureTreeSnapshot(),
+        drawingDots: roofDrawingMode ? {
+          vertices: roofTempVertices.map(function(v) { return {x: v.x, z: v.z}; }),
+          handleCount: roofTempHandles.length
+        } : null
+      };
+    }
+
+    function pushUndo() {
+      undoStack.push(captureFullSnapshot());
+      if (undoStack.length > UNDO_MAX) undoStack.shift();
+      redoStack = [];
+      updateUndoRedoButtons();
+    }
+
+    function unifiedUndo() {
+      if (undoStack.length === 0) return;
+      redoStack.push(captureFullSnapshot());
+      var snap = undoStack.pop();
+
+      // Restore roof state
+      restoreRoofSnapshot(snap.roof);
+      // Restore tree state
+      restoreTreeSnapshot(snap.trees);
+      // Restore drawing dots if we were/are in drawing mode
+      if (snap.drawingDots) {
+        // Remove current preview handles
+        roofTempHandles.forEach(function(h) { scene3d.remove(h); });
+        roofTempHandles = [];
+        roofTempVertices = snap.drawingDots.vertices.slice();
+        // Recreate preview handles
+        roofTempVertices.forEach(function(v) { addRoofPreviewHandle(v.x, v.z); });
+        updateRoofPreviewLines();
+        clearSnapGuides();
+      }
+
+      updateUndoRedoButtons();
+      markDirty();
+    }
+
+    function unifiedRedo() {
+      if (redoStack.length === 0) return;
+      undoStack.push(captureFullSnapshot());
+      var snap = redoStack.pop();
+
+      restoreRoofSnapshot(snap.roof);
+      restoreTreeSnapshot(snap.trees);
+      if (snap.drawingDots) {
+        roofTempHandles.forEach(function(h) { scene3d.remove(h); });
+        roofTempHandles = [];
+        roofTempVertices = snap.drawingDots.vertices.slice();
+        roofTempVertices.forEach(function(v) { addRoofPreviewHandle(v.x, v.z); });
+        updateRoofPreviewLines();
+        clearSnapGuides();
+      }
+
+      updateUndoRedoButtons();
+      markDirty();
+    }
+
+    function updateUndoRedoButtons() {
+      var undoBtn = document.getElementById('undoBtn');
+      var redoBtn = document.getElementById('redoBtn');
+      if (undoBtn) undoBtn.disabled = undoStack.length === 0 && roofUndoStack.length === 0;
+      if (redoBtn) redoBtn.disabled = redoStack.length === 0 && roofRedoStack.length === 0;
+    }
+
+    /* ── Compass direction from azimuth ── */
+    function azimuthToCompass(az) {
+      var dirs = ['N','NE','E','SE','S','SW','W','NW'];
+      var idx = Math.round(((az % 360) + 360) % 360 / 45) % 8;
+      return dirs[idx];
     }
 
     /* ── Update properties panel ── */
@@ -9932,17 +9918,41 @@ app.get("/design", (req, res) => {
         section.style.display = 'none';
         return;
       }
+      // Only show section panel in edit mode
+      if (!roofEditMode) {
+        section.style.display = 'none';
+        return;
+      }
       section.style.display = '';
       var face = roofFaces3d[roofSelectedFace];
-      document.getElementById('roofPropPitch').value = face.pitch;
-      document.getElementById('roofPropAzimuth').value = face.azimuth;
-      document.getElementById('roofPropHeight').value = (face.height * 3.28084).toFixed(1);
-      var areaFt2 = (calcPolygonArea(face.vertices) * 10.7639).toFixed(0);
-      document.getElementById('roofPropArea').value = areaFt2;
+      var sectionNames = ['Hip Triangle A', 'Hip Triangle B', 'Front Trapezoid', 'Back Trapezoid'];
 
+      // Determine pitch to display
+      var displayPitch = face.pitch;
+      if (roofSelectedSection >= 0 && face.sectionPitches && face.sectionPitches[roofSelectedSection] !== undefined) {
+        displayPitch = face.sectionPitches[roofSelectedSection];
+      }
+
+      document.getElementById('roofPropPitch').value = displayPitch;
+      document.getElementById('roofPropAzimuth').value = face.azimuth;
+      var azDir = document.getElementById('roofPropAzDir');
+      if (azDir) azDir.textContent = '(' + azimuthToCompass(face.azimuth) + ')';
+      document.getElementById('roofPropHeight').value = (face.height * 3.28084).toFixed(1);
+
+      // Slope as x/12
+      var slopeVal = (12 * Math.tan(displayPitch * Math.PI / 180)).toFixed(1);
+      var slopeEl = document.getElementById('roofPropSlope');
+      if (slopeEl) slopeEl.textContent = slopeVal + ' / 12';
+
+      // Area
+      var areaFt2 = (calcPolygonArea(face.vertices) * 10.7639).toFixed(0);
+      var areaEl = document.getElementById('roofPropArea');
+      if (areaEl) areaEl.textContent = areaFt2 + ' ft\u00B2';
+
+      // Edge lengths
       var edgeList = document.getElementById('roofEdgeLengthsList');
       if (edgeList) {
-        var html = '<div style="font-size:0.75rem;color:#999;margin-top:8px;font-weight:600;">Edge Lengths</div>';
+        var html = '<div style="font-size:0.7rem;color:#999;margin-top:8px;font-weight:600;">Edge Lengths</div>';
         for (var i = 0; i < face.vertices.length; i++) {
           var a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.length];
           var dx = b.x - a.x, dz = b.z - a.z;
@@ -9953,18 +9963,73 @@ app.get("/design", (req, res) => {
       }
 
       // Section info
-      var sectionNames = ['Hip Triangle A', 'Hip Triangle B', 'Front Trapezoid', 'Back Trapezoid'];
       var sectionInfo = document.getElementById('roofSectionInfo');
       var btnDelSection = document.getElementById('btnDeleteRoofSection');
+      var title = document.getElementById('roofPropsTitle');
       if (sectionInfo && btnDelSection) {
         if (roofSelectedSection >= 0 && roofSelectedSection < sectionNames.length) {
           sectionInfo.style.display = '';
-          sectionInfo.textContent = 'Selected: ' + sectionNames[roofSelectedSection];
+          sectionInfo.textContent = sectionNames[roofSelectedSection];
+          if (title) title.textContent = 'Roof face information';
           btnDelSection.style.display = '';
         } else {
           sectionInfo.style.display = 'none';
+          if (title) title.textContent = 'Roof face information';
           btnDelSection.style.display = 'none';
         }
+      }
+
+      // Update Edge & Face panel
+      updateEfPanel(face, displayPitch, sectionNames);
+    }
+
+    function updateEfPanel(face, displayPitch, sectionNames) {
+      var efPanel = document.getElementById('efPanel');
+      if (!efPanel) return;
+
+      // Section name label
+      var efName = document.getElementById('efSectionName');
+      if (efName) {
+        if (roofSelectedSection >= 0 && roofSelectedSection < sectionNames.length) {
+          efName.textContent = sectionNames[roofSelectedSection];
+          efName.style.display = '';
+        } else {
+          efName.style.display = 'none';
+        }
+      }
+
+      // Pitch
+      var efPitch = document.getElementById('efPitch');
+      if (efPitch) efPitch.value = displayPitch;
+
+      // Slope x/12
+      var efSlope = document.getElementById('efSlope');
+      if (efSlope) {
+        var sv = (12 * Math.tan(displayPitch * Math.PI / 180)).toFixed(1);
+        efSlope.textContent = sv + ' / 12';
+      }
+
+      // Azimuth
+      var efAz = document.getElementById('efAzimuth');
+      if (efAz) efAz.value = face.azimuth;
+      var efAzDir = document.getElementById('efAzDir');
+      if (efAzDir) efAzDir.textContent = azimuthToCompass(face.azimuth);
+
+      // Height
+      var efH = document.getElementById('efHeight');
+      if (efH) efH.value = (face.height * 3.28084).toFixed(1);
+
+      // Edge lengths
+      var efEdges = document.getElementById('efEdgeLengths');
+      if (efEdges) {
+        var html = '';
+        for (var i = 0; i < face.vertices.length; i++) {
+          var a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.length];
+          var dx = b.x - a.x, dz = b.z - a.z;
+          var ft = (Math.sqrt(dx * dx + dz * dz) * 3.28084).toFixed(1);
+          html += '<div class="ef-row"><span class="ef-label">Edge ' + (i + 1) + '</span><span class="ef-value">' + ft + ' ft</span></div>';
+        }
+        efEdges.innerHTML = html;
       }
     }
 
@@ -10080,7 +10145,7 @@ app.get("/design", (req, res) => {
       if (!snapGuideMat) {
         snapGuideMat = new THREE.LineDashedMaterial({
           color: 0xff6600, dashSize: 0.5, gapSize: 0.3,
-          linewidth: 1, transparent: true, opacity: 0.85
+          linewidth: 1.2, transparent: true, opacity: 0.85
         });
       }
       return snapGuideMat;
@@ -10093,28 +10158,7 @@ app.get("/design", (req, res) => {
     }
 
     function addGuideLine(x1, z1, x2, z2) {
-      // Use a thin box mesh for consistent visible width regardless of zoom
-      var dx = x2 - x1, dz = z2 - z1;
-      var len = Math.sqrt(dx * dx + dz * dz);
-      if (len < 0.01) return;
-      var angle = Math.atan2(dx, dz);
-
-      // Create a thin plane (width in world units based on camera distance for ~2px look)
-      var camDist = camera3d ? camera3d.position.distanceTo(controls3d ? controls3d.target : new THREE.Vector3()) : 200;
-      var thickness = camDist * 0.0015; // scales with zoom so it looks ~2-3px
-      thickness = Math.max(0.04, Math.min(thickness, 0.3));
-
-      var geo = new THREE.PlaneGeometry(thickness, len);
-      var mat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthTest: false });
-      var mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.x = -Math.PI / 2; // lay flat on XZ
-      mesh.rotation.z = -angle;
-      mesh.position.set((x1 + x2) / 2, 0.2, (z1 + z2) / 2);
-      mesh.renderOrder = 999;
-      scene3d.add(mesh);
-      roofSnapGuides.push(mesh);
-
-      // Also add a dashed line on top for the dash pattern
+      // Single dashed line — fixed pixel width regardless of zoom
       var lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', new THREE.Float32BufferAttribute([x1, 0.25, z1, x2, 0.25, z2], 3));
       var line = new THREE.Line(lineGeo, getSnapGuideMat().clone());
@@ -10126,103 +10170,87 @@ app.get("/design", (req, res) => {
 
     function computeSnapGuides(cursorX, cursorZ) {
       clearSnapGuides();
-      if (roofTempVertices.length === 0) return { x: cursorX, z: cursorZ };
+      var n = roofTempVertices.length;
+      if (n === 0) return { x: cursorX, z: cursorZ };
 
-      var snappedX = cursorX;
-      var snappedZ = cursorZ;
-      var snapX = false, snapZ = false;
-
-      // Check ALL vertices for X and Z alignment simultaneously
-      for (var i = 0; i < roofTempVertices.length; i++) {
-        var v = roofTempVertices[i];
-
-        // Vertical alignment (same X) — can snap X from one vertex
-        if (!snapX && Math.abs(cursorX - v.x) < SNAP_THRESHOLD) {
-          snappedX = v.x;
-          snapX = true;
-          addGuideLine(v.x, v.z - GUIDE_EXTENT, v.x, v.z + GUIDE_EXTENT);
+      // ── 2nd dot: guide line through v0 in the direction of cursor (180° line) ──
+      if (n === 1) {
+        var v0 = roofTempVertices[0];
+        var dx = cursorX - v0.x;
+        var dz = cursorZ - v0.z;
+        var len = Math.sqrt(dx * dx + dz * dz);
+        if (len > 0.01) {
+          var ux = dx / len, uz = dz / len;
+          addGuideLine(v0.x - ux * GUIDE_EXTENT, v0.z - uz * GUIDE_EXTENT,
+                       v0.x + ux * GUIDE_EXTENT, v0.z + uz * GUIDE_EXTENT);
         }
-
-        // Horizontal alignment (same Z) — can snap Z from a different vertex
-        if (!snapZ && Math.abs(cursorZ - v.z) < SNAP_THRESHOLD) {
-          snappedZ = v.z;
-          snapZ = true;
-          addGuideLine(v.x - GUIDE_EXTENT, v.z, v.x + GUIDE_EXTENT, v.z);
-        }
+        return { x: cursorX, z: cursorZ };
       }
 
-      // If we got both X and Z snaps (possibly from different vertices),
-      // that's the intersection point — perfect for rectangle corners
-      if (snapX && snapZ) {
-        roofSnappedPos = { x: snappedX, z: snappedZ };
-        return { x: snappedX, z: snappedZ };
-      }
-
-      // Check perpendicular/parallel alignment to existing edges
-      if (roofTempVertices.length >= 2) {
-        for (var i = 0; i < roofTempVertices.length - 1; i++) {
-          var a = roofTempVertices[i];
-          var b = roofTempVertices[i + 1];
-          var edgeDx = b.x - a.x;
-          var edgeDz = b.z - a.z;
-          var edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDz * edgeDz);
-          if (edgeLen < 0.01) continue;
-
-          var ux = edgeDx / edgeLen;
-          var uz = edgeDz / edgeLen;
-          var px = -uz;
-          var pz = ux;
-
-          // Check perpendicular alignment from each endpoint
-          if (!snapX || !snapZ) {
-            for (var j = 0; j < 2; j++) {
-              var vert = j === 0 ? a : b;
-              var toX = (snapX ? snappedX : cursorX) - vert.x;
-              var toZ = (snapZ ? snappedZ : cursorZ) - vert.z;
-              var perpDist = Math.abs(toX * ux + toZ * uz);
-              if (perpDist < SNAP_THRESHOLD) {
-                var projDist = toX * px + toZ * pz;
-                if (!snapX) snappedX = vert.x + px * projDist;
-                if (!snapZ) snappedZ = vert.z + pz * projDist;
-                addGuideLine(
-                  vert.x - px * GUIDE_EXTENT, vert.z - pz * GUIDE_EXTENT,
-                  vert.x + px * GUIDE_EXTENT, vert.z + pz * GUIDE_EXTENT
-                );
-                snapX = true; snapZ = true;
-                break;
-              }
-            }
+      // ── 3rd dot: guide perpendicular to edge v0→v1, from v1 ──
+      if (n === 2) {
+        var v0 = roofTempVertices[0], v1 = roofTempVertices[1];
+        var edx = v1.x - v0.x, edz = v1.z - v0.z;
+        var elen = Math.sqrt(edx * edx + edz * edz);
+        if (elen > 0.01) {
+          // Perpendicular direction from v1
+          var px = -edz / elen, pz = edx / elen;
+          addGuideLine(v1.x - px * GUIDE_EXTENT, v1.z - pz * GUIDE_EXTENT,
+                       v1.x + px * GUIDE_EXTENT, v1.z + pz * GUIDE_EXTENT);
+          // Snap: project cursor onto the perpendicular line from v1
+          var toX = cursorX - v1.x, toZ = cursorZ - v1.z;
+          var perpDist = Math.abs(toX * edx / elen + toZ * edz / elen);
+          if (perpDist < SNAP_THRESHOLD) {
+            var projDist = toX * px + toZ * pz;
+            var snappedX = v1.x + px * projDist;
+            var snappedZ = v1.z + pz * projDist;
+            roofSnappedPos = { x: snappedX, z: snappedZ };
+            return { x: snappedX, z: snappedZ };
           }
-          if (snapX && snapZ) break;
+        }
+        return { x: cursorX, z: cursorZ };
+      }
 
-          // Check parallel alignment from last vertex
-          if (!snapX || !snapZ) {
-            var last = roofTempVertices[roofTempVertices.length - 1];
-            var toX2 = (snapX ? snappedX : cursorX) - last.x;
-            var toZ2 = (snapZ ? snappedZ : cursorZ) - last.z;
-            var parDist = Math.abs(toX2 * px + toZ2 * pz);
-            if (parDist < SNAP_THRESHOLD) {
-              var projDist2 = toX2 * ux + toZ2 * uz;
-              if (!snapX) snappedX = last.x + ux * projDist2;
-              if (!snapZ) snappedZ = last.z + uz * projDist2;
-              addGuideLine(
-                last.x - ux * GUIDE_EXTENT, last.z - uz * GUIDE_EXTENT,
-                last.x + ux * GUIDE_EXTENT, last.z + uz * GUIDE_EXTENT
-              );
-              snapX = true; snapZ = true;
-              break;
+      // ── 4th dot: two guides — from v0 (perpendicular to v0→v1) and from v2 (parallel to v0→v1) ──
+      //    Their intersection completes the rectangle.
+      if (n === 3) {
+        var v0 = roofTempVertices[0], v1 = roofTempVertices[1], v2 = roofTempVertices[2];
+        var edx = v1.x - v0.x, edz = v1.z - v0.z;
+        var elen = Math.sqrt(edx * edx + edz * edz);
+        if (elen > 0.01) {
+          var ux = edx / elen, uz = edz / elen;   // along v0→v1
+          var px = -uz, pz = ux;                   // perpendicular
+
+          // Guide 1: from v0, perpendicular to v0→v1
+          addGuideLine(v0.x - px * GUIDE_EXTENT, v0.z - pz * GUIDE_EXTENT,
+                       v0.x + px * GUIDE_EXTENT, v0.z + pz * GUIDE_EXTENT);
+          // Guide 2: from v2, parallel to v0→v1
+          addGuideLine(v2.x - ux * GUIDE_EXTENT, v2.z - uz * GUIDE_EXTENT,
+                       v2.x + ux * GUIDE_EXTENT, v2.z + uz * GUIDE_EXTENT);
+
+          // Intersection = the perfect rectangle corner
+          // v0 + t*p = v2 + s*u  →  solve for t
+          // t = ((v2-v0) cross u) / (p cross u)  [2D cross = ax*bz - az*bx]
+          var crossPU = px * uz - pz * ux;
+          if (Math.abs(crossPU) > 0.0001) {
+            var dxv = v2.x - v0.x, dzv = v2.z - v0.z;
+            var t = (dxv * uz - dzv * ux) / crossPU;
+            var snapX = v0.x + px * t;
+            var snapZ = v0.z + pz * t;
+
+            // Snap if cursor is close to the intersection
+            var dist = Math.sqrt(Math.pow(cursorX - snapX, 2) + Math.pow(cursorZ - snapZ, 2));
+            if (dist < SNAP_THRESHOLD * 2) {
+              roofSnappedPos = { x: snapX, z: snapZ };
+              return { x: snapX, z: snapZ };
             }
           }
         }
+        return { x: cursorX, z: cursorZ };
       }
 
-      if (snapX || snapZ) {
-        roofSnappedPos = { x: snappedX, z: snappedZ };
-      } else {
-        roofSnappedPos = null;
-      }
-
-      return { x: snappedX, z: snappedZ };
+      // 5+ dots: no guides
+      return { x: cursorX, z: cursorZ };
     }
 
     /* ── Smart Roof auto-generate from Solar API ── */
@@ -10841,15 +10869,18 @@ app.get("/design", (req, res) => {
             var dx = px - first.x, dz = pz - first.z;
             if (Math.sqrt(dx * dx + dz * dz) < 1.0) {
               // Snap to rectangle and finalize
+              pushUndo();
               var rectVerts = fitRectangle(roofTempVertices);
               finalizeRoofFace(rectVerts, 0, 180, 0);
               clearRoofPreview();
               clearSnapGuides();
               roofTempVertices = [];
+              toggleRoofDrawingMode();
               return;
             }
           }
 
+          pushUndo();
           roofTempVertices.push({ x: px, z: pz });
           addRoofPreviewHandle(px, pz);
           updateRoofPreviewLines();
@@ -10858,34 +10889,65 @@ app.get("/design", (req, res) => {
         }
 
         // Not in drawing mode — check for face/section selection
-        if (roofDraggingHandle >= 0) return; // was dragging, ignore click
+        if (roofDraggingHandle >= 0 || isViewCubeBusy()) return;
+        if (roofMovingMode) return; // handled by move drag
         var hit = findRoofFaceUnderCursor(e);
         if (hit.faceIdx >= 0) {
-          selectRoofSection(hit.faceIdx, hit.sectionIdx);
+          if (roofEditMode) {
+            selectRoofSection(hit.faceIdx, hit.sectionIdx);
+          } else {
+            selectRoofWhole(hit.faceIdx);
+          }
         } else if (roofSelectedFace >= 0) {
           deselectRoofFace();
         }
       });
 
-      // Double-click: complete polygon
+      // Double-click: complete polygon OR enter edit mode
       canvas.addEventListener('dblclick', function(e) {
-        if (!roofDrawingMode || roofTempVertices.length < 3) return;
-        // dblclick fires two clicks, remove the duplicate last vertex
-        roofTempVertices.pop();
-        if (roofTempHandles.length > 0) {
-          scene3d.remove(roofTempHandles.pop());
+        if (roofDrawingMode && roofTempVertices.length >= 3) {
+          // dblclick fires two clicks, remove the duplicate last vertex
+          roofTempVertices.pop();
+          if (roofTempHandles.length > 0) {
+            scene3d.remove(roofTempHandles.pop());
+          }
+          pushUndo();
+          var rectVerts = fitRectangle(roofTempVertices);
+          finalizeRoofFace(rectVerts, 0, 180, 0);
+          clearRoofPreview();
+          roofTempVertices = [];
+          toggleRoofDrawingMode();
+          return;
         }
-        var rectVerts = fitRectangle(roofTempVertices);
-        finalizeRoofFace(rectVerts, 0, 180, 0);
-        clearRoofPreview();
-        roofTempVertices = [];
+        // Double-click on roof → select + enter face edit mode in one step
+        if (!roofEditMode) {
+          var hit = findRoofFaceUnderCursor(e);
+          if (hit.faceIdx >= 0) {
+            if (roofSelectedFace !== hit.faceIdx) {
+              selectRoofWhole(hit.faceIdx);
+            }
+            enterRoofEditMode();
+          }
+        }
       });
 
       // Mousedown: start dragging handle
       canvas.addEventListener('mousedown', function(e) {
-        if (roofDrawingMode || treePlacingMode || space3dHeld) return;
+        if (roofDrawingMode || treePlacingMode || space3dHeld || isViewCubeBusy()) return;
+        // Move mode: start drag
+        if (roofMovingMode && roofSelectedFace >= 0) {
+          var hit = raycastGroundPlane(e);
+          if (hit) {
+            pushUndo();
+            roofMoveStart = { x: hit.x, z: hit.z };
+            if (controls3d) controls3d.enabled = false;
+            e.preventDefault();
+            return;
+          }
+        }
         var found = findHandleUnderCursor(e);
         if (found) {
+          pushUndo();
           roofDraggingFaceIdx = found.faceIdx;
           roofDraggingHandle = found.vertexIdx;
           if (controls3d) controls3d.enabled = false;
@@ -10913,6 +10975,22 @@ app.get("/design", (req, res) => {
             }
           }
         }
+        // Move mode drag
+        if (roofMovingMode && roofMoveStart && roofSelectedFace >= 0) {
+          var mHit = raycastGroundPlane(e);
+          if (mHit) {
+            var dx = mHit.x - roofMoveStart.x;
+            var dz = mHit.z - roofMoveStart.z;
+            var face = roofFaces3d[roofSelectedFace];
+            for (var vi = 0; vi < face.vertices.length; vi++) {
+              face.vertices[vi].x += dx;
+              face.vertices[vi].z += dz;
+            }
+            roofMoveStart = { x: mHit.x, z: mHit.z };
+            rebuildRoofFace(roofSelectedFace);
+          }
+          return;
+        }
         if (roofDraggingHandle < 0) return;
         var hit = raycastGroundPlane(e);
         if (!hit) return;
@@ -10924,6 +11002,11 @@ app.get("/design", (req, res) => {
 
       // Mouseup: end drag
       canvas.addEventListener('mouseup', function(e) {
+        if (roofMoveStart) {
+          roofMoveStart = null;
+          if (controls3d) controls3d.enabled = true;
+          markDirty();
+        }
         if (roofDraggingHandle >= 0) {
           roofDraggingHandle = -1;
           roofDraggingFaceIdx = -1;
@@ -10936,12 +11019,27 @@ app.get("/design", (req, res) => {
       document.addEventListener('keydown', function(e) {
         if (e.target.matches('input,textarea,select')) return;
 
+        // Undo: Cmd+Z / Ctrl+Z
+        if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          unifiedUndo();
+          return;
+        }
+        // Redo: Cmd+Shift+Z / Ctrl+Shift+Z
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'Z' || (e.key === 'z' && e.shiftKey))) {
+          e.preventDefault();
+          unifiedRedo();
+          return;
+        }
+
         if (e.key === 'Enter' && roofDrawingMode && roofTempVertices.length >= 3) {
           e.preventDefault();
+          pushUndo();
           var rectVerts = fitRectangle(roofTempVertices);
           finalizeRoofFace(rectVerts, 0, 180, 0);
           clearRoofPreview();
           roofTempVertices = [];
+          toggleRoofDrawingMode();
           return;
         }
 
@@ -10997,22 +11095,42 @@ app.get("/design", (req, res) => {
         toggleRoofDrawingMode(); // same as manual, pitch defaults to 0
       });
 
+      // Undo/redo button click handlers
+      var undoBtnEl = document.getElementById('undoBtn');
+      var redoBtnEl = document.getElementById('redoBtn');
+      if (undoBtnEl) undoBtnEl.addEventListener('click', unifiedUndo);
+      if (redoBtnEl) redoBtnEl.addEventListener('click', unifiedRedo);
+
       // Props panel input listeners
       var pitchInput = document.getElementById('roofPropPitch');
       var azInput = document.getElementById('roofPropAzimuth');
       var heightInput = document.getElementById('roofPropHeight');
       if (pitchInput) pitchInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
-        roofFaces3d[roofSelectedFace].pitch = parseFloat(this.value) || 0;
+        pushUndo();
+        var face = roofFaces3d[roofSelectedFace];
+        var val = parseFloat(this.value) || 0;
+        if (roofSelectedSection >= 0 && face.sectionPitches) {
+          face.sectionPitches[roofSelectedSection] = val;
+          face.pitch = Math.max.apply(null, face.sectionPitches);
+        } else {
+          face.pitch = val;
+          if (face.sectionPitches) {
+            for (var i = 0; i < face.sectionPitches.length; i++) face.sectionPitches[i] = val;
+          }
+        }
         rebuildRoofFace(roofSelectedFace);
+        updateRoofPropsPanel();
       });
       if (azInput) azInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
+        pushUndo();
         roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
         markDirty();
       });
       if (heightInput) heightInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
+        pushUndo();
         roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
         markDirty();
       });
@@ -11030,6 +11148,187 @@ app.get("/design", (req, res) => {
       if (btnDel) btnDel.addEventListener('click', function() {
         if (roofSelectedFace >= 0) deleteRoofFace(roofSelectedFace);
       });
+
+      // ── Edge & Face panel input listeners ──
+      var efPitchInput = document.getElementById('efPitch');
+      var efAzInput = document.getElementById('efAzimuth');
+      var efHeightInput = document.getElementById('efHeight');
+      var efDeleteBtn = document.getElementById('efDeleteBtn');
+
+      if (efPitchInput) efPitchInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        pushUndo();
+        var face = roofFaces3d[roofSelectedFace];
+        var val = parseFloat(this.value) || 0;
+        if (roofSelectedSection >= 0 && face.sectionPitches) {
+          face.sectionPitches[roofSelectedSection] = val;
+          face.pitch = Math.max.apply(null, face.sectionPitches);
+        } else {
+          face.pitch = val;
+          if (face.sectionPitches) {
+            for (var i = 0; i < face.sectionPitches.length; i++) face.sectionPitches[i] = val;
+          }
+        }
+        // Sync the old panel pitch input
+        var oldPitch = document.getElementById('roofPropPitch');
+        if (oldPitch) oldPitch.value = val;
+        rebuildRoofFace(roofSelectedFace);
+        updateRoofPropsPanel();
+      });
+
+      if (efAzInput) efAzInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        pushUndo();
+        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        updateRoofPropsPanel();
+        markDirty();
+      });
+
+      if (efHeightInput) efHeightInput.addEventListener('change', function() {
+        if (roofSelectedFace < 0) return;
+        pushUndo();
+        roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+        updateRoofPropsPanel();
+        markDirty();
+      });
+
+      if (efDeleteBtn) efDeleteBtn.addEventListener('click', function() {
+        if (roofSelectedFace >= 0 && roofSelectedSection >= 0) {
+          deleteRoofSection(roofSelectedFace, roofSelectedSection);
+          var efPanel = document.getElementById('efPanel');
+          if (efPanel) efPanel.classList.add('hidden');
+        }
+      });
+
+      // ── SmartRoof panel listeners ──
+      var srEditBtn = document.getElementById('srEditRoofBtn');
+      if (srEditBtn) srEditBtn.addEventListener('click', function() { enterRoofEditMode(); });
+
+      var srDeleteBtn = document.getElementById('srDeleteBtn');
+      if (srDeleteBtn) srDeleteBtn.addEventListener('click', function() {
+        if (roofSelectedFace >= 0) deleteRoofFace(roofSelectedFace);
+      });
+
+      var srDuplicateBtn = document.getElementById('srDuplicateBtn');
+      if (srDuplicateBtn) srDuplicateBtn.addEventListener('click', function() {
+        if (roofSelectedFace < 0) return;
+        var face = roofFaces3d[roofSelectedFace];
+        // Offset duplicate by 2m in x
+        var newVerts = face.vertices.map(function(v) { return {x: v.x + 2, z: v.z + 2}; });
+        pushUndo();
+        var newIdx = finalizeRoofFace(newVerts, face.pitch, face.azimuth, face.height, face.deletedSections.slice(), face.sectionPitches ? face.sectionPitches.slice() : null);
+        selectRoofWhole(newIdx);
+      });
+
+      // SmartRoof height input — real-time + change with undo
+      var srHeightInput = document.getElementById('srHeight');
+      if (srHeightInput) {
+        srHeightInput.addEventListener('input', function() {
+          if (roofSelectedFace < 0) return;
+          roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+          rebuildRoofFace(roofSelectedFace);
+        });
+        srHeightInput.addEventListener('change', function() {
+          if (roofSelectedFace < 0) return;
+          pushUndo();
+          roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+          rebuildRoofFace(roofSelectedFace);
+          markDirty();
+        });
+      }
+
+      // SmartRoof stories input
+      var srStoriesInput = document.getElementById('srStories');
+      if (srStoriesInput) {
+        srStoriesInput.addEventListener('change', function() {
+          if (roofSelectedFace < 0) return;
+          roofFaces3d[roofSelectedFace].stories = parseInt(this.value) || 0;
+          markDirty();
+        });
+      }
+
+      // SmartRoof Move button
+      var srMoveBtn = document.getElementById('srMoveBtn');
+      if (srMoveBtn) srMoveBtn.addEventListener('click', function() {
+        if (roofSelectedFace < 0) return;
+        roofMovingMode = !roofMovingMode;
+        srMoveBtn.style.borderColor = roofMovingMode ? '#00e5ff' : '#444';
+        srMoveBtn.style.color = roofMovingMode ? '#00e5ff' : '#fff';
+        if (roofMovingMode) {
+          document.getElementById('canvas3d').style.cursor = 'move';
+        } else {
+          document.getElementById('canvas3d').style.cursor = '';
+        }
+      });
+
+      // ── Real-time 'input' listeners for existing panels ──
+      // Pitch (roofPropsSection)
+      if (pitchInput) pitchInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        var face = roofFaces3d[roofSelectedFace];
+        var val = parseFloat(this.value) || 0;
+        if (roofSelectedSection >= 0 && face.sectionPitches) {
+          face.sectionPitches[roofSelectedSection] = val;
+          face.pitch = Math.max.apply(null, face.sectionPitches);
+        } else {
+          face.pitch = val;
+          if (face.sectionPitches) {
+            for (var i = 0; i < face.sectionPitches.length; i++) face.sectionPitches[i] = val;
+          }
+        }
+        rebuildRoofFace(roofSelectedFace);
+        updateRoofPropsPanel();
+      });
+
+      // Height (roofPropsSection)
+      if (heightInput) heightInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+        rebuildRoofFace(roofSelectedFace);
+      });
+
+      // Azimuth (roofPropsSection)
+      if (azInput) azInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        updateRoofPropsPanel();
+      });
+
+      // Pitch (efPanel)
+      if (efPitchInput) efPitchInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        var face = roofFaces3d[roofSelectedFace];
+        var val = parseFloat(this.value) || 0;
+        if (roofSelectedSection >= 0 && face.sectionPitches) {
+          face.sectionPitches[roofSelectedSection] = val;
+          face.pitch = Math.max.apply(null, face.sectionPitches);
+        } else {
+          face.pitch = val;
+          if (face.sectionPitches) {
+            for (var i = 0; i < face.sectionPitches.length; i++) face.sectionPitches[i] = val;
+          }
+        }
+        var oldPitch = document.getElementById('roofPropPitch');
+        if (oldPitch) oldPitch.value = val;
+        rebuildRoofFace(roofSelectedFace);
+        updateRoofPropsPanel();
+      });
+
+      // Height (efPanel)
+      if (efHeightInput) efHeightInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].height = (parseFloat(this.value) || 0) / 3.28084;
+        rebuildRoofFace(roofSelectedFace);
+        updateRoofPropsPanel();
+      });
+
+      // Azimuth (efPanel)
+      if (efAzInput) efAzInput.addEventListener('input', function() {
+        if (roofSelectedFace < 0) return;
+        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        updateRoofPropsPanel();
+      });
+
     })();
 
     /* ══════════════════════════════════════════════════════════════════════════

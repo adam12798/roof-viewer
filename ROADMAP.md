@@ -129,7 +129,7 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
 - ~~**ViewCube snap**~~ ✅ Done (2026-03-29) — Face clicks snap to true head-on views
 - ~~**LiDAR calibration persistence**~~ ✅ Done (2026-03-29) — Fixed race condition, no more visible shift on load
 - ~~**Toolbar consolidation**~~ ✅ Done (2026-03-29) — Draw toolbar removed, LiDAR moved to tb2
-- **Remove 2D map view** — The 2D CSS-transform map view is obsolete and should be removed. The 3D LiDAR/Three.js viewer is the primary interface going forward.
+- ~~**Remove 2D map view**~~ ✅ Done (2026-03-29) — Removed Google Maps JS API, 2D map instance, drawingManager, segments[], panel fill, dimension labels, azimuth arrows, 2D ViewCube, CSS deep zoom. Kept server-side /api/geocode and /api/satellite. Shade panel UI preserved (stubs only).
 - **Bill savings tab** — Build out the Bill savings view in the production panel dropdown.
 - **Simulate system** — Connect the Simulate system button to a real simulation backend.
 - ~~**Sidebar-driven tools**~~ ✅ Partially done (2026-03-29) — Roof submenu wired (Smart roof, Manual, Flat). Obstructions still need wiring.
