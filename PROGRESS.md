@@ -5,6 +5,50 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-30 (Session 26)
+
+### Dormer System
+- [x] **Edit mode banner** — amber "Edit SmartRoof" toolbar appears at top when entering roof face edit mode with "Insert dormer" section and 3 type icons (Gable, Hip, Shed)
+- [x] **Dormer placement mode** — ghost preview dormer follows cursor, always visible; snaps to roof surface and auto-orients downslope when hovering over a roof section; falls back to ground plane when off-roof; click to stamp down
+- [x] **3 dormer types with full 3D geometry**:
+  - Gable: triangular gable walls + two sloped roof planes meeting at ridge
+  - Hip: 4 sloped faces (2 end triangles + 2 side trapezoids), shorter ridge
+  - Shed: single sloped plane + vertical back wall
+- [x] **Dormer properties panel** — right-side panel with shape selector (Gable/Hip/Shed radio list with checkmarks), pitch controls (single pitch for Gable/Shed, Side + Front for Hip), duplicate and delete buttons
+- [x] **Draggable handles** — 4 white corner spheres on each dormer, symmetric dragging (opposite corner mirrors to keep rectangle shape)
+- [x] **Dormer selection** — click dormer to select (cyan highlight), click away to deselect; raycasts against dormer meshes
+- [x] **Parent face binding** — dormers stored in `face.dormers[]`, rebuild automatically when parent face height/pitch/vertices change
+- [x] **Keyboard shortcuts** — Esc exits placement mode, Delete/Backspace removes selected dormer
+- [x] **Undo/redo integration** — dormers included in roof snapshots, fully restorable
+- [x] **Save/load persistence** — dormers serialized with roof faces in project data
+
+### ViewCube Improvements
+- [x] **North indicator** — red compass arrow on ViewCube ring, rotates with compass to always indicate north
+- [x] **Double-tap auto-select** — double-tapping a roof face now enters edit mode AND selects the tapped section (turns blue) in one step
+
+---
+
+## Completed — 2026-03-30 (Session 25)
+
+### Tree Interaction Overhaul
+- [x] **Hover highlight** — trees turn white on hover, revert on mouse-out
+- [x] **Selection highlight** — selected trees turn teal (`#00bfa5`), matching roof selection color
+- [x] **Multi-selected hover** — hovering a selected tree goes white, returns to teal on mouse-out
+- [x] **Click-to-deselect** — clicking empty space deselects tree and closes property panel
+- [x] **Cmd+click multi-select fix** — first selected tree now promoted into `multiSelectedTrees` so it stays selected when Cmd+clicking additional trees
+- [x] **Marquee box-select** — click-drag on empty space draws a dashed teal rectangle; all trees whose center falls inside get selected
+  - Uses capture-phase pointer events to fire before OrbitControls
+  - Disables orbit controls during drag, re-enables on release
+  - Tracks `marqueeEnd` during move to avoid coordinate issues on pointerup
+  - `marqueeJustFinished` flag prevents click handler from immediately deselecting
+- [x] **Removed red bulk bar** — hidden with `display:none!important`, element IDs preserved for JS compatibility
+
+### Bug Fixes
+- [x] **Tree LiDAR height snap** — `getTreeHeightFromLidar()` now includes `lidarPoints.position.y` offset (was ~0.75 scene units too tall)
+- [x] **Hip roof ridge line** — `buildHipRoofLines()` both-trapezoids-deleted case now draws Mf→Mb at `ridgeY` instead of `baseY`
+
+---
+
 ## Completed — 2026-03-29 (Session 24)
 
 ### 2D Map View Removal

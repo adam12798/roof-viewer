@@ -694,7 +694,7 @@ app.get("/", (req, res) => {
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         Settings
       </a>
-      <a class="nav-drawer-link" href="#">
+      <a class="nav-drawer-link" href="/partners">
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
         Partners
       </a>
@@ -731,7 +731,7 @@ app.get("/", (req, res) => {
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
       </svg>
     </a>
-    <a class="rail-btn" href="#" title="Partners">
+    <a class="rail-btn" href="/partners" title="Partners">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
       </svg>
@@ -4886,6 +4886,86 @@ app.get("/design", (req, res) => {
       box-shadow: 0 1px 4px rgba(0,0,0,0.15);
     }
     .map-ctrl-btn:hover { background: #f5f5f5; }
+    /* ── Roof Edit Banner ── */
+    #roofEditBanner {
+      display: none;
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 41;
+      background: #f59e0b;
+      color: #000;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      pointer-events: all;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: 8px 18px 6px;
+      min-width: 320px;
+    }
+    #roofEditBanner .reb-title-row {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      justify-content: center;
+      position: relative;
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+    #roofEditBanner .reb-close {
+      position: absolute;
+      right: 0;
+      top: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #000;
+      font-size: 1rem;
+      padding: 0 2px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #roofEditBanner .reb-close span {
+      font-size: 0.65rem;
+      font-weight: 600;
+      opacity: 0.7;
+    }
+    #roofEditBanner .reb-tools {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 2px 0;
+    }
+    #roofEditBanner .reb-tools-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      opacity: 0.8;
+    }
+    #roofEditBanner .reb-dormer-btn {
+      background: none;
+      border: 1.5px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      padding: 3px 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #roofEditBanner .reb-dormer-btn:hover {
+      background: rgba(0,0,0,0.1);
+      border-color: rgba(0,0,0,0.2);
+    }
+    #roofEditBanner .reb-dormer-btn.active {
+      background: rgba(0,0,0,0.18);
+      border-color: rgba(0,0,0,0.4);
+    }
+
     /* ── ViewCube ── */
     .viewcube-wrap {
       position: relative;
@@ -4902,6 +4982,18 @@ app.get("/design", (req, res) => {
       border-radius: 50%;
       border: 2px solid rgba(180,180,180,0.5);
       pointer-events: none;
+    }
+    .vc-north-tick {
+      position: absolute;
+      top: -1px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 8px solid #e53935;
+      filter: drop-shadow(0 0 1px rgba(0,0,0,0.3));
     }
     .viewcube-compass {
       position: absolute;
@@ -6314,16 +6406,37 @@ app.get("/design", (req, res) => {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
           Tree Mode — Click to place center, move to set radius, click to confirm
         </div>
-        <div id="treeBulkBar" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#dc2626;color:#fff;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:12px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:all;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 22v-5"/><path d="M8 17l4-5 4 5"/><path d="M6 17l6-8 6 8"/><path d="M9 9l3-4 3 4"/></svg>
-          <span id="treeBulkCount">0</span> trees selected
-          <button id="btnBulkDeleteTrees" style="margin-left:4px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-weight:600;font-size:0.82rem;">Delete All</button>
-          <button id="btnBulkDeselectTrees" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:6px;padding:5px 14px;cursor:pointer;font-size:0.82rem;">Deselect</button>
+        <div id="treeBulkBar" style="display:none!important;">
+          <span id="treeBulkCount">0</span>
+          <button id="btnBulkDeleteTrees"></button>
+          <button id="btnBulkDeselectTrees"></button>
         </div>
         <!-- Roof drawing banner -->
         <div id="roofModeBanner" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:#f59e0b;color:#000;padding:10px 24px;border-radius:10px;font-size:0.85rem;font-weight:600;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.25);pointer-events:none;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
           Edit SmartRoof — Click to place vertices, double-click or Enter to complete. Esc to cancel.
+        </div>
+        <!-- Roof Edit Mode Banner (dormer toolbar) -->
+        <div id="roofEditBanner">
+          <div class="reb-title-row">
+            <span id="rebTitleText">Edit SmartRoof</span>
+            <button class="reb-close" id="rebCloseBtn">
+              <span>Esc</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="reb-tools">
+            <span class="reb-tools-label">Insert dormer</span>
+            <button class="reb-dormer-btn" data-dormer="gable" title="Gable dormer">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8"><path d="M4 18v-6l8-6 8 6v6"/><path d="M4 18h16"/><path d="M12 6v4"/><path d="M8 10l4-4 4 4"/></svg>
+            </button>
+            <button class="reb-dormer-btn" data-dormer="hip" title="Hip dormer">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8"><path d="M3 18v-5l5-5h8l5 5v5"/><path d="M3 18h18"/><path d="M8 8l2-2h4l2 2"/></svg>
+            </button>
+            <button class="reb-dormer-btn" data-dormer="shed" title="Shed dormer">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8"><path d="M4 18v-8l16-4v12"/><path d="M4 18h16"/></svg>
+            </button>
+          </div>
         </div>
         <!-- Status -->
         <div id="lidarStatus" style="position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.85rem;font-weight:600;z-index:20;"></div>
@@ -6341,6 +6454,7 @@ app.get("/design", (req, res) => {
           <div class="viewcube-wrap" id="viewcubeWrap3d">
             <div class="viewcube-ring"></div>
             <div class="viewcube-compass" id="vcCompass3d">
+              <div class="vc-north-tick"></div>
               <span class="vc-n">N</span>
               <span class="vc-s">S</span>
               <span class="vc-e">E</span>
@@ -6942,6 +7056,72 @@ app.get("/design", (req, res) => {
       </div>
     </div>
 
+    <!-- DORMER SIDE PANEL -->
+    <div class="ef-panel hidden" id="dormerPanel" style="z-index:36;">
+      <div class="ef-header">
+        <h3>Dormer</h3>
+        <div style="display:flex;gap:6px;">
+          <button class="ef-delete-btn" id="dpDuplicateBtn" title="Duplicate dormer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+          <button class="ef-delete-btn" id="dpDeleteBtn" title="Delete dormer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="ef-section">
+        <button class="sr-btn" id="dpConvertBtn" style="width:100%;margin-bottom:8px;opacity:0.5;cursor:not-allowed;">Convert to roof</button>
+      </div>
+
+      <div class="ef-section">
+        <div class="ef-section-title">Shape</div>
+        <div class="dp-shape-item" data-type="gable" style="display:flex;align-items:center;gap:10px;padding:6px 4px;cursor:pointer;border-radius:6px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.8"><path d="M4 18v-6l8-6 8 6v6"/><path d="M4 18h16"/></svg>
+          <span style="color:#eee;font-size:0.85rem;font-weight:600;">Gable</span>
+          <span class="dp-check" style="margin-left:auto;color:#22c55e;display:none;">&#10003;</span>
+        </div>
+        <div class="dp-shape-item" data-type="hip" style="display:flex;align-items:center;gap:10px;padding:6px 4px;cursor:pointer;border-radius:6px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.8"><path d="M3 18v-5l5-5h8l5 5v5"/><path d="M3 18h18"/></svg>
+          <span style="color:#eee;font-size:0.85rem;font-weight:600;">Hip</span>
+          <span class="dp-check" style="margin-left:auto;color:#22c55e;display:none;">&#10003;</span>
+        </div>
+        <div class="dp-shape-item" data-type="shed" style="display:flex;align-items:center;gap:10px;padding:6px 4px;cursor:pointer;border-radius:6px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.8"><path d="M4 18v-8l16-4v12"/><path d="M4 18h16"/></svg>
+          <span style="color:#eee;font-size:0.85rem;font-weight:600;">Shed</span>
+          <span class="dp-check" style="margin-left:auto;color:#22c55e;display:none;">&#10003;</span>
+        </div>
+      </div>
+
+      <div class="ef-section" id="dpPitchRow">
+        <div class="ef-row">
+          <span class="ef-label">Pitch</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="dpPitch" value="15" step="1" min="0" max="90"/>
+            <span class="ef-unit">°</span>
+          </div>
+        </div>
+      </div>
+      <div class="ef-section" id="dpPitchSideRow" style="display:none;">
+        <div class="ef-row">
+          <span class="ef-label">Pitch (Side)</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="dpPitchSide" value="15" step="1" min="0" max="90"/>
+            <span class="ef-unit">°</span>
+          </div>
+        </div>
+      </div>
+      <div class="ef-section" id="dpPitchFrontRow" style="display:none;">
+        <div class="ef-row">
+          <span class="ef-label">Pitch (Front)</span>
+          <div style="display:flex;align-items:center;">
+            <input class="ef-input" type="number" id="dpPitchFront" value="15" step="1" min="0" max="90"/>
+            <span class="ef-unit">°</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- SMARTROOF SIDE PANEL -->
     <div class="sr-panel hidden" id="smartRoofPanel">
       <div class="sr-header">
@@ -7130,6 +7310,17 @@ app.get("/design", (req, res) => {
     var roofUndoStack = [];
     var roofRedoStack = [];
     var ROOF_UNDO_MAX = 50;
+
+    /* ── Dormer state ── */
+    var dormerPlaceMode = false;
+    var dormerPlaceType = '';     // 'gable', 'hip', 'shed'
+    var dormerGhostMesh = null;  // THREE.Group preview mesh
+    var selectedDormerIdx = -1;  // index into face.dormers[]
+    var dormerDraggingHandle = -1;
+    var dormerDraggingFaceIdx = -1;
+    var dormerDraggingDormerIdx = -1;
+    var DORMER_DEFAULT_WIDTH = 1.2;  // meters (~4ft)
+    var DORMER_DEFAULT_DEPTH = 0.9;  // meters (~3ft)
 
     /* ── Unified undo stack — captures all interactable actions ── */
     var undoStack = [];
@@ -7604,7 +7795,23 @@ app.get("/design", (req, res) => {
         if (typeof clearAllRoofFaces === 'function') clearAllRoofFaces();
         if (design.roofFaces && design.roofFaces.length > 0 && typeof THREE !== 'undefined' && typeof finalizeRoofFace === 'function') {
           design.roofFaces.forEach(function(rf) {
-            finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+            var fIdx = finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+            // Restore dormers
+            if (rf.dormers && rf.dormers.length > 0) {
+              var face = roofFaces3d[fIdx];
+              rf.dormers.forEach(function(dd) {
+                var newD = {
+                  type: dd.type,
+                  vertices: dd.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+                  pitch: dd.pitch || 15,
+                  pitchSide: dd.pitchSide || 15,
+                  pitchFront: dd.pitchFront || 15,
+                  mesh: null, outlineLines: null, handleMeshes: [], selected: false
+                };
+                face.dormers.push(newD);
+                rebuildDormer(face, face.dormers.length - 1);
+              });
+            }
           });
         }
       });
@@ -7929,13 +8136,43 @@ app.get("/design", (req, res) => {
       }
     }, 100);
 
+    var HANDLE_PIXEL_SIZE = 7; // desired screen-pixel radius for corner handles
+    var EDGE_PIXEL_WIDTH = 1.5; // desired screen-pixel half-width for edge lines
+
+    function getWorldPerPixel() {
+      if (!camera3d || !renderer3d) return 1;
+      var dist = camera3d.position.distanceTo(controls3d ? controls3d.target : new THREE.Vector3());
+      var fov = camera3d.fov * Math.PI / 180;
+      var screenH = renderer3d.domElement.clientHeight;
+      return 2 * dist * Math.tan(fov / 2) / screenH;
+    }
+
+    function updateHandleScales() {
+      var worldPerPx = getWorldPerPixel();
+      var hs = worldPerPx * HANDLE_PIXEL_SIZE / 0.35;
+      var edgeR = worldPerPx * EDGE_PIXEL_WIDTH;
+      var edgeScale = edgeR / EDGE_LINE_RADIUS;
+      if (typeof roofFaces !== 'undefined' && roofFaces) {
+        roofFaces.forEach(function(face) {
+          if (face.handleMeshes) {
+            face.handleMeshes.forEach(function(h) { h.scale.setScalar(hs); });
+          }
+          if (face.edgeLines && face.edgeLines.children) {
+            face.edgeLines.children.forEach(function(cyl) {
+              cyl.scale.x = edgeScale;
+              cyl.scale.z = edgeScale;
+            });
+          }
+        });
+      }
+    }
+
     function animate3d() {
       requestAnimationFrame(animate3d);
       if (!renderer3d) return;
       if (controls3d) controls3d.update();
-      // sizeAttenuation handles zoom-based point scaling automatically
+      updateHandleScales();
       renderer3d.render(scene3d, camera3d);
-      // Sync 3D viewcube with Three.js camera
       updateViewCube3d();
     }
 
@@ -8399,13 +8636,14 @@ app.get("/design", (req, res) => {
       var positions = lidarPoints.geometry.attributes.position.array;
       var count = positions.length / 3;
       var ox = lidarPoints.position.x;
+      var oy = lidarPoints.position.y || 0;
       var oz = lidarPoints.position.z;
       var maxY = 0;
       var found = false;
       var r2 = radius * radius;
       for (var i = 0; i < count; i++) {
         var px = positions[i * 3] + ox;
-        var py = positions[i * 3 + 1];
+        var py = positions[i * 3 + 1] + oy;
         var pz = positions[i * 3 + 2] + oz;
         var dx = px - cx;
         var dz = pz - cz;
@@ -8515,7 +8753,13 @@ app.get("/design", (req, res) => {
 
     function serializeRoofFaces() {
       return roofFaces3d.map(function(f) {
-        return { vertices: f.vertices, pitch: f.pitch, sectionPitches: f.sectionPitches, azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections };
+        return {
+          vertices: f.vertices, pitch: f.pitch, sectionPitches: f.sectionPitches,
+          azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections,
+          dormers: (f.dormers || []).map(function(d) {
+            return { type: d.type, vertices: d.vertices, pitch: d.pitch, pitchSide: d.pitchSide, pitchFront: d.pitchFront };
+          })
+        };
       });
     }
 
@@ -8534,20 +8778,34 @@ app.get("/design", (req, res) => {
       return -1;
     }
 
-    function setTreeHighlight(idx, highlight) {
+    // mode: 'hover' = white tint, 'selected' = teal tint, falsy = reset
+    function setTreeHighlight(idx, mode) {
       if (idx < 0 || idx >= trees3d.length) return;
       var group = trees3d[idx].mesh;
       if (!group) return;
       group.children.forEach(function(child) {
         if (child.material) {
-          if (highlight) {
-            child.material._origOpacity = child.material.opacity;
-            child.material.opacity = Math.min(child.material.opacity + 0.15, 1.0);
-            child.material.emissive = new THREE.Color(0x444444);
+          if (mode === 'hover') {
+            if (!child.material._origColor) child.material._origColor = child.material.color.getHex();
+            if (child.material._origOpacity === undefined) child.material._origOpacity = child.material.opacity;
+            child.material.color.set(0xffffff);
+            child.material.opacity = 0.9;
+            child.material.transparent = true;
+            child.material.needsUpdate = true;
+          } else if (mode === 'selected' || mode === true) {
+            if (!child.material._origColor) child.material._origColor = child.material.color.getHex();
+            if (child.material._origOpacity === undefined) child.material._origOpacity = child.material.opacity;
+            child.material.color.set(0x00bfa5);
+            child.material.opacity = 0.85;
             child.material.transparent = true;
             child.material.needsUpdate = true;
           } else {
+            if (child.material._origColor !== undefined) {
+              child.material.color.set(child.material._origColor);
+              delete child.material._origColor;
+            }
             child.material.opacity = child.material._origOpacity !== undefined ? child.material._origOpacity : child.material.opacity;
+            delete child.material._origOpacity;
             child.material.emissive = new THREE.Color(0x000000);
             child.material.needsUpdate = true;
           }
@@ -8570,7 +8828,7 @@ app.get("/design", (req, res) => {
     function selectAllTrees() {
       if (trees3d.length === 0) return;
       allTreesSelected = true;
-      for (var i = 0; i < trees3d.length; i++) setTreeHighlight(i, true);
+      for (var i = 0; i < trees3d.length; i++) setTreeHighlight(i, 'selected');
       var bar = document.getElementById('treeBulkBar');
       var count = document.getElementById('treeBulkCount');
       if (bar) bar.style.display = 'flex';
@@ -8703,10 +8961,17 @@ app.get("/design", (req, res) => {
         if (!roofDrawingMode && treePlaceStep === 0 && !isViewCubeBusy()) {
           var idx = findTreeUnderCursor(e);
           if (idx !== hoveredTreeIdx) {
-            if (hoveredTreeIdx >= 0 && !allTreesSelected && hoveredTreeIdx !== selectedTreeIdx && multiSelectedTrees.indexOf(hoveredTreeIdx) < 0) setTreeHighlight(hoveredTreeIdx, false);
+            // Unhover previous: restore to selected teal or default
+            if (hoveredTreeIdx >= 0 && !allTreesSelected) {
+              if (hoveredTreeIdx === selectedTreeIdx || multiSelectedTrees.indexOf(hoveredTreeIdx) >= 0) {
+                setTreeHighlight(hoveredTreeIdx, 'selected');
+              } else {
+                setTreeHighlight(hoveredTreeIdx, false);
+              }
+            }
             hoveredTreeIdx = idx;
             if (hoveredTreeIdx >= 0) {
-              setTreeHighlight(hoveredTreeIdx, true);
+              setTreeHighlight(hoveredTreeIdx, 'hover');
               canvas.style.cursor = 'grab';
             } else {
               canvas.style.cursor = treePlacingMode ? 'crosshair' : '';
@@ -8725,6 +8990,104 @@ app.get("/design", (req, res) => {
           updateTreePreviewCircle(treeCenterPoint, radius);
           updateTreePreviewMesh(treeCenterPoint, radius);
         }
+      });
+
+      /* ── Marquee / box-select for trees ── */
+      var marqueeActive = false;
+      var marqueeStart = null;
+      var marqueeEnd = null;
+      var marqueeDiv = null;
+      var marqueePending = false;
+
+      function createMarqueeDiv() {
+        var d = document.createElement('div');
+        d.style.cssText = 'position:fixed;border:2px dashed #00bfa5;background:rgba(0,191,165,0.08);pointer-events:none;z-index:50;display:none;';
+        document.body.appendChild(d);
+        return d;
+      }
+
+      // Capture phase — fires BEFORE OrbitControls
+      canvas.addEventListener('pointerdown', function(e) {
+        if (!camera3d || space3dHeld || roofDrawingMode || treePlaceStep !== 0) return;
+        if (e.button !== 0) return;
+        if (hoveredTreeIdx >= 0 || draggingTreeIdx >= 0) return;
+        marqueeStart = { x: e.clientX, y: e.clientY };
+        marqueeEnd = { x: e.clientX, y: e.clientY };
+        marqueeActive = false;
+        marqueePending = true;
+      }, true);
+
+      document.addEventListener('pointermove', function(e) {
+        if (!marqueePending || !marqueeStart) return;
+        var dx = e.clientX - marqueeStart.x;
+        var dy = e.clientY - marqueeStart.y;
+        marqueeEnd = { x: e.clientX, y: e.clientY };
+        if (!marqueeActive && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+          marqueeActive = true;
+          if (!marqueeDiv) marqueeDiv = createMarqueeDiv();
+          marqueeDiv.style.display = 'block';
+          if (controls3d) controls3d.enabled = false;
+        }
+        if (marqueeActive && marqueeDiv) {
+          var left = Math.min(marqueeStart.x, e.clientX);
+          var top = Math.min(marqueeStart.y, e.clientY);
+          marqueeDiv.style.left = left + 'px';
+          marqueeDiv.style.top = top + 'px';
+          marqueeDiv.style.width = Math.abs(dx) + 'px';
+          marqueeDiv.style.height = Math.abs(dy) + 'px';
+        }
+      });
+
+      document.addEventListener('pointerup', function(e) {
+        if (!marqueePending) return;
+        if (marqueeActive && marqueeStart && marqueeEnd) {
+          var left = Math.min(marqueeStart.x, marqueeEnd.x);
+          var right = Math.max(marqueeStart.x, marqueeEnd.x);
+          var top = Math.min(marqueeStart.y, marqueeEnd.y);
+          var bottom = Math.max(marqueeStart.y, marqueeEnd.y);
+          var rect = canvas.getBoundingClientRect();
+
+          var hits = [];
+
+          for (var i = 0; i < trees3d.length; i++) {
+            var t = trees3d[i];
+            var pos = new THREE.Vector3(t.center.x, 0, t.center.z);
+            pos.project(camera3d);
+            var sx = (pos.x * 0.5 + 0.5) * rect.width + rect.left;
+            var sy = (-pos.y * 0.5 + 0.5) * rect.height + rect.top;
+
+            if (sx >= left && sx <= right && sy >= top && sy <= bottom) {
+              hits.push(i);
+            }
+          }
+
+
+          if (hits.length > 0) {
+            // Clear previous selection without unhighlighting (we'll re-highlight)
+            clearMultiSelect();
+            if (selectedTreeIdx >= 0 && selectedTreeIdx < trees3d.length) {
+              setTreeHighlight(selectedTreeIdx, false);
+            }
+            selectedTreeIdx = -1;
+            document.getElementById('treePanel').classList.add('hidden');
+            // Select the hits
+            hits.forEach(function(idx) {
+              multiSelectedTrees.push(idx);
+              setTreeHighlight(idx, 'selected');
+            });
+            if (hits.length === 1) {
+              selectTreeSingle(hits[0]);
+            }
+          }
+
+          if (marqueeDiv) marqueeDiv.style.display = 'none';
+          marqueeJustFinished = true;
+        }
+        if (controls3d) controls3d.enabled = true;
+        marqueeStart = null;
+        marqueeEnd = null;
+        marqueeActive = false;
+        marqueePending = false;
       });
 
       // Delete/Backspace to remove hovered tree
@@ -8808,17 +9171,22 @@ app.get("/design", (req, res) => {
       });
 
       // Click existing tree to select & show panel (works in and outside tree mode)
+      // Click empty space to deselect tree and close panel
+      var marqueeJustFinished = false;
       canvas.addEventListener('click', function(e) {
+        if (marqueeJustFinished) { marqueeJustFinished = false; return; }
         if (treePlaceStep !== 0 || roofDrawingMode || space3dHeld || isViewCubeBusy()) return;
+        if (isDragging) return;
         var idx = findTreeUnderCursor(e);
         if (idx >= 0) {
           if (e.metaKey || e.ctrlKey) {
-            // Cmd/Ctrl+click: add/remove from multi-selection
             addToMultiSelect(idx);
           } else {
             selectTree(idx);
           }
           e.stopImmediatePropagation();
+        } else if (selectedTreeIdx >= 0 || multiSelectedTrees.length > 0 || allTreesSelected) {
+          closeTreePanel();
         }
       });
     })();
@@ -8839,13 +9207,18 @@ app.get("/design", (req, res) => {
     }
 
     function addToMultiSelect(idx) {
+      // Promote single-selected tree into multi-selection first
+      if (selectedTreeIdx >= 0 && multiSelectedTrees.indexOf(selectedTreeIdx) < 0) {
+        multiSelectedTrees.push(selectedTreeIdx);
+        setTreeHighlight(selectedTreeIdx, 'selected');
+      }
       if (multiSelectedTrees.indexOf(idx) >= 0) {
         // Already selected — deselect it
         multiSelectedTrees.splice(multiSelectedTrees.indexOf(idx), 1);
         setTreeHighlight(idx, false);
       } else {
         multiSelectedTrees.push(idx);
-        setTreeHighlight(idx, true);
+        setTreeHighlight(idx, 'selected');
       }
       if (multiSelectedTrees.length > 0) {
         var bar = document.getElementById('treeBulkBar');
@@ -8881,7 +9254,7 @@ app.get("/design", (req, res) => {
         setTreeHighlight(selectedTreeIdx, false);
       }
       selectedTreeIdx = idx;
-      setTreeHighlight(idx, true);
+      setTreeHighlight(idx, 'selected');
       var t = trees3d[idx];
       var sceneHeight = t.height * vertExag;
       var crownH = sceneHeight * 0.7;
@@ -9369,17 +9742,33 @@ app.get("/design", (req, res) => {
       return mesh;
     }
 
-    /* ── Build edge outline lines ── */
+    /* ── Build edge outline lines (tube-based for consistent thickness) ── */
+    var EDGE_LINE_RADIUS = 0.06;
     function buildRoofEdgeLines(verts, color) {
-      var positions = [];
+      var group = new THREE.Group();
+      var mat = new THREE.MeshBasicMaterial({ color: color });
       for (var i = 0; i < verts.length; i++) {
         var a = verts[i], b = verts[(i + 1) % verts.length];
-        positions.push(a.x, 0.15, a.z, b.x, 0.15, b.z);
+        var ax = a.x, az = a.z, bx = b.x, bz = b.z, y = 0.15;
+        var dx = bx - ax, dz = bz - az;
+        var len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 0.001) continue;
+        var cyl = new THREE.Mesh(
+          new THREE.CylinderGeometry(EDGE_LINE_RADIUS, EDGE_LINE_RADIUS, len, 6, 1),
+          mat
+        );
+        cyl.position.set((ax + bx) / 2, y, (az + bz) / 2);
+        cyl.rotation.z = Math.PI / 2;
+        cyl.rotation.x = Math.atan2(dz, dx);
+        // Cylinder defaults along Y; rotate to lie flat along segment
+        var dir = new THREE.Vector3(dx, 0, dz).normalize();
+        var up = new THREE.Vector3(0, 1, 0);
+        var quat = new THREE.Quaternion();
+        quat.setFromUnitVectors(up, dir);
+        cyl.quaternion.copy(quat);
+        group.add(cyl);
       }
-      var geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      var mat = new THREE.LineBasicMaterial({ color: color, linewidth: 3 });
-      return new THREE.LineSegments(geo, mat);
+      return group;
     }
 
     /* ── Build hip roof interior lines, respecting deleted sections ── */
@@ -9411,9 +9800,9 @@ app.get("/design", (req, res) => {
         if (anyAlive) positions.push(re0x,ridgeY,re0z, re1x,ridgeY,re1z);
 
       } else if (bothTrapDel) {
-        // Both trapezoids deleted — vertical divider Mf→Mb
+        // Both trapezoids deleted — ridge line Mf→Mb at ridge height
         if (!ds[0] || !ds[1]) {
-          positions.push(hip.mfx,baseY,hip.mfz, hip.mbx,baseY,hip.mbz);
+          positions.push(hip.mfx,ridgeY,hip.mfz, hip.mbx,ridgeY,hip.mbz);
         }
 
       } else if (ds[2] && !ds[3]) {
@@ -9511,6 +9900,464 @@ app.get("/design", (req, res) => {
       return face.height > 0 ? face.height : 3.0;
     }
 
+    /* ── Dormer 3D Geometry ── */
+
+    // Compute dormer vertices from center position, orientation angle, width and depth
+    function computeDormerVerts(cx, cz, angle, width, depth) {
+      var cos = Math.cos(angle), sin = Math.sin(angle);
+      var hw = width / 2, hd = depth / 2;
+      // front-left, front-right, back-right, back-left (front = downslope)
+      return [
+        { x: cx + (-hw) * cos - (-hd) * sin, z: cz + (-hw) * sin + (-hd) * cos },
+        { x: cx + ( hw) * cos - (-hd) * sin, z: cz + ( hw) * sin + (-hd) * cos },
+        { x: cx + ( hw) * cos - ( hd) * sin, z: cz + ( hw) * sin + ( hd) * cos },
+        { x: cx + (-hw) * cos - ( hd) * sin, z: cz + (-hw) * sin + ( hd) * cos }
+      ];
+    }
+
+    // Get Y height at a point on the roof surface for a given face and section
+    function getRoofSurfaceY(face, px, pz) {
+      if (!face || face.vertices.length !== 4 || face.pitch <= 0) return 0.05;
+      var hip = computeHipGeometry(face.vertices, face.pitch);
+      var ridgeY = hip.inset * Math.tan(face.pitch * Math.PI / 180) + 0.05;
+      // Simple: interpolate Y based on distance from nearest edge toward ridge
+      // Use perpendicular distance from long edge
+      var nx = -hip.ldz, nz = hip.ldx; // normal to long edge (pointing inward)
+      var dx = px - hip.v0.x, dz = pz - hip.v0.z;
+      var dist = Math.abs(dx * nx + dz * nz);
+      var maxDist = hip.inset;
+      var t = Math.min(dist / maxDist, 1.0);
+      return t * ridgeY + (1 - t) * 0.05;
+    }
+
+    // Build 3D dormer mesh (group containing walls + roof + outline + handles)
+    function buildDormerMesh(dormer, face, isGhost) {
+      var group = new THREE.Group();
+      var v = dormer.vertices;
+      if (!v || v.length < 4) return group;
+
+      var wH = getRoofWallHeight(face);
+      var opacity = isGhost ? 0.4 : 0.85;
+
+      // Get base Y positions on roof surface for each corner
+      var baseY = [];
+      for (var i = 0; i < 4; i++) {
+        baseY.push(getRoofSurfaceY(face, v[i].x, v[i].z));
+      }
+
+      // Dormer dimensions
+      var frontW = Math.sqrt(Math.pow(v[1].x - v[0].x, 2) + Math.pow(v[1].z - v[0].z, 2));
+      var sideL = Math.sqrt(Math.pow(v[3].x - v[0].x, 2) + Math.pow(v[3].z - v[0].z, 2));
+
+      // Wall height (dormer walls rise from roof surface)
+      var wallH = 0.6; // ~2ft dormer wall height
+
+      // Ridge height from dormer pitch
+      var pitch = dormer.pitch || 15;
+      var ridgeH;
+      if (dormer.type === 'shed') {
+        ridgeH = sideL * Math.tan(pitch * Math.PI / 180);
+      } else {
+        ridgeH = (frontW / 2) * Math.tan(pitch * Math.PI / 180);
+      }
+
+      // Key Y levels
+      var frontBaseY = (baseY[0] + baseY[1]) / 2;
+      var backBaseY = (baseY[2] + baseY[3]) / 2;
+      var wallTopY = Math.max(frontBaseY, backBaseY) + wallH;
+      var ridgeTopY = wallTopY + ridgeH;
+
+      // Build geometry based on type
+      var wallMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: opacity, side: THREE.DoubleSide });
+      var roofMat = new THREE.MeshBasicMaterial({
+        color: dormer.selected ? 0x00bfa5 : 0x8899aa,
+        transparent: true, opacity: isGhost ? 0.3 : (dormer.selected ? 0.6 : 0.5),
+        side: THREE.DoubleSide
+      });
+
+      function addQuad(ax,ay,az, bx,by,bz, cx,cy,cz, dx,dy,dz, mat) {
+        var geo = new THREE.BufferGeometry();
+        var pos = new Float32Array([ax,ay,az, bx,by,bz, cx,cy,cz, ax,ay,az, cx,cy,cz, dx,dy,dz]);
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.computeVertexNormals();
+        group.add(new THREE.Mesh(geo, mat));
+      }
+      function addTri(ax,ay,az, bx,by,bz, cx,cy,cz, mat) {
+        var geo = new THREE.BufferGeometry();
+        var pos = new Float32Array([ax,ay,az, bx,by,bz, cx,cy,cz]);
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.computeVertexNormals();
+        group.add(new THREE.Mesh(geo, mat));
+      }
+
+      // Midpoints for ridge
+      var midFrontX = (v[0].x + v[1].x) / 2, midFrontZ = (v[0].z + v[1].z) / 2;
+      var midBackX = (v[3].x + v[2].x) / 2, midBackZ = (v[3].z + v[2].z) / 2;
+      var ridgeFrontX, ridgeFrontZ, ridgeBackX, ridgeBackZ;
+
+      if (dormer.type === 'gable') {
+        // Ridge runs from front-mid to back-mid at ridgeTopY
+        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ;
+        ridgeBackX = midBackX; ridgeBackZ = midBackZ;
+
+        // Front gable wall (triangle)
+        addTri(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
+               ridgeFrontX, ridgeTopY, ridgeFrontZ, wallMat);
+        // Back gable wall (triangle)
+        addTri(v[3].x, wallTopY, v[3].z, ridgeBackX, ridgeTopY, ridgeBackZ,
+               v[2].x, wallTopY, v[2].z, wallMat);
+        // Left roof slope
+        addQuad(v[0].x, wallTopY, v[0].z, ridgeFrontX, ridgeTopY, ridgeFrontZ,
+                ridgeBackX, ridgeTopY, ridgeBackZ, v[3].x, wallTopY, v[3].z, roofMat);
+        // Right roof slope
+        addQuad(v[1].x, wallTopY, v[1].z, v[2].x, wallTopY, v[2].z,
+                ridgeBackX, ridgeTopY, ridgeBackZ, ridgeFrontX, ridgeTopY, ridgeFrontZ, roofMat);
+      } else if (dormer.type === 'hip') {
+        // Ridge is shorter than width, inset from front and back
+        var hipInset = sideL * 0.3;
+        var dirX = midBackX - midFrontX, dirZ = midBackZ - midFrontZ;
+        var dirLen = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
+        dirX /= dirLen; dirZ /= dirLen;
+        ridgeFrontX = midFrontX + dirX * hipInset;
+        ridgeFrontZ = midFrontZ + dirZ * hipInset;
+        ridgeBackX = midBackX - dirX * hipInset;
+        ridgeBackZ = midBackZ - dirZ * hipInset;
+
+        var pitchFront = dormer.pitchFront || pitch;
+        var ridgeHFront = (frontW / 2) * Math.tan(pitchFront * Math.PI / 180);
+        var hipRidgeY = wallTopY + ridgeHFront;
+
+        // Front triangle
+        addTri(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
+               ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
+        // Back triangle
+        addTri(v[3].x, wallTopY, v[3].z, ridgeBackX, hipRidgeY, ridgeBackZ,
+               v[2].x, wallTopY, v[2].z, roofMat);
+        // Left trapezoid
+        addQuad(v[0].x, wallTopY, v[0].z, ridgeFrontX, hipRidgeY, ridgeFrontZ,
+                ridgeBackX, hipRidgeY, ridgeBackZ, v[3].x, wallTopY, v[3].z, roofMat);
+        // Right trapezoid
+        addQuad(v[1].x, wallTopY, v[1].z, v[2].x, wallTopY, v[2].z,
+                ridgeBackX, hipRidgeY, ridgeBackZ, ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
+      } else if (dormer.type === 'shed') {
+        // Single sloped plane from front (low) to back (high)
+        var shedTopY = wallTopY + ridgeH;
+        // Roof plane
+        addQuad(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
+                v[2].x, shedTopY, v[2].z, v[3].x, shedTopY, v[3].z, roofMat);
+        // Back wall (rectangle from wallTopY to shedTopY)
+        addQuad(v[3].x, wallTopY, v[3].z, v[2].x, wallTopY, v[2].z,
+                v[2].x, shedTopY, v[2].z, v[3].x, shedTopY, v[3].z, wallMat);
+      }
+
+      // Side walls (all types)
+      // Front wall
+      addQuad(v[0].x, baseY[0], v[0].z, v[1].x, baseY[1], v[1].z,
+              v[1].x, wallTopY, v[1].z, v[0].x, wallTopY, v[0].z, wallMat);
+      // Left wall
+      addQuad(v[3].x, baseY[3], v[3].z, v[0].x, baseY[0], v[0].z,
+              v[0].x, wallTopY, v[0].z, v[3].x, wallTopY, v[3].z, wallMat);
+      // Right wall
+      addQuad(v[1].x, baseY[1], v[1].z, v[2].x, baseY[2], v[2].z,
+              v[2].x, wallTopY, v[2].z, v[1].x, wallTopY, v[1].z, wallMat);
+      // Back wall
+      addQuad(v[2].x, baseY[2], v[2].z, v[3].x, baseY[3], v[3].z,
+              v[3].x, wallTopY, v[3].z, v[2].x, wallTopY, v[2].z, wallMat);
+
+      // Outline (cyan edges around base footprint)
+      if (!isGhost) {
+        var outlineGroup = new THREE.Group();
+        var outlineColor = dormer.selected ? 0x00e5ff : 0x00e5ff;
+        var EDGE_R = 0.04;
+        for (var ei = 0; ei < 4; ei++) {
+          var a = v[ei], b = v[(ei + 1) % 4];
+          var ay2 = baseY[ei], by2 = baseY[(ei + 1) % 4];
+          var edx = b.x - a.x, edz = b.z - a.z;
+          var elen = Math.sqrt(edx * edx + edz * edz);
+          if (elen < 0.01) continue;
+          var cyl = new THREE.Mesh(
+            new THREE.CylinderGeometry(EDGE_R, EDGE_R, elen, 6, 1),
+            new THREE.MeshBasicMaterial({ color: outlineColor })
+          );
+          cyl.position.set((a.x + b.x) / 2, (ay2 + by2) / 2, (a.z + b.z) / 2);
+          cyl.lookAt(b.x, by2, b.z);
+          cyl.rotateX(Math.PI / 2);
+          outlineGroup.add(cyl);
+        }
+        group.add(outlineGroup);
+        dormer.outlineLines = outlineGroup;
+      }
+
+      group.position.y = wH;
+      return group;
+    }
+
+    // Build draggable handles for dormer corners
+    function buildDormerHandles(dormer, face) {
+      var handles = [];
+      var wH = getRoofWallHeight(face);
+      dormer.vertices.forEach(function(v) {
+        var y = getRoofSurfaceY(face, v.x, v.z);
+        var sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.25, 10, 10),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        sphere.position.set(v.x, wH + y + 0.1, v.z);
+        sphere.userData.isDormerHandle = true;
+        scene3d.add(sphere);
+        handles.push(sphere);
+      });
+      return handles;
+    }
+
+    // Rebuild a dormer's mesh (remove old, create new)
+    function rebuildDormer(face, dormerIdx) {
+      var d = face.dormers[dormerIdx];
+      if (d.mesh) { scene3d.remove(d.mesh); d.mesh = null; }
+      if (d.handleMeshes) { d.handleMeshes.forEach(function(h) { scene3d.remove(h); }); }
+      d.mesh = buildDormerMesh(d, face, false);
+      scene3d.add(d.mesh);
+      d.handleMeshes = buildDormerHandles(d, face);
+    }
+
+    // Rebuild all dormers on a face
+    function rebuildFaceDormers(faceIdx) {
+      var face = roofFaces3d[faceIdx];
+      if (!face.dormers) return;
+      face.dormers.forEach(function(d, di) {
+        rebuildDormer(face, di);
+      });
+    }
+
+    // Remove all dormer meshes from a face
+    function clearFaceDormers(face) {
+      if (!face.dormers) return;
+      face.dormers.forEach(function(d) {
+        if (d.mesh) scene3d.remove(d.mesh);
+        if (d.handleMeshes) d.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+      });
+    }
+
+    // Select a dormer
+    function selectDormer(faceIdx, dormerIdx) {
+      deselectDormer();
+      selectedDormerIdx = dormerIdx;
+      var face = roofFaces3d[faceIdx];
+      var d = face.dormers[dormerIdx];
+      d.selected = true;
+      rebuildDormer(face, dormerIdx);
+      updateDormerPanel(d);
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.remove('hidden');
+      var efPanel = document.getElementById('efPanel');
+      if (efPanel) efPanel.classList.add('hidden');
+    }
+
+    // Deselect current dormer
+    function deselectDormer() {
+      if (selectedDormerIdx >= 0 && roofSelectedFace >= 0) {
+        var face = roofFaces3d[roofSelectedFace];
+        if (face && face.dormers[selectedDormerIdx]) {
+          face.dormers[selectedDormerIdx].selected = false;
+          rebuildDormer(face, selectedDormerIdx);
+        }
+      }
+      selectedDormerIdx = -1;
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.add('hidden');
+    }
+
+    // Delete a dormer
+    function deleteDormer(faceIdx, dormerIdx) {
+      var face = roofFaces3d[faceIdx];
+      var d = face.dormers[dormerIdx];
+      if (d.mesh) scene3d.remove(d.mesh);
+      if (d.handleMeshes) d.handleMeshes.forEach(function(h) { scene3d.remove(h); });
+      face.dormers.splice(dormerIdx, 1);
+      selectedDormerIdx = -1;
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.add('hidden');
+      markDirty();
+    }
+
+    // Get downslope angle for a roof face section
+    function getRoofSlopeAngle(face) {
+      if (!face || face.vertices.length !== 4) return 0;
+      // Use azimuth to determine slope direction
+      return (face.azimuth || 180) * Math.PI / 180;
+    }
+
+    // Enter dormer placement mode
+    function enterDormerPlaceMode(type) {
+      dormerPlaceMode = true;
+      dormerPlaceType = type;
+      deselectDormer();
+      var canvas = document.getElementById('canvas3d');
+      canvas.style.cursor = 'crosshair';
+      var title = document.getElementById('rebTitleText');
+      if (title) title.textContent = 'Place dormer';
+      // Highlight active button
+      document.querySelectorAll('.reb-dormer-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.dormer === type);
+      });
+      // Create ghost mesh
+      createDormerGhost(type);
+    }
+
+    // Exit dormer placement mode
+    function exitDormerPlaceMode() {
+      dormerPlaceMode = false;
+      dormerPlaceType = '';
+      var canvas = document.getElementById('canvas3d');
+      canvas.style.cursor = '';
+      var title = document.getElementById('rebTitleText');
+      if (title) title.textContent = 'Edit SmartRoof';
+      document.querySelectorAll('.reb-dormer-btn').forEach(function(btn) {
+        btn.classList.remove('active');
+      });
+      // Remove ghost
+      if (dormerGhostMesh) { scene3d.remove(dormerGhostMesh); dormerGhostMesh = null; }
+    }
+
+    // Create ghost dormer preview
+    function createDormerGhost(type) {
+      if (dormerGhostMesh) { scene3d.remove(dormerGhostMesh); dormerGhostMesh = null; }
+      var ghostDormer = {
+        type: type,
+        vertices: computeDormerVerts(0, 0, 0, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
+        pitch: 15,
+        pitchSide: 15,
+        pitchFront: 15,
+        selected: false
+      };
+      // Build with a dummy face for basic positioning
+      var dummyFace = { vertices: [{x:-5,z:-5},{x:5,z:-5},{x:5,z:5},{x:-5,z:5}], pitch: 20, height: 3.0, azimuth: 180 };
+      dormerGhostMesh = buildDormerMesh(ghostDormer, dummyFace, true);
+      dormerGhostMesh.visible = false;
+      scene3d.add(dormerGhostMesh);
+    }
+
+    // Update ghost dormer position during mouse move
+    function updateDormerGhost(event) {
+      if (!dormerPlaceMode || !dormerGhostMesh) return;
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+
+      // Try to hit roof section meshes first
+      var face = roofSelectedFace >= 0 ? roofFaces3d[roofSelectedFace] : null;
+      var hitRoof = false;
+      if (face && face.sectionMeshes) {
+        var meshes = face.sectionMeshes.filter(function(m) { return !!m; });
+        var hits = raycaster3d.intersectObjects(meshes);
+        if (hits.length > 0) {
+          hitRoof = true;
+          var pt = hits[0].point;
+          var wH = getRoofWallHeight(face);
+          // Remove old ghost, rebuild at hit position with proper orientation
+          scene3d.remove(dormerGhostMesh);
+          var angle = getRoofSlopeAngle(face);
+          var ghostDormer = {
+            type: dormerPlaceType,
+            vertices: computeDormerVerts(pt.x, pt.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
+            pitch: 15, pitchSide: 15, pitchFront: 15, selected: false
+          };
+          dormerGhostMesh = buildDormerMesh(ghostDormer, face, true);
+          dormerGhostMesh.visible = true;
+          scene3d.add(dormerGhostMesh);
+        }
+      }
+
+      if (!hitRoof) {
+        // Fall back to ground plane
+        var groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        var intersectPt = new THREE.Vector3();
+        raycaster3d.ray.intersectPlane(groundPlane, intersectPt);
+        if (intersectPt) {
+          scene3d.remove(dormerGhostMesh);
+          var ghostDormer2 = {
+            type: dormerPlaceType,
+            vertices: computeDormerVerts(intersectPt.x, intersectPt.z, 0, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
+            pitch: 15, pitchSide: 15, pitchFront: 15, selected: false
+          };
+          var dummyFace2 = { vertices: [{x:-50,z:-50},{x:50,z:-50},{x:50,z:50},{x:-50,z:50}], pitch: 0, height: 0, azimuth: 180 };
+          dormerGhostMesh = buildDormerMesh(ghostDormer2, dummyFace2, true);
+          dormerGhostMesh.visible = true;
+          scene3d.add(dormerGhostMesh);
+        }
+      }
+    }
+
+    // Stamp dormer at current ghost position
+    function stampDormer(event) {
+      if (!dormerPlaceMode || roofSelectedFace < 0) return false;
+      var face = roofFaces3d[roofSelectedFace];
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+
+      // Must hit a roof section
+      if (!face.sectionMeshes) return false;
+      var meshes = face.sectionMeshes.filter(function(m) { return !!m; });
+      var hits = raycaster3d.intersectObjects(meshes);
+      if (hits.length === 0) return false;
+
+      var pt = hits[0].point;
+      var angle = getRoofSlopeAngle(face);
+      pushUndo();
+
+      var newDormer = {
+        type: dormerPlaceType,
+        vertices: computeDormerVerts(pt.x, pt.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
+        pitch: 15,
+        pitchSide: 15,
+        pitchFront: 15,
+        mesh: null,
+        outlineLines: null,
+        handleMeshes: [],
+        selected: false
+      };
+      face.dormers.push(newDormer);
+      var dIdx = face.dormers.length - 1;
+      rebuildDormer(face, dIdx);
+      selectDormer(roofSelectedFace, dIdx);
+      markDirty();
+      return true;
+    }
+
+    // Update dormer properties panel
+    function updateDormerPanel(d) {
+      if (!d) return;
+      // Set shape radio
+      document.querySelectorAll('.dp-shape-item').forEach(function(item) {
+        var check = item.querySelector('.dp-check');
+        if (check) check.style.display = item.dataset.type === d.type ? '' : 'none';
+      });
+      // Set pitch inputs
+      var pitchInput = document.getElementById('dpPitch');
+      var pitchSideRow = document.getElementById('dpPitchSideRow');
+      var pitchFrontRow = document.getElementById('dpPitchFrontRow');
+      var pitchRow = document.getElementById('dpPitchRow');
+      if (d.type === 'hip') {
+        if (pitchRow) pitchRow.style.display = 'none';
+        if (pitchSideRow) pitchSideRow.style.display = '';
+        if (pitchFrontRow) pitchFrontRow.style.display = '';
+        var ps = document.getElementById('dpPitchSide');
+        var pf = document.getElementById('dpPitchFront');
+        if (ps) ps.value = d.pitchSide || 15;
+        if (pf) pf.value = d.pitchFront || 15;
+      } else {
+        if (pitchRow) pitchRow.style.display = '';
+        if (pitchSideRow) pitchSideRow.style.display = 'none';
+        if (pitchFrontRow) pitchFrontRow.style.display = 'none';
+        if (pitchInput) pitchInput.value = d.pitch || 15;
+      }
+    }
+
     /* ── Finalize a roof face (add to scene + array) ── */
     function finalizeRoofFace(verts, pitch, azimuth, height, deletedSections, sectionPitches) {
       var p = pitch || 0;
@@ -9529,7 +10376,8 @@ app.get("/design", (req, res) => {
         deletedSections: deletedSections || [false, false, false, false],
         selectedSection: -1,
         handleMeshes: [], labelSprites: [],
-        selected: false
+        selected: false,
+        dormers: []
       };
       var usePitch = face.pitch || 10;
       var wH = getRoofWallHeight(face);
@@ -9596,6 +10444,9 @@ app.get("/design", (req, res) => {
       face.vertices.forEach(function(v, i) {
         face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
       });
+      // Rebuild dormers on this face
+      clearFaceDormers(face);
+      rebuildFaceDormers(idx);
       markDirty();
     }
 
@@ -9608,6 +10459,7 @@ app.get("/design", (req, res) => {
         if (face.wallMesh) scene3d.remove(face.wallMesh);
         face.handleMeshes.forEach(function(h) { scene3d.remove(h); });
         face.labelSprites.forEach(function(s) { scene3d.remove(s); });
+        clearFaceDormers(face);
       });
       roofFaces3d = [];
       roofSelectedFace = -1;
@@ -9688,10 +10540,12 @@ app.get("/design", (req, res) => {
     }
 
     function deselectRoofFace() {
+      if (dormerPlaceMode) exitDormerPlaceMode();
       if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
         var old = roofFaces3d[roofSelectedFace];
         old.selected = false;
         old.selectedSection = -1;
+        deselectDormer();
         rebuildRoofFace(roofSelectedFace);
       }
       roofSelectedFace = -1;
@@ -9706,6 +10560,10 @@ app.get("/design", (req, res) => {
       if (srPanel) srPanel.classList.add('hidden');
       var roofProps = document.getElementById('roofPropsSection');
       if (roofProps) roofProps.style.display = 'none';
+      var reb = document.getElementById('roofEditBanner');
+      if (reb) reb.style.display = 'none';
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.add('hidden');
     }
 
     /* ── Whole-structure selection (SmartRoof mode) ── */
@@ -9739,6 +10597,10 @@ app.get("/design", (req, res) => {
       }
       if (roofProps) roofProps.style.display = 'none';
       if (efPanel) efPanel.classList.add('hidden');
+      var reb = document.getElementById('roofEditBanner');
+      if (reb) reb.style.display = 'none';
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.add('hidden');
     }
 
     /* ── Enter face-edit mode from SmartRoof ── */
@@ -9752,6 +10614,9 @@ app.get("/design", (req, res) => {
       if (srPanel) srPanel.classList.add('hidden');
       var roofProps = document.getElementById('roofPropsSection');
       if (roofProps) roofProps.style.display = '';
+      // Show edit mode banner
+      var reb = document.getElementById('roofEditBanner');
+      if (reb) { reb.style.display = 'flex'; document.getElementById('rebTitleText').textContent = 'Edit SmartRoof'; }
       updateRoofPropsPanel();
     }
 
@@ -9766,26 +10631,57 @@ app.get("/design", (req, res) => {
             azimuth: f.azimuth,
             height: f.height,
             color: f.color,
-            deletedSections: f.deletedSections.slice()
+            deletedSections: f.deletedSections.slice(),
+            dormers: (f.dormers || []).map(function(d) {
+              return {
+                type: d.type,
+                vertices: d.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+                pitch: d.pitch,
+                pitchSide: d.pitchSide,
+                pitchFront: d.pitchFront
+              };
+            })
           };
         }),
         selectedFace: roofSelectedFace,
-        selectedSection: roofSelectedSection
+        selectedSection: roofSelectedSection,
+        selectedDormer: selectedDormerIdx
       };
     }
 
     function restoreRoofSnapshot(snapshot) {
       clearAllRoofFaces();
       snapshot.faces.forEach(function(rf) {
-        finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+        var fIdx = finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+        // Restore dormers
+        if (rf.dormers && rf.dormers.length > 0) {
+          var face = roofFaces3d[fIdx];
+          rf.dormers.forEach(function(dd) {
+            var newD = {
+              type: dd.type,
+              vertices: dd.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+              pitch: dd.pitch,
+              pitchSide: dd.pitchSide,
+              pitchFront: dd.pitchFront,
+              mesh: null, outlineLines: null, handleMeshes: [], selected: false
+            };
+            face.dormers.push(newD);
+            rebuildDormer(face, face.dormers.length - 1);
+          });
+        }
       });
       roofSelectedFace = snapshot.selectedFace;
       roofSelectedSection = snapshot.selectedSection;
+      selectedDormerIdx = snapshot.selectedDormer || -1;
       if (roofSelectedFace >= 0 && roofSelectedFace < roofFaces3d.length) {
         var face = roofFaces3d[roofSelectedFace];
         face.selected = true;
         face.selectedSection = roofSelectedSection;
         rebuildRoofFace(roofSelectedFace);
+        if (selectedDormerIdx >= 0 && face.dormers[selectedDormerIdx]) {
+          face.dormers[selectedDormerIdx].selected = true;
+          rebuildDormer(face, selectedDormerIdx);
+        }
       }
       updateRoofPropsPanel();
     }
@@ -10079,6 +10975,63 @@ app.get("/design", (req, res) => {
         }
       }
       return { faceIdx: -1, sectionIdx: -1 };
+    }
+
+    // Find dormer mesh under cursor
+    function findDormerUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+
+      var allMeshes = [];
+      var meshMap = [];
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var dormers = roofFaces3d[fi].dormers;
+        if (!dormers) continue;
+        for (var di = 0; di < dormers.length; di++) {
+          if (dormers[di].mesh) {
+            dormers[di].mesh.traverse(function(child) {
+              if (child.isMesh) {
+                allMeshes.push(child);
+                meshMap.push({ faceIdx: fi, dormerIdx: di });
+              }
+            });
+          }
+        }
+      }
+
+      var hits = raycaster3d.intersectObjects(allMeshes);
+      if (hits.length > 0) {
+        for (var i = 0; i < allMeshes.length; i++) {
+          if (allMeshes[i] === hits[0].object) return meshMap[i];
+        }
+      }
+      return { faceIdx: -1, dormerIdx: -1 };
+    }
+
+    // Find dormer handle under cursor
+    function findDormerHandleUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var dormers = roofFaces3d[fi].dormers;
+        if (!dormers) continue;
+        for (var di = 0; di < dormers.length; di++) {
+          if (!dormers[di].handleMeshes || dormers[di].handleMeshes.length === 0) continue;
+          var hits = raycaster3d.intersectObjects(dormers[di].handleMeshes);
+          if (hits.length > 0) {
+            var handleIdx = dormers[di].handleMeshes.indexOf(hits[0].object);
+            return { faceIdx: fi, dormerIdx: di, handleIdx: handleIdx };
+          }
+        }
+      }
+      return null;
     }
 
     /* ── Drawing mode toggle ── */
@@ -10888,12 +11841,28 @@ app.get("/design", (req, res) => {
           return;
         }
 
-        // Not in drawing mode — check for face/section selection
-        if (roofDraggingHandle >= 0 || isViewCubeBusy()) return;
+        // Dormer placement mode — stamp dormer on click
+        if (dormerPlaceMode) {
+          if (stampDormer(e)) return;
+        }
+
+        // Not in drawing mode — check for dormer or face/section selection
+        if (roofDraggingHandle >= 0 || dormerDraggingHandle >= 0 || isViewCubeBusy()) return;
         if (roofMovingMode) return; // handled by move drag
+
+        // Check dormer selection first (in edit mode)
+        if (roofEditMode && roofSelectedFace >= 0) {
+          var dormerHit = findDormerUnderCursor(e);
+          if (dormerHit.dormerIdx >= 0) {
+            selectDormer(dormerHit.faceIdx, dormerHit.dormerIdx);
+            return;
+          }
+        }
+
         var hit = findRoofFaceUnderCursor(e);
         if (hit.faceIdx >= 0) {
           if (roofEditMode) {
+            deselectDormer();
             selectRoofSection(hit.faceIdx, hit.sectionIdx);
           } else {
             selectRoofWhole(hit.faceIdx);
@@ -10919,7 +11888,7 @@ app.get("/design", (req, res) => {
           toggleRoofDrawingMode();
           return;
         }
-        // Double-click on roof → select + enter face edit mode in one step
+        // Double-click on roof → select + enter face edit mode + select tapped section
         if (!roofEditMode) {
           var hit = findRoofFaceUnderCursor(e);
           if (hit.faceIdx >= 0) {
@@ -10927,6 +11896,7 @@ app.get("/design", (req, res) => {
               selectRoofWhole(hit.faceIdx);
             }
             enterRoofEditMode();
+            selectRoofSection(hit.faceIdx, hit.sectionIdx);
           }
         }
       });
@@ -10944,6 +11914,18 @@ app.get("/design", (req, res) => {
             e.preventDefault();
             return;
           }
+        }
+        // Check dormer handles first
+        var dh = findDormerHandleUnderCursor(e);
+        if (dh) {
+          pushUndo();
+          dormerDraggingFaceIdx = dh.faceIdx;
+          dormerDraggingDormerIdx = dh.dormerIdx;
+          dormerDraggingHandle = dh.handleIdx;
+          if (controls3d) controls3d.enabled = false;
+          canvas.style.cursor = 'grabbing';
+          e.preventDefault();
+          return;
         }
         var found = findHandleUnderCursor(e);
         if (found) {
@@ -10991,6 +11973,28 @@ app.get("/design", (req, res) => {
           }
           return;
         }
+        // Dormer ghost tracking
+        if (dormerPlaceMode) {
+          updateDormerGhost(e);
+        }
+        // Dormer handle dragging (symmetric)
+        if (dormerDraggingHandle >= 0) {
+          var dhit = raycastGroundPlane(e);
+          if (!dhit) return;
+          var dface = roofFaces3d[dormerDraggingFaceIdx];
+          var dd = dface.dormers[dormerDraggingDormerIdx];
+          var dv = dd.vertices;
+          var dcx = (dv[0].x + dv[1].x + dv[2].x + dv[3].x) / 4;
+          var dcz = (dv[0].z + dv[1].z + dv[2].z + dv[3].z) / 4;
+          var dhi = dormerDraggingHandle;
+          var doppIdx = (dhi + 2) % 4;
+          dv[dhi] = { x: dhit.x, z: dhit.z };
+          dv[doppIdx] = { x: 2 * dcx - dhit.x, z: 2 * dcz - dhit.z };
+          var dadj1 = (dhi + 1) % 4, dadj2 = (dhi + 3) % 4;
+          dv[dadj1] = { x: 2 * dcx - dv[dadj2].x, z: 2 * dcz - dv[dadj2].z };
+          rebuildDormer(dface, dormerDraggingDormerIdx);
+          return;
+        }
         if (roofDraggingHandle < 0) return;
         var hit = raycastGroundPlane(e);
         if (!hit) return;
@@ -11005,6 +12009,14 @@ app.get("/design", (req, res) => {
         if (roofMoveStart) {
           roofMoveStart = null;
           if (controls3d) controls3d.enabled = true;
+          markDirty();
+        }
+        if (dormerDraggingHandle >= 0) {
+          dormerDraggingHandle = -1;
+          dormerDraggingFaceIdx = -1;
+          dormerDraggingDormerIdx = -1;
+          if (controls3d) controls3d.enabled = true;
+          canvas.style.cursor = '';
           markDirty();
         }
         if (roofDraggingHandle >= 0) {
@@ -11044,6 +12056,11 @@ app.get("/design", (req, res) => {
         }
 
         if (e.key === 'Escape') {
+          if (dormerPlaceMode) {
+            e.preventDefault();
+            exitDormerPlaceMode();
+            return;
+          }
           if (roofDetectMode) {
             e.preventDefault();
             roofDetectMode = false;
@@ -11067,6 +12084,12 @@ app.get("/design", (req, res) => {
           }
         }
 
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDormerIdx >= 0 && roofSelectedFace >= 0) {
+          e.preventDefault();
+          pushUndo();
+          deleteDormer(roofSelectedFace, selectedDormerIdx);
+          return;
+        }
         if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
           e.preventDefault();
           if (roofSelectedSection >= 0) {
@@ -11327,6 +12350,100 @@ app.get("/design", (req, res) => {
         if (roofSelectedFace < 0) return;
         roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
         updateRoofPropsPanel();
+      });
+
+      // ── Roof Edit Banner: dormer buttons ──
+      document.querySelectorAll('.reb-dormer-btn').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var type = btn.dataset.dormer;
+          if (dormerPlaceMode && dormerPlaceType === type) {
+            exitDormerPlaceMode();
+          } else {
+            enterDormerPlaceMode(type);
+          }
+        });
+      });
+
+      var rebCloseBtn = document.getElementById('rebCloseBtn');
+      if (rebCloseBtn) rebCloseBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (dormerPlaceMode) {
+          exitDormerPlaceMode();
+        } else {
+          deselectRoofFace();
+        }
+      });
+
+      // ── Dormer panel: shape selector ──
+      document.querySelectorAll('.dp-shape-item').forEach(function(item) {
+        item.addEventListener('click', function() {
+          if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+          var face = roofFaces3d[roofSelectedFace];
+          var d = face.dormers[selectedDormerIdx];
+          var newType = item.dataset.type;
+          if (d.type === newType) return;
+          pushUndo();
+          d.type = newType;
+          rebuildDormer(face, selectedDormerIdx);
+          updateDormerPanel(d);
+          markDirty();
+        });
+      });
+
+      // ── Dormer panel: pitch inputs ──
+      var dpPitch = document.getElementById('dpPitch');
+      if (dpPitch) dpPitch.addEventListener('input', function() {
+        if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+        var d = roofFaces3d[roofSelectedFace].dormers[selectedDormerIdx];
+        d.pitch = parseFloat(this.value) || 0;
+        rebuildDormer(roofFaces3d[roofSelectedFace], selectedDormerIdx);
+      });
+
+      var dpPitchSide = document.getElementById('dpPitchSide');
+      if (dpPitchSide) dpPitchSide.addEventListener('input', function() {
+        if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+        var d = roofFaces3d[roofSelectedFace].dormers[selectedDormerIdx];
+        d.pitchSide = parseFloat(this.value) || 0;
+        d.pitch = d.pitchSide;
+        rebuildDormer(roofFaces3d[roofSelectedFace], selectedDormerIdx);
+      });
+
+      var dpPitchFront = document.getElementById('dpPitchFront');
+      if (dpPitchFront) dpPitchFront.addEventListener('input', function() {
+        if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+        var d = roofFaces3d[roofSelectedFace].dormers[selectedDormerIdx];
+        d.pitchFront = parseFloat(this.value) || 0;
+        rebuildDormer(roofFaces3d[roofSelectedFace], selectedDormerIdx);
+      });
+
+      // ── Dormer panel: delete & duplicate ──
+      var dpDeleteBtn = document.getElementById('dpDeleteBtn');
+      if (dpDeleteBtn) dpDeleteBtn.addEventListener('click', function() {
+        if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+        pushUndo();
+        deleteDormer(roofSelectedFace, selectedDormerIdx);
+      });
+
+      var dpDuplicateBtn = document.getElementById('dpDuplicateBtn');
+      if (dpDuplicateBtn) dpDuplicateBtn.addEventListener('click', function() {
+        if (selectedDormerIdx < 0 || roofSelectedFace < 0) return;
+        var face = roofFaces3d[roofSelectedFace];
+        var orig = face.dormers[selectedDormerIdx];
+        pushUndo();
+        var newDormer = {
+          type: orig.type,
+          vertices: orig.vertices.map(function(v) { return {x: v.x + 1.5, z: v.z + 1.5}; }),
+          pitch: orig.pitch,
+          pitchSide: orig.pitchSide,
+          pitchFront: orig.pitchFront,
+          mesh: null, outlineLines: null, handleMeshes: [], selected: false
+        };
+        face.dormers.push(newDormer);
+        var newIdx = face.dormers.length - 1;
+        rebuildDormer(face, newIdx);
+        selectDormer(roofSelectedFace, newIdx);
+        markDirty();
       });
 
     })();
@@ -12276,7 +13393,7 @@ app.get("/settings", (req, res) => {
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
       </svg>
     </a>
-    <a class="rail-btn" href="#" title="Partners">
+    <a class="rail-btn" href="/partners" title="Partners">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
       </svg>
@@ -12543,7 +13660,7 @@ app.get("/settings/users", (req, res) => {
     <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
     <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
     <a class="rail-btn active" href="/settings" title="Settings" ><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
-    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+    <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
   </nav>
   <div class="settings-shell">
     <aside class="settings-sidebar">
@@ -12735,7 +13852,7 @@ app.get("/settings/teams", (req, res) => {
     <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
     <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
     <a class="rail-btn active" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
-    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+    <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
   </nav>
   <div class="settings-shell">
     <aside class="settings-sidebar">
@@ -12952,7 +14069,7 @@ app.get("/database", (req, res) => {
     <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
     <a class="rail-btn active" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
     <a class="rail-btn" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
-    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+    <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
   </nav>
 
   <div class="db-shell">
@@ -13081,7 +14198,7 @@ app.get("/settings/roles", (req, res) => {
     <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
     <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
     <a class="rail-btn active" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
-    <a class="rail-btn" href="#" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+    <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
   </nav>
 
   <div class="roles-shell">
@@ -13186,6 +14303,441 @@ app.get("/settings/roles", (req, res) => {
     </div>
   </div>
 </body></html>`);
+});
+
+// ── Partners ──────────────────────────────────────────────────────────────────
+function loadPartners() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/partners.json"), "utf8")); }
+  catch { return []; }
+}
+function savePartners(p) {
+  fs.writeFileSync(path.join(__dirname, "data/partners.json"), JSON.stringify(p, null, 2));
+}
+
+const partnersRailHTML = `
+  <nav class="rail">
+    <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer">
+      <svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </svg>
+    </div>
+    <a class="rail-btn" href="/" title="Projects">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+    </a>
+    <a class="rail-btn" href="/database" title="Database">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/>
+      </svg>
+    </a>
+    <a class="rail-btn" href="/settings" title="Settings">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+      </svg>
+    </a>
+    <a class="rail-btn active" href="/partners" title="Partners">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+      </svg>
+    </a>
+  </nav>`;
+
+app.get("/partners", (req, res) => {
+  const partners = loadPartners();
+  const rows = partners.map(p => {
+    const d = new Date(p.lastUpdated);
+    const fmt = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    return `<tr onclick="location.href='/partners/${p.id}'" style="cursor:pointer">
+      <td>${esc(p.name)}</td><td>${p.users}</td><td>${p.teams}</td><td>${fmt}</td></tr>`;
+  }).join("");
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Partners — Solar CRM</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fff; color: #111; display: flex; height: 100vh; overflow: hidden; }
+  .rail { width: 52px; background: #1a0828; display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 6px; flex-shrink: 0; }
+  .rail-logo { width: 32px; height: 32px; background: linear-gradient(135deg,#c084fc,#818cf8); border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; flex-shrink: 0; }
+  .rail-btn { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #7c5fa0; transition: all 0.15s; border: none; background: none; text-decoration: none; }
+  .rail-btn:hover, .rail-btn.active { background: #2d1045; color: #e2d4f0; }
+  .content { flex: 1; overflow-y: auto; padding: 40px 50px; }
+  h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 6px; }
+  .subtitle { color: #6b7280; font-size: 0.9rem; margin-bottom: 24px; }
+  .subtitle a { color: #4a90e2; text-decoration: none; }
+  .subtitle a:hover { text-decoration: underline; }
+  .top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  .search-box { position: relative; }
+  .search-box input { width: 240px; padding: 8px 12px 8px 34px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; outline: none; }
+  .search-box input:focus { border-color: #818cf8; box-shadow: 0 0 0 2px rgba(129,140,248,0.15); }
+  .search-box svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #9ca3af; }
+  .btn-new-partner { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; background: #111; color: #fff; border: none; border-radius: 6px; font-size: 0.88rem; font-weight: 500; cursor: pointer; text-decoration: none; }
+  .btn-new-partner:hover { background: #333; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; font-size: 0.78rem; font-weight: 600; color: #6b7280; padding: 10px 16px; border-bottom: 1px solid #e5e7eb; }
+  tbody tr { border-bottom: 1px solid #f3f4f6; transition: background 0.1s; }
+  tbody tr:hover { background: #f9fafb; }
+  tbody td { padding: 14px 16px; font-size: 0.9rem; }
+</style>
+</head><body>
+${partnersRailHTML}
+<div class="content">
+  <h1>Partners</h1>
+  <p class="subtitle">In partner organizations, you can manage users, settings, and databases. Learn more about partner management <a href="#">here</a>.</p>
+  <div class="top-row">
+    <div class="search-box">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search" id="searchInput" oninput="filterTable()"/>
+    </div>
+    <a class="btn-new-partner" href="/partners/new">+ New partner</a>
+  </div>
+  <table>
+    <thead><tr><th>Name</th><th>Users</th><th>Teams</th><th>Last updated</th></tr></thead>
+    <tbody id="partnerBody">${rows}</tbody>
+  </table>
+</div>
+<script>
+function filterTable() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  document.querySelectorAll('#partnerBody tr').forEach(r => {
+    r.style.display = r.children[0].textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+</script>
+</body></html>`);
+});
+
+app.get("/partners/new", (req, res) => {
+  const users = loadUsers();
+  const userOpts = users.map(u => `<option value="${u.id}">${esc(u.firstName)} ${esc(u.lastName)}</option>`).join("");
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>New Partner — Solar CRM</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fff; color: #111; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-bottom: 1px solid #e5e7eb; }
+  .topbar-left { display: flex; align-items: center; gap: 10px; }
+  .topbar-left a { color: #111; text-decoration: none; font-size: 0.9rem; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .topbar-center { font-size: 0.92rem; font-weight: 600; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+  .topbar-right .avatar { width: 30px; height: 30px; border-radius: 50%; background: #1a0828; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 600; }
+  .badge { position: relative; }
+  .badge-count { position: absolute; top: -5px; right: -6px; background: #6366f1; color: #fff; font-size: 0.6rem; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+
+  .shell { display: flex; height: calc(100vh - 49px); }
+  .wizard-sidebar { width: 220px; flex-shrink: 0; background: #f3f4f6; padding: 20px 0; overflow-y: auto; }
+  .step { padding: 12px 20px; cursor: pointer; }
+  .step.active { background: #d1d5db; }
+  .step.completed { cursor: pointer; }
+  .step-label { font-size: 0.72rem; color: #9ca3af; font-weight: 500; }
+  .step.active .step-label { color: #6b7280; }
+  .step-title { font-size: 0.88rem; font-weight: 600; color: #9ca3af; margin-top: 2px; }
+  .step.active .step-title { color: #111; }
+  .step.completed .step-title { color: #374151; }
+
+  .wizard-main { flex: 1; overflow-y: auto; padding: 36px 50px; }
+  .wizard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .wizard-header h2 { font-size: 1.5rem; font-weight: 600; }
+  .wizard-actions { display: flex; align-items: center; gap: 10px; }
+  .btn-cancel { background: none; border: none; font-size: 0.88rem; color: #6b7280; cursor: pointer; padding: 8px 14px; }
+  .btn-cancel:hover { color: #111; }
+  .btn-back { padding: 8px 20px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; font-size: 0.88rem; cursor: pointer; font-weight: 500; }
+  .btn-back:hover { background: #f9fafb; }
+  .btn-continue { padding: 8px 20px; border: none; border-radius: 6px; background: #111; color: #fff; font-size: 0.88rem; cursor: pointer; font-weight: 500; }
+  .btn-continue:hover { background: #333; }
+  .wizard-desc { color: #6b7280; font-size: 0.9rem; margin-bottom: 28px; max-width: 820px; }
+
+  .form-row { display: flex; gap: 40px; margin-bottom: 32px; align-items: flex-start; }
+  .form-label-col { flex: 0 0 45%; }
+  .form-label-col .label-title { font-size: 0.92rem; font-weight: 600; margin-bottom: 3px; }
+  .form-label-col .label-desc { font-size: 0.84rem; color: #6b7280; }
+  .form-label-col .label-desc a { color: #4a90e2; text-decoration: none; }
+  .form-input-col { flex: 1; }
+  .form-input-col input[type="text"] { width: 100%; padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; outline: none; }
+  .form-input-col input[type="text"]:focus { border-color: #818cf8; box-shadow: 0 0 0 2px rgba(129,140,248,0.15); }
+
+  .info-card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px 28px; margin-top: 8px; }
+  .info-card h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 14px; }
+  .info-columns { display: flex; gap: 60px; }
+  .info-col h4 { font-size: 0.84rem; color: #6b7280; margin-bottom: 10px; }
+  .info-col .item { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; margin-bottom: 6px; }
+  .check-green { color: #22c55e; font-weight: 700; }
+  .cross-red { color: #ef4444; font-weight: 700; }
+
+  .radio-group { display: flex; flex-direction: column; gap: 16px; }
+  .radio-option { display: flex; align-items: flex-start; gap: 10px; }
+  .radio-option input[type="radio"] { margin-top: 4px; accent-color: #111; }
+  .radio-option .radio-label { font-size: 0.92rem; font-weight: 600; }
+  .radio-option .radio-desc { font-size: 0.84rem; color: #6b7280; margin-top: 2px; }
+  .radio-option .radio-desc strong { color: #111; }
+  .logo-preview { width: 200px; margin: 12px 0; }
+  .ppw-value { font-size: 1.1rem; font-weight: 600; margin-top: 6px; }
+
+  select { width: 100%; padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; outline: none; background: #fff; }
+  select:focus { border-color: #818cf8; }
+
+  .tabs { display: flex; gap: 0; border-bottom: 2px solid #e5e7eb; margin-top: 28px; margin-bottom: 16px; }
+  .tab { padding: 10px 18px; font-size: 0.88rem; font-weight: 500; color: #6b7280; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; display: flex; align-items: center; gap: 6px; }
+  .tab.active { color: #111; border-bottom-color: #111; }
+  .tab svg { width: 16px; height: 16px; }
+  .empty-msg { text-align: center; color: #9ca3af; padding: 60px 0; font-size: 0.9rem; }
+  .note { font-size: 0.82rem; color: #6b7280; margin-top: 8px; }
+  .note strong { color: #111; }
+
+  .page { display: none; }
+  .page.active { display: block; }
+</style>
+</head><body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <a href="/partners"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> Partners</a>
+  </div>
+  <div class="topbar-center">New partner</div>
+  <div class="topbar-right">
+    <div class="badge"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5"/></svg><span class="badge-count">4</span></div>
+    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+    <div class="avatar">AB</div>
+  </div>
+</div>
+
+<div class="shell">
+  <aside class="wizard-sidebar">
+    <div class="step active" id="step1nav" onclick="goStep(1)">
+      <div class="step-label">Step 1</div>
+      <div class="step-title">Create a partner organization</div>
+    </div>
+    <div class="step" id="step2nav" onclick="goStep(2)">
+      <div class="step-label">Step 2</div>
+      <div class="step-title">Customize partner settings and database</div>
+    </div>
+    <div class="step" id="step3nav" onclick="goStep(3)">
+      <div class="step-label">Step 3</div>
+      <div class="step-title">Add users and teams</div>
+    </div>
+  </aside>
+
+  <div class="wizard-main">
+    <!-- Step 1 -->
+    <div class="page active" id="page1">
+      <div class="wizard-header">
+        <h2>Create a partner organization</h2>
+        <div class="wizard-actions">
+          <button class="btn-cancel" onclick="location.href='/partners'">Cancel</button>
+          <button class="btn-continue" onclick="goStep(2)">Continue</button>
+        </div>
+      </div>
+      <p class="wizard-desc">Add a new partner organization to your tenant. Once your partner is created, you'll be able to add a logo, customize settings, and configure the partner's database.</p>
+
+      <div class="form-row">
+        <div class="form-label-col">
+          <div class="label-title">* Partner organization name</div>
+          <div class="label-desc">Give this partner organization a unique name.</div>
+        </div>
+        <div class="form-input-col">
+          <input type="text" id="partnerName" placeholder="" />
+        </div>
+      </div>
+
+      <div class="info-card">
+        <h3>What's the difference between a partner and a team?</h3>
+        <p style="font-size:0.88rem;color:#374151;margin-bottom:16px;">Partners are contained within a tenant and can have their own users, teams, and customized settings and database configurations. Teams can only be created within your tenant or partners organizations. Teams that are contained within partners are subject to their partner's settings.</p>
+        <div class="info-columns">
+          <div class="info-col">
+            <h4>Partner management allows me to:</h4>
+            <div class="item"><span class="check-green">&#10004;</span> Limit user and project access</div>
+            <div class="item"><span class="check-green">&#10004;</span> Configure database</div>
+            <div class="item"><span class="check-green">&#10004;</span> Customize logo</div>
+            <div class="item"><span class="check-green">&#10004;</span> Set net price per watt</div>
+          </div>
+          <div class="info-col">
+            <h4>Team management allows me to:</h4>
+            <div class="item"><span class="check-green">&#10004;</span> Limit user and project access</div>
+            <div class="item"><span class="cross-red">&#10008;</span> Configure database</div>
+            <div class="item"><span class="cross-red">&#10008;</span> Customize logo</div>
+            <div class="item"><span class="cross-red">&#10008;</span> Set net price per watt</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="page" id="page2">
+      <div class="wizard-header">
+        <h2>Customize settings and database</h2>
+        <div class="wizard-actions">
+          <button class="btn-cancel" onclick="location.href='/partners'">Cancel</button>
+          <button class="btn-back" onclick="goStep(1)">Back</button>
+          <button class="btn-continue" onclick="goStep(3)">Continue</button>
+        </div>
+      </div>
+      <p class="wizard-desc">Customize settings for this partner organization. Further database customizations &mdash; such as assigning adders, discounts, incentives, and modules &mdash; can be made once you've finished creating a partner.</p>
+
+      <div class="form-row">
+        <div class="form-label-col">
+          <div class="label-title">* Logo</div>
+          <div class="label-desc">Choose between adopting your tenant organization's logo in <a href="/settings">Organization Profile</a> or assigning a custom logo to all of your partner organization's projects.</div>
+        </div>
+        <div class="form-input-col">
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="logo" value="tenant" checked />
+              <div>
+                <div class="radio-label">Adopt your tenant's logo</div>
+                <div class="radio-desc">Automatically apply your tenant organization's logo to all projects within this partner.</div>
+                <div style="margin-top:12px;padding:20px;text-align:center;">
+                  <div style="font-family:'Brush Script MT',cursive;font-size:2.8rem;color:#e8a838;font-weight:700;line-height:1;">
+                    <span style="font-size:1.2rem;color:#111;font-weight:800;letter-spacing:2px;display:block;text-transform:uppercase;">TEAM</span>Sunshine
+                  </div>
+                </div>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="logo" value="custom" />
+              <div>
+                <div class="radio-label">Add custom logo</div>
+                <div class="radio-desc">Assign a custom logo to this partner. <strong>All projects will automatically adopt this logo.</strong></div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-top:20px;">
+        <div class="form-label-col">
+          <div class="label-title">* Base price per watt (PPW)</div>
+          <div class="label-desc">Choose between adopting your tenant's base PPW in <a href="/settings">Pricing Defaults</a> or setting a custom value for all of this partner's projects.</div>
+        </div>
+        <div class="form-input-col">
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="ppw" value="tenant" checked />
+              <div>
+                <div class="radio-label">Adopt your tenant's base PPW</div>
+                <div class="radio-desc">Automatically apply your tenant organization's base PPW to all projects within this partner.</div>
+                <div class="ppw-value">$4.30</div>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="ppw" value="custom" />
+              <div>
+                <div class="radio-label">Add a custom base PPW</div>
+                <div class="radio-desc">Set a custom base PPW for this partner. <strong>This customization will only apply to new projects; existing projects imported from the tenant will not be affected.</strong></div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="page" id="page3">
+      <div class="wizard-header">
+        <h2>Add users and teams</h2>
+        <div class="wizard-actions">
+          <button class="btn-cancel" onclick="location.href='/partners'">Cancel</button>
+          <button class="btn-back" onclick="goStep(2)">Back</button>
+          <button class="btn-continue" onclick="savePartner()">Save</button>
+        </div>
+      </div>
+      <p class="wizard-desc">Add users and teams to this partner to give access to partner projects. <strong>Admins and tenant Team members who aren't on a team will automatically have access to all partner projects.</strong></p>
+
+      <div class="form-row">
+        <div class="form-label-col">
+          <div class="label-title">Add users</div>
+          <div class="label-desc">Add users to this partner. Users will have access to partner projects based on their role permissions. <strong>Admins are automatically added to all organization teams.</strong> To view permissions by role, go to the <a href="/settings/roles">Roles</a> page.</div>
+        </div>
+        <div class="form-input-col">
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="userSource" value="tenant" checked />
+              <div>
+                <div class="radio-label">Individual users from your tenant</div>
+                <div class="radio-desc">Move individual users from your tenant to this partner organization.</div>
+                <select id="userSelect" style="margin-top:10px;">
+                  <option value="">Select users</option>
+                  ${userOpts}
+                </select>
+                <p class="note" style="margin-top:8px;"><strong>Why don't I see all users?</strong> Users can only be moved if they aren't already assigned to a team. They must be moved from their tenant teams in order to be added to this partner organization.</p>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="userSource" value="otherPartner" />
+              <div>
+                <div class="radio-label">Individual users from another partner</div>
+                <div class="radio-desc">Add individual users from another partner to this partner organization.</div>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="userSource" value="teams" />
+              <div>
+                <div class="radio-label">Teams from your tenant</div>
+                <div class="radio-desc">Move teams from your tenant to this partner organization.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Users (0)</div>
+        <div class="tab"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Admins (${users.length})</div>
+        <div class="tab"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg> Teams (0)</div>
+      </div>
+      <div class="empty-msg">Use the options above to add users to this partner.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentStep = 1;
+function goStep(n) {
+  if (n < 1 || n > 3) return;
+  currentStep = n;
+  document.querySelectorAll('.page').forEach((p, i) => {
+    p.classList.toggle('active', i === n - 1);
+  });
+  document.querySelectorAll('.step').forEach((s, i) => {
+    s.classList.remove('active', 'completed');
+    if (i < n - 1) s.classList.add('completed');
+    if (i === n - 1) s.classList.add('active');
+  });
+}
+
+function savePartner() {
+  const name = document.getElementById('partnerName').value.trim();
+  if (!name) { alert('Please enter a partner name.'); goStep(1); return; }
+  fetch('/api/partners', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  }).then(r => r.json()).then(() => {
+    location.href = '/partners';
+  });
+}
+</script>
+</body></html>`);
+});
+
+app.post("/api/partners", (req, res) => {
+  const partners = loadPartners();
+  const id = "p" + (partners.length + 1) + "_" + Date.now();
+  const partner = {
+    id,
+    name: req.body.name || "Unnamed Partner",
+    users: 0,
+    teams: 0,
+    lastUpdated: new Date().toISOString().split("T")[0]
+  };
+  partners.push(partner);
+  savePartners(partners);
+  res.json(partner);
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
