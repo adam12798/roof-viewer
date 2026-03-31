@@ -1,0 +1,90 @@
+{
+  "project_id": "PRJ-2026-00142",
+  "design_center": {
+    "lat": 37.7749,
+    "lng": -122.4194
+  },
+  "anchor_dots": [
+    {
+      "id": "dot-1",
+      "x": 0.0,
+      "z": 0.0,
+      "lat": 37.77485,
+      "lng": -122.41945,
+      "label": "Front-left corner"
+    },
+    {
+      "id": "dot-2",
+      "x": 12.5,
+      "z": 0.0,
+      "lat": 37.77485,
+      "lng": -122.41930,
+      "label": "Front-right corner"
+    },
+    {
+      "id": "dot-3",
+      "x": 12.5,
+      "z": 9.8,
+      "lat": 37.77494,
+      "lng": -122.41930,
+      "label": "Back-right corner"
+    },
+    {
+      "id": "dot-4",
+      "x": 0.0,
+      "z": 9.8,
+      "lat": 37.77494,
+      "lng": -122.41945,
+      "label": "Back-left corner"
+    },
+    {
+      "id": "dot-5",
+      "x": 6.2,
+      "z": 4.9,
+      "lat": 37.77490,
+      "lng": -122.41937,
+      "label": "Ridge midpoint"
+    }
+  ],
+  "lidar": {
+    "points": [
+      [0.0, 5.2, 0.0, 6],
+      [1.0, 5.4, 0.0, 6],
+      [2.0, 5.7, 0.0, 6],
+      [3.0, 6.0, 0.5, 6],
+      [4.0, 6.3, 1.0, 6],
+      [5.0, 6.6, 2.0, 6],
+      [6.0, 7.8, 4.9, 6],
+      [6.2, 7.9, 4.9, 6],
+      [7.0, 6.6, 7.0, 6],
+      [8.0, 6.3, 8.0, 6],
+      [9.0, 6.0, 9.0, 6],
+      [10.0, 5.7, 9.5, 6],
+      [11.0, 5.4, 9.8, 6],
+      [12.5, 5.2, 9.8, 6],
+      [3.0, 5.1, 0.0, 6],
+      [6.0, 5.0, 0.0, 6],
+      [9.0, 5.1, 0.0, 6],
+      [12.0, 5.2, 0.0, 6],
+      [0.5, 3.8, 0.5, 6],
+      [1.5, 4.0, 1.0, 6]
+    ],
+    "bounds": [0.0, 0.0, 14.0, 12.0],
+    "resolution": 0.25,
+    "source": "google_solar"
+  },
+  "image": {
+    "file_path": "/data/imagery/PRJ-2026-00142_rgb.tif",
+    "width_px": 1024,
+    "height_px": 1024,
+    "geo_bounds": [37.7748, -122.4196, 37.7751, -122.4192],
+    "resolution_m_per_px": 0.1
+  },
+  "options": {
+    "confidence_threshold": 0.65,
+    "max_planes": 20,
+    "merge_coplanar": true,
+    "detect_dormers": true,
+    "detect_obstructions": true
+  }
+}

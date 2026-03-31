@@ -3,3 +3,6 @@ node_modules/
 ._*
 data/._*
 public/._*
+__pycache__/
+*.pyc
+venv/

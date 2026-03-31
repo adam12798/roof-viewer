@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.GOOGLE_API_KEY;
 const BUILD_VERSION = Date.now();
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.get("/api/version", (req, res) => res.json({ version: BUILD_VERSION }));
 
 const PIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 48" width="32" height="48"><path d="M16 0C7.163 0 0 7.163 0 16c0 12 16 32 16 32s16-20 16-32C32 7.163 24.837 0 16 0z" fill="#4a90e2" stroke="white" stroke-width="2"/><circle cx="16" cy="16" r="7" fill="white"/></svg>`;
@@ -6165,6 +6165,10 @@ app.get("/design", (req, res) => {
             <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
           </div>
           <div class="lp-submenu" id="roofSubmenu">
+            <div class="lp-subitem" id="btnAutoDetect"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/><path d="M4.22 4.22l2.83 2.83"/><path d="M16.95 16.95l2.83 2.83"/><path d="M4.22 19.78l2.83-2.83"/><path d="M16.95 7.05l2.83-2.83"/></svg>
+              Auto detect roof</div><span class="lp-subitem-key">A</span>
+            </div>
             <div class="lp-subitem" id="btnSmartRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
               Smart roof</div><span class="lp-subitem-key">R</span>
@@ -12162,6 +12166,188 @@ app.get("/design", (req, res) => {
     }
 
     /* ── Smart Roof: auto-loads LiDAR if needed, then detects ── */
+    /* ── Auto Detect Roof via Python roof_geometry service ── */
+    function autoDetectRoof() {
+      if (roofDrawingMode) toggleRoofDrawingMode();
+      if (treePlacingMode) toggleTreeMode();
+
+      var banner = document.getElementById('roofModeBanner');
+      if (banner) {
+        banner.style.display = 'flex';
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/></svg> Auto-detecting roof structures from LiDAR + imagery...';
+      }
+
+      // Ensure LiDAR is loaded first
+      if (!lidarRawPoints || lidarRawPoints.length === 0) {
+        if (!lidarFetched && !lidarLoading) loadLidarPoints();
+        var waitCount = 0;
+        var waitInterval = setInterval(function() {
+          waitCount++;
+          if (lidarRawPoints && lidarRawPoints.length > 0) {
+            clearInterval(waitInterval);
+            autoDetectRoofContinue();
+          } else if (waitCount > 60 || lidarLoadError) {
+            clearInterval(waitInterval);
+            if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> LiDAR data unavailable — cannot auto-detect.';
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 4000);
+          }
+        }, 500);
+        return;
+      }
+      autoDetectRoofContinue();
+    }
+
+    function autoDetectRoofContinue() {
+      var banner = document.getElementById('roofModeBanner');
+
+      // Build anchor dots from calibration control points (alignment only, NOT roof boundaries)
+      var anchorDots = [];
+      if (calibSavedTransform && calibSavedTransform.controlPoints) {
+        anchorDots = calibSavedTransform.controlPoints.map(function(cp, i) {
+          return {
+            id: 'dot_' + i,
+            x: cp.sat.x,
+            z: cp.sat.z,
+            lat: designLat + (cp.sat.z / -111320),
+            lng: designLng + (cp.sat.x / (111320 * Math.cos(designLat * Math.PI / 180))),
+            label: 'calib_' + i
+          };
+        });
+      }
+
+      // Build LiDAR points array: [lng, lat, elevation, class]
+      var lidarPts = [];
+      if (lidarRawPoints) {
+        for (var i = 0; i < lidarRawPoints.length; i++) {
+          lidarPts.push(lidarRawPoints[i]);
+        }
+      }
+
+      // Build request payload (field names must match Python Pydantic schemas)
+      var pId = (typeof projectId !== 'undefined' && projectId) ? projectId : 'unknown';
+      // Include LiDAR alignment offset so Python pipeline matches satellite
+      // Priority: user calibration > auto-align > none
+      var calibOffsetX = 0, calibOffsetZ = 0;
+      if (calibSavedTransform) {
+        calibOffsetX = calibSavedTransform.tx || 0;
+        calibOffsetZ = calibSavedTransform.tz || 0;
+      } else if (lidarPoints) {
+        // Use the auto-align offset applied to the point cloud mesh
+        calibOffsetX = lidarPoints.position.x || 0;
+        calibOffsetZ = lidarPoints.position.z || 0;
+      }
+      console.log('Auto-detect using LiDAR offset: x=' + calibOffsetX.toFixed(3) + ' z=' + calibOffsetZ.toFixed(3));
+      var payload = {
+        project_id: pId,
+        anchor_dots: anchorDots,
+        calibration_offset: { tx: calibOffsetX, tz: calibOffsetZ },
+        lidar: {
+          points: lidarPts,
+          bounds: [-35, -35, 35, 35],
+          resolution: 0.5,
+          source: 'google_solar_dsm'
+        },
+        image: {
+          url: '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640',
+          width_px: 640,
+          height_px: 640,
+          geo_bounds: [designLat - 0.000315, designLng - 0.000420, designLat + 0.000315, designLng + 0.000420],
+          resolution_m_per_px: 0.109375
+        },
+        design_center: { lat: designLat, lng: designLng },
+        options: {
+          confidence_threshold: 0.5,
+          max_planes: 20
+        }
+      };
+
+      if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/></svg> Analyzing roof planes...';
+
+      fetch('/api/roof/auto-detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          if (banner) {
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ' + data.error;
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
+          }
+          return;
+        }
+
+        // Feed CRM-compatible faces into the existing roof system
+        var crmFaces = data.crm_faces || [];
+        if (crmFaces.length === 0) {
+          if (banner) {
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> No roof planes detected.';
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 4000);
+          }
+          return;
+        }
+
+        pushUndo();
+        var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+        var facesCreated = 0;
+        var reviewCount = 0;
+
+        crmFaces.forEach(function(crm, i) {
+          // Convert vertices to {x, z} format
+          var verts = crm.vertices.map(function(v) { return { x: v.x, z: v.z }; });
+          if (verts.length < 3) return;
+
+          // Ensure 4 vertices (fit rectangle if needed)
+          if (verts.length !== 4) verts = fitRectangle(verts);
+
+          var pitch = crm.pitch || 0;
+          var azimuth = crm.azimuth || 180;
+          var height = crm.height || 0;
+          var deletedSections = crm.deleted_sections || [false, false, false, false];
+          var sectionPitches = crm.section_pitches || [pitch, pitch, pitch, pitch];
+
+          var idx = finalizeRoofFace(verts, pitch, azimuth, height, deletedSections, sectionPitches);
+          roofFaces3d[idx].color = crm.color || faceColors[i % faceColors.length];
+          rebuildRoofFace(idx);
+          facesCreated++;
+        });
+
+        // Count items needing review from confidence report
+        if (data.confidence_report) {
+          var cr = data.confidence_report;
+          reviewCount = (cr.planes_needing_review || []).length +
+                        (cr.edges_needing_review || []).length +
+                        (cr.dormers_needing_review || []).length;
+        }
+
+        if (banner) {
+          var msg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/></svg> Auto-detected ' + facesCreated + ' roof face' + (facesCreated > 1 ? 's' : '');
+          if (reviewCount > 0) msg += ' (' + reviewCount + ' need review)';
+          msg += '.';
+          banner.innerHTML = msg;
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
+        }
+
+        // Log confidence for debugging
+        if (data.confidence_report) {
+          console.log('Roof auto-detect confidence:', data.confidence_report.overall_confidence);
+          if (data.confidence_report.disagreements) {
+            data.confidence_report.disagreements.forEach(function(d) {
+              console.log('  Disagreement:', d.element_id, '- LiDAR:', d.lidar_value, 'Image:', d.image_value);
+            });
+          }
+        }
+      })
+      .catch(function(err) {
+        console.error('Auto-detect roof error:', err);
+        if (banner) {
+          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Auto-detect failed: ' + err.message;
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
+        }
+      });
+    }
+
     function autoGenerateRoof() {
       if (roofDrawingMode) toggleRoofDrawingMode();
       if (treePlacingMode) toggleTreeMode();
@@ -12812,6 +12998,11 @@ app.get("/design", (req, res) => {
       var btnManual = document.getElementById('btnManualRoof');
       var btnSmart = document.getElementById('btnSmartRoof');
       var btnFlat = document.getElementById('btnFlatRoof');
+      var btnAutoDetect = document.getElementById('btnAutoDetect');
+      if (btnAutoDetect) btnAutoDetect.addEventListener('click', function(e) {
+        e.stopPropagation();
+        autoDetectRoof();
+      });
       if (btnManual) btnManual.addEventListener('click', function(e) {
         e.stopPropagation();
         toggleRoofDrawingMode();
@@ -15456,6 +15647,26 @@ function esc(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
+// ── Auto-detect roof via Python roof_geometry service ──────────────────────
+app.post("/api/roof/auto-detect", async (req, res) => {
+  const ROOF_SERVICE = process.env.ROOF_SERVICE_URL || "http://localhost:8000";
+  try {
+    const resp = await fetch(`${ROOF_SERVICE}/roof/parse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body)
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.detail || "Roof detection service error" });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(503).json({ error: "Roof detection service unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Solar CRM running at http://localhost:${PORT}`);

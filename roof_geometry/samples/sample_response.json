@@ -1,0 +1,410 @@
+{
+  "registration": {
+    "affine_matrix": [[0.9998, -0.0175, 0.12], [0.0175, 0.9998, -0.08]],
+    "tx": 0.12,
+    "tz": -0.08,
+    "rotation_deg": 1.003,
+    "scale": 1.0002,
+    "residual_error": 0.034,
+    "method": "anchor_affine"
+  },
+  "roof_graph": {
+    "planes": [
+      {
+        "id": "plane-1",
+        "vertices": [
+          {"x": 0.0, "z": 0.0},
+          {"x": 12.5, "z": 0.0},
+          {"x": 12.5, "z": 4.9},
+          {"x": 0.0, "z": 4.9}
+        ],
+        "vertices_3d": [
+          {"x": 0.0, "y": 5.2, "z": 0.0},
+          {"x": 12.5, "y": 5.2, "z": 0.0},
+          {"x": 12.5, "y": 7.8, "z": 4.9},
+          {"x": 0.0, "y": 7.8, "z": 4.9}
+        ],
+        "plane_equation": {"a": 0.0, "b": 0.469, "c": -0.883, "d": -2.44},
+        "pitch_deg": 28.0,
+        "azimuth_deg": 180.0,
+        "height_m": 7.8,
+        "elevation_m": 5.2,
+        "area_m2": 69.8,
+        "is_flat": false,
+        "plane_type": "main",
+        "confidence": 0.94,
+        "needs_review": false
+      },
+      {
+        "id": "plane-2",
+        "vertices": [
+          {"x": 0.0, "z": 4.9},
+          {"x": 12.5, "z": 4.9},
+          {"x": 12.5, "z": 9.8},
+          {"x": 0.0, "z": 9.8}
+        ],
+        "vertices_3d": [
+          {"x": 0.0, "y": 7.8, "z": 4.9},
+          {"x": 12.5, "y": 7.8, "z": 4.9},
+          {"x": 12.5, "y": 5.2, "z": 9.8},
+          {"x": 0.0, "y": 5.2, "z": 9.8}
+        ],
+        "plane_equation": {"a": 0.0, "b": 0.469, "c": 0.883, "d": -6.00},
+        "pitch_deg": 28.0,
+        "azimuth_deg": 0.0,
+        "height_m": 7.8,
+        "elevation_m": 5.2,
+        "area_m2": 69.8,
+        "is_flat": false,
+        "plane_type": "main",
+        "confidence": 0.93,
+        "needs_review": false
+      },
+      {
+        "id": "plane-3",
+        "vertices": [
+          {"x": -3.0, "z": 0.0},
+          {"x": 0.0, "z": 0.0},
+          {"x": 0.0, "z": 5.5},
+          {"x": -3.0, "z": 5.5}
+        ],
+        "vertices_3d": [
+          {"x": -3.0, "y": 3.8, "z": 0.0},
+          {"x": 0.0, "y": 3.8, "z": 0.0},
+          {"x": 0.0, "y": 5.2, "z": 5.5},
+          {"x": -3.0, "y": 5.2, "z": 5.5}
+        ],
+        "plane_equation": {"a": 0.0, "b": 0.247, "c": -0.969, "d": -1.36},
+        "pitch_deg": 14.3,
+        "azimuth_deg": 180.0,
+        "height_m": 5.2,
+        "elevation_m": 3.8,
+        "area_m2": 17.2,
+        "is_flat": false,
+        "plane_type": "garage",
+        "confidence": 0.88,
+        "needs_review": false
+      },
+      {
+        "id": "plane-4",
+        "vertices": [
+          {"x": 12.5, "z": 3.0},
+          {"x": 15.0, "z": 3.0},
+          {"x": 15.0, "z": 7.0},
+          {"x": 12.5, "z": 7.0}
+        ],
+        "vertices_3d": [
+          {"x": 12.5, "y": 4.0, "z": 3.0},
+          {"x": 15.0, "y": 3.2, "z": 3.0},
+          {"x": 15.0, "y": 3.2, "z": 7.0},
+          {"x": 12.5, "y": 4.0, "z": 7.0}
+        ],
+        "plane_equation": {"a": 0.304, "b": 0.953, "c": 0.0, "d": -4.57},
+        "pitch_deg": 17.7,
+        "azimuth_deg": 90.0,
+        "height_m": 4.0,
+        "elevation_m": 3.2,
+        "area_m2": 10.3,
+        "is_flat": false,
+        "plane_type": "porch",
+        "confidence": 0.78,
+        "needs_review": false
+      },
+      {
+        "id": "plane-5",
+        "vertices": [
+          {"x": -3.0, "z": 5.5},
+          {"x": 0.0, "z": 5.5},
+          {"x": 0.0, "z": 9.8},
+          {"x": -3.0, "z": 9.8}
+        ],
+        "vertices_3d": [
+          {"x": -3.0, "y": 5.2, "z": 5.5},
+          {"x": 0.0, "y": 5.2, "z": 5.5},
+          {"x": 0.0, "y": 3.8, "z": 9.8},
+          {"x": -3.0, "y": 3.8, "z": 9.8}
+        ],
+        "plane_equation": {"a": 0.0, "b": 0.307, "c": 0.952, "d": -6.93},
+        "pitch_deg": 17.9,
+        "azimuth_deg": 0.0,
+        "height_m": 5.2,
+        "elevation_m": 3.8,
+        "area_m2": 14.0,
+        "is_flat": false,
+        "plane_type": "garage",
+        "confidence": 0.86,
+        "needs_review": false
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-1",
+        "edge_type": "ridge",
+        "start_point": {"x": 0.0, "y": 7.8, "z": 4.9},
+        "end_point": {"x": 12.5, "y": 7.8, "z": 4.9},
+        "plane_ids": ["plane-1", "plane-2"],
+        "length_m": 12.5,
+        "confidence": 0.96,
+        "needs_review": false
+      },
+      {
+        "id": "edge-2",
+        "edge_type": "eave",
+        "start_point": {"x": 0.0, "y": 5.2, "z": 0.0},
+        "end_point": {"x": 12.5, "y": 5.2, "z": 0.0},
+        "plane_ids": ["plane-1"],
+        "length_m": 12.5,
+        "confidence": 0.91,
+        "needs_review": false
+      },
+      {
+        "id": "edge-3",
+        "edge_type": "eave",
+        "start_point": {"x": 0.0, "y": 5.2, "z": 9.8},
+        "end_point": {"x": 12.5, "y": 5.2, "z": 9.8},
+        "plane_ids": ["plane-2"],
+        "length_m": 12.5,
+        "confidence": 0.90,
+        "needs_review": false
+      },
+      {
+        "id": "edge-4",
+        "edge_type": "hip",
+        "start_point": {"x": 0.0, "y": 5.2, "z": 0.0},
+        "end_point": {"x": 0.0, "y": 7.8, "z": 4.9},
+        "plane_ids": ["plane-1", "plane-3"],
+        "length_m": 5.64,
+        "confidence": 0.82,
+        "needs_review": false
+      },
+      {
+        "id": "edge-5",
+        "edge_type": "valley",
+        "start_point": {"x": 0.0, "y": 5.2, "z": 5.5},
+        "end_point": {"x": 0.0, "y": 7.8, "z": 4.9},
+        "plane_ids": ["plane-2", "plane-3"],
+        "length_m": 2.65,
+        "confidence": 0.79,
+        "needs_review": true
+      },
+      {
+        "id": "edge-6",
+        "edge_type": "ridge",
+        "start_point": {"x": -3.0, "y": 5.2, "z": 5.5},
+        "end_point": {"x": 0.0, "y": 5.2, "z": 5.5},
+        "plane_ids": ["plane-3", "plane-5"],
+        "length_m": 3.0,
+        "confidence": 0.85,
+        "needs_review": false
+      },
+      {
+        "id": "edge-7",
+        "edge_type": "step_flash",
+        "start_point": {"x": 12.5, "y": 4.0, "z": 3.0},
+        "end_point": {"x": 12.5, "y": 4.0, "z": 7.0},
+        "plane_ids": ["plane-1", "plane-4"],
+        "length_m": 4.0,
+        "confidence": 0.72,
+        "needs_review": true
+      },
+      {
+        "id": "edge-8",
+        "edge_type": "eave",
+        "start_point": {"x": 12.5, "y": 3.2, "z": 3.0},
+        "end_point": {"x": 15.0, "y": 3.2, "z": 3.0},
+        "plane_ids": ["plane-4"],
+        "length_m": 2.5,
+        "confidence": 0.76,
+        "needs_review": false
+      }
+    ],
+    "intersections": [
+      {
+        "id": "int-1",
+        "point": {"x": 0.0, "y": 7.8, "z": 4.9},
+        "edge_ids": ["edge-1", "edge-4", "edge-5"],
+        "intersection_type": "peak"
+      },
+      {
+        "id": "int-2",
+        "point": {"x": 12.5, "y": 4.0, "z": 3.0},
+        "edge_ids": ["edge-2", "edge-7"],
+        "intersection_type": "t_junction"
+      }
+    ],
+    "dormers": [
+      {
+        "id": "dormer-1",
+        "dormer_type": "gable",
+        "position": {"x": 4.0, "z": 2.0},
+        "width_m": 1.8,
+        "depth_m": 1.2,
+        "height_m": 1.5,
+        "pitch_deg": 35.0,
+        "azimuth_deg": 180.0,
+        "parent_plane_id": "plane-1",
+        "confidence": 0.71,
+        "needs_review": true
+      }
+    ],
+    "obstructions": [
+      {
+        "id": "obs-1",
+        "obstruction_type": "chimney",
+        "position": {"x": 9.0, "z": 4.5},
+        "footprint": [
+          {"x": 8.6, "z": 4.1},
+          {"x": 9.4, "z": 4.1},
+          {"x": 9.4, "z": 4.9},
+          {"x": 8.6, "z": 4.9}
+        ],
+        "height_m": 1.2,
+        "confidence": 0.89,
+        "needs_review": false
+      },
+      {
+        "id": "obs-2",
+        "obstruction_type": "vent",
+        "position": {"x": 3.5, "z": 7.0},
+        "footprint": [
+          {"x": 3.35, "z": 6.85},
+          {"x": 3.65, "z": 6.85},
+          {"x": 3.65, "z": 7.15},
+          {"x": 3.35, "z": 7.15}
+        ],
+        "height_m": 0.3,
+        "confidence": 0.83,
+        "needs_review": false
+      }
+    ],
+    "adjacency": {
+      "plane-1": ["plane-2", "plane-3", "plane-4"],
+      "plane-2": ["plane-1", "plane-3", "plane-5"],
+      "plane-3": ["plane-1", "plane-2", "plane-5"],
+      "plane-4": ["plane-1"],
+      "plane-5": ["plane-3", "plane-2"]
+    },
+    "connected_components": [
+      ["plane-1", "plane-2", "plane-3", "plane-5"],
+      ["plane-4"]
+    ]
+  },
+  "crm_faces": [
+    {
+      "vertices": [
+        {"x": 0.0, "z": 0.0},
+        {"x": 12.5, "z": 0.0},
+        {"x": 12.5, "z": 4.9},
+        {"x": 0.0, "z": 4.9}
+      ],
+      "pitch": 28.0,
+      "sectionPitches": [28.0, 28.0, 28.0, 28.0],
+      "azimuth": 180.0,
+      "height": 7.8,
+      "color": "#4a90d9",
+      "deletedSections": [false, false, false, false],
+      "dormers": [
+        {
+          "id": "dormer-1",
+          "type": "gable",
+          "x": 4.0,
+          "z": 2.0,
+          "width": 1.8,
+          "depth": 1.2,
+          "height": 1.5,
+          "pitch": 35.0,
+          "azimuth": 180.0
+        }
+      ]
+    },
+    {
+      "vertices": [
+        {"x": 0.0, "z": 4.9},
+        {"x": 12.5, "z": 4.9},
+        {"x": 12.5, "z": 9.8},
+        {"x": 0.0, "z": 9.8}
+      ],
+      "pitch": 28.0,
+      "sectionPitches": [28.0, 28.0, 28.0, 28.0],
+      "azimuth": 0.0,
+      "height": 7.8,
+      "color": "#4a90d9",
+      "deletedSections": [false, false, false, false],
+      "dormers": []
+    },
+    {
+      "vertices": [
+        {"x": -3.0, "z": 0.0},
+        {"x": 0.0, "z": 0.0},
+        {"x": 0.0, "z": 5.5},
+        {"x": -3.0, "z": 5.5}
+      ],
+      "pitch": 14.3,
+      "sectionPitches": [14.3, 14.3, 14.3, 14.3],
+      "azimuth": 180.0,
+      "height": 5.2,
+      "color": "#7bc47f",
+      "deletedSections": [false, false, false, false],
+      "dormers": []
+    },
+    {
+      "vertices": [
+        {"x": 12.5, "z": 3.0},
+        {"x": 15.0, "z": 3.0},
+        {"x": 15.0, "z": 7.0},
+        {"x": 12.5, "z": 7.0}
+      ],
+      "pitch": 17.7,
+      "sectionPitches": [17.7, 17.7, 17.7, 17.7],
+      "azimuth": 90.0,
+      "height": 4.0,
+      "color": "#d4a843",
+      "deletedSections": [false, false, false, false],
+      "dormers": []
+    },
+    {
+      "vertices": [
+        {"x": -3.0, "z": 5.5},
+        {"x": 0.0, "z": 5.5},
+        {"x": 0.0, "z": 9.8},
+        {"x": -3.0, "z": 9.8}
+      ],
+      "pitch": 17.9,
+      "sectionPitches": [17.9, 17.9, 17.9, 17.9],
+      "azimuth": 0.0,
+      "height": 5.2,
+      "color": "#7bc47f",
+      "deletedSections": [false, false, false, false],
+      "dormers": []
+    }
+  ],
+  "confidence_report": {
+    "overall_confidence": 0.85,
+    "planes_needing_review": [],
+    "edges_needing_review": ["edge-5", "edge-7"],
+    "dormers_needing_review": ["dormer-1"],
+    "obstructions_needing_review": [],
+    "disagreements": [
+      {
+        "element_id": "edge-5",
+        "lidar_value": {"z": 5.5},
+        "image_value": {"z": 5.2},
+        "chosen_value": {"z": 5.5},
+        "reason": "LiDAR geometry is more precise for valley edge positioning"
+      },
+      {
+        "element_id": "dormer-1",
+        "lidar_value": {"width_m": 1.6},
+        "image_value": {"width_m": 1.8},
+        "chosen_value": {"width_m": 1.8},
+        "reason": "Image provides clearer dormer boundary; LiDAR resolution too coarse for small features"
+      }
+    ]
+  },
+  "metadata": {
+    "processing_time_s": 2.847,
+    "pipeline_version": "0.1.0",
+    "lidar_points_used": 20,
+    "image_resolution_used": 0.1
+  }
+}
