@@ -5,6 +5,25 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-30 (Session 30)
+
+### Roof Auto-Detect Python Microservice
+- [x] **New `roof_geometry/` FastAPI service** — Python 3.12 microservice at port 8000 for LiDAR-based roof plane detection
+- [x] **Full pipeline**: LiDAR [lng,lat,elev] → geo-to-local conversion → ground removal → RANSAC plane extraction → DBSCAN clustering → oriented bounding rectangle → CRM-compatible faces
+- [x] **Open3D integration** — requires Python 3.12 (not 3.13); venv at `~/roof_venv` on local drive for performance
+- [x] **Auto-detect button** — "Auto detect roof" in roof menu (hotkey A), calls `/api/roof/auto-detect` → proxies to Python service
+- [x] **Calibration offset forwarding** — sends auto-align or user calibration offset to Python pipeline for LiDAR-to-satellite alignment
+- [x] **Double-offset fix** — skips registration transform when calibration offset already applied
+- [x] **Diagnostic logging** — logs bounding box of all LiDAR points and elevated points vs focus radius for tuning
+- [x] **50mb JSON body limit** — `express.json({ limit: '50mb' })` for LiDAR payloads
+
+### Known WIP — Auto-Detect Accuracy
+- [ ] **Radius tuning** — 10m clips large houses, 15m includes trees/neighbors; diagnostic logging added to find the right value
+- [ ] **False positive filtering** — trees with flat canopies can still pass roughness filter
+- [ ] **Alignment verification** — detected faces overlay satellite but may still be slightly shifted
+
+---
+
 ## Completed — 2026-03-30 (Session 29)
 
 ### Dormer Visual Overhaul
