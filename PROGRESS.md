@@ -5,6 +5,35 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-03-30 (Session 29)
+
+### Dormer Visual Overhaul
+- [x] **Opaque dormer walls** — walls are now fully solid (no transparency), matching real dormer appearance; ghost previews remain semi-transparent
+- [x] **Satellite-textured dormer roofs** — dormer roof surfaces now use the same satellite map texture as main roof faces with proper UV mapping; falls back to flat color when no imagery loaded
+- [x] **White ridge line** — white cylinder rendered along the ridge of gable and hip dormers for visual definition
+- [x] **Eave-snapped placement** — new dormers snap their front edge to the nearest roof eave on placement, sitting flush on the roof edge like Aurora
+
+### Roof Edge Handle Cleanup
+- [x] **Hidden cyan midpoint boxes** — edge midpoint box handles made invisible; edge dragging still works via proximity-based hit detection
+
+---
+
+## Completed — 2026-03-30 (Session 28)
+
+### SmartRoof: Calibration-Based Roof Generation
+- [x] **Instant roof from calibration corners** — SmartRoof uses the building corners the user already clicked during mandatory calibration to generate the roof footprint automatically — zero extra clicks needed
+- [x] **Solar API segment splitting** — footprint auto-splits into roof faces using Google Solar API segment data, with correct pitch and azimuth per face
+- [x] **Corner-picking fallback** — if no calibration data exists, enters guided corner-picking mode with snap guides, Enter/double-click/auto-close to finish
+- [x] **Auto LiDAR loading** — SmartRoof auto-loads LiDAR if not already loaded, no need to toggle LiDAR first
+
+### Edge Detection Improvements
+- [x] **Concave boundary tracing** — replaced convex hull with Moore contour tracing in `cellsToBoundary()`, preserving L/T/U-shaped building outlines
+- [x] **8-connected flood fill** — upgraded from 4-connected to 8-connected neighbors for smoother diagonal edges
+- [x] **Dominant-axis orthogonalization** — `orthogonalize()` now computes the building's longest edge direction and snaps all edges to that axis grid, preventing cumulative drift
+- [x] **Finer parameters** — Douglas-Peucker tolerance reduced to 0.25m, max flood-fill radius increased to 20m
+
+---
+
 ## Completed — 2026-03-30 (Session 27)
 
 ### Roof Edge Dragging

@@ -7309,6 +7309,7 @@ app.get("/design", (req, res) => {
     var roofFaces3d = [];
     var roofDrawingMode = false;
     var roofDetectMode = false;
+    var smartRoofPickMode = false;
     var roofTempVertices = [];
     var roofTempHandles = [];
     var roofTempLines = null;
@@ -7339,7 +7340,7 @@ app.get("/design", (req, res) => {
     var dormerDraggingHandle = -1;
     var dormerDraggingFaceIdx = -1;
     var dormerDraggingDormerIdx = -1;
-    var DORMER_DEFAULT_WIDTH = 3.6;  // meters (~12ft)
+    var DORMER_DEFAULT_WIDTH = 2.4;  // meters (~8ft)
     var DORMER_DEFAULT_DEPTH = 2.4;  // meters (~8ft)
     var dormerDragStartVerts = null; // saved verts at drag start for edge-based resize
 
@@ -9906,7 +9907,7 @@ app.get("/design", (req, res) => {
         var mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
         var box = new THREE.Mesh(
           new THREE.BoxGeometry(0.35, 0.12, 0.35),
-          new THREE.MeshBasicMaterial({ color: 0x00e5ff })
+          new THREE.MeshBasicMaterial({ color: 0x00e5ff, visible: false })
         );
         box.position.set(mx, 0.18, mz);
         scene3d.add(box);
@@ -10040,23 +10041,62 @@ app.get("/design", (req, res) => {
       var ridgeTopY = wallTopY + ridgeH;
 
       // Build geometry based on type
-      var wallMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: opacity, side: THREE.DoubleSide });
-      var roofMat = new THREE.MeshBasicMaterial({
-        color: dormer.selected ? 0x00bfa5 : 0x8899aa,
-        transparent: true, opacity: isGhost ? 0.3 : (dormer.selected ? 0.6 : 0.5),
+      var wallMat = new THREE.MeshBasicMaterial({
+        color: 0xcccccc,
+        transparent: isGhost,
+        opacity: isGhost ? 0.3 : 1.0,
         side: THREE.DoubleSide
       });
 
+      // Dormer roof: use satellite texture if available (matching main roof)
+      var roofMat;
+      if (!isGhost && satTexture) {
+        roofMat = new THREE.MeshBasicMaterial({
+          map: satTexture,
+          color: dormer.selected ? 0x00bfa5 : 0xffffff,
+          transparent: dormer.selected,
+          opacity: dormer.selected ? 0.8 : 1.0,
+          side: THREE.DoubleSide,
+          depthWrite: true,
+          polygonOffset: true,
+          polygonOffsetFactor: 1,
+          polygonOffsetUnits: 1
+        });
+      } else {
+        roofMat = new THREE.MeshBasicMaterial({
+          color: dormer.selected ? 0x00bfa5 : 0x8899aa,
+          transparent: true, opacity: isGhost ? 0.3 : (dormer.selected ? 0.6 : 0.5),
+          side: THREE.DoubleSide
+        });
+      }
+
+      function worldToUV(wx, wz) {
+        if (!satExtentM) return { u: 0, v: 0 };
+        return {
+          u: (wx + satExtentM / 2) / satExtentM,
+          v: (-wz + satExtentM / 2) / satExtentM
+        };
+      }
       function addQuad(ax,ay,az, bx,by,bz, cx,cy,cz, dx,dy,dz, mat) {
         var geo = new THREE.BufferGeometry();
         var pos = new Float32Array([ax,ay,az, bx,by,bz, cx,cy,cz, ax,ay,az, cx,cy,cz, dx,dy,dz]);
         geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        if (mat.map && satExtentM) {
+          var uA = worldToUV(ax, az), uB = worldToUV(bx, bz), uC = worldToUV(cx, cz), uD = worldToUV(dx, dz);
+          var uvs = new Float32Array([uA.u,uA.v, uB.u,uB.v, uC.u,uC.v, uA.u,uA.v, uC.u,uC.v, uD.u,uD.v]);
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        }
         geo.computeVertexNormals();
         group.add(new THREE.Mesh(geo, mat));
       }
       function addTri(ax,ay,az, bx,by,bz, cx,cy,cz, mat) {
         var geo = new THREE.BufferGeometry();
         var pos = new Float32Array([ax,ay,az, bx,by,bz, cx,cy,cz]);
+        if (mat.map && satExtentM) {
+          var uA = worldToUV(ax, az), uB = worldToUV(bx, bz), uC = worldToUV(cx, cz);
+          var uvs = new Float32Array([uA.u,uA.v, uB.u,uB.v, uC.u,uC.v]);
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        }
         geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
         geo.computeVertexNormals();
         group.add(new THREE.Mesh(geo, mat));
@@ -10135,6 +10175,27 @@ app.get("/design", (req, res) => {
       // Back wall
       addQuad(v[2].x, baseY[2], v[2].z, v[3].x, baseY[3], v[3].z,
               v[3].x, wallTopY, v[3].z, v[2].x, wallTopY, v[2].z, wallMat);
+
+      // White ridge line on top of dormer
+      if (!isGhost && (dormer.type === 'gable' || dormer.type === 'hip')) {
+        var rX0 = ridgeFrontX, rZ0 = ridgeFrontZ, rX1 = ridgeBackX, rZ1 = ridgeBackZ;
+        var rY = (dormer.type === 'hip') ? (wallTopY + (frontW / 2) * Math.tan((dormer.pitchFront || pitch) * Math.PI / 180)) : ridgeTopY;
+        var rdx = rX1 - rX0, rdz = rZ1 - rZ0;
+        var rLen = Math.sqrt(rdx * rdx + rdz * rdz);
+        if (rLen > 0.01) {
+          var ridgeCyl = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, rLen, 6, 1),
+            new THREE.MeshBasicMaterial({ color: 0xffffff })
+          );
+          var rDir = new THREE.Vector3(rdx, 0, rdz).normalize();
+          var rUp = new THREE.Vector3(0, 1, 0);
+          var rQuat = new THREE.Quaternion();
+          rQuat.setFromUnitVectors(rUp, rDir);
+          ridgeCyl.quaternion.copy(rQuat);
+          ridgeCyl.position.set((rX0 + rX1) / 2, rY + 0.02, (rZ0 + rZ1) / 2);
+          group.add(ridgeCyl);
+        }
+      }
 
       // Outline (cyan edges around base footprint)
       if (!isGhost) {
@@ -10250,6 +10311,49 @@ app.get("/design", (req, res) => {
       var dp = document.getElementById('dormerPanel');
       if (dp) dp.classList.add('hidden');
       markDirty();
+    }
+
+    // Snap dormer center so front edge aligns with nearest eave
+    function snapDormerToEave(face, clickX, clickZ, depth) {
+      if (!face || face.vertices.length !== 4) return { x: clickX, z: clickZ };
+      var verts = face.vertices;
+      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
+      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
+      var eaves;
+      if (d01 >= d12) {
+        eaves = [
+          { a: verts[0], b: verts[1] },
+          { a: verts[3], b: verts[2] }
+        ];
+      } else {
+        eaves = [
+          { a: verts[1], b: verts[2] },
+          { a: verts[0], b: verts[3] }
+        ];
+      }
+      var bestDist = Infinity, bestEave = null;
+      for (var i = 0; i < eaves.length; i++) {
+        var ea = eaves[i].a, eb = eaves[i].b;
+        var edx = eb.x - ea.x, edz = eb.z - ea.z;
+        var elen = Math.sqrt(edx * edx + edz * edz);
+        if (elen < 0.01) continue;
+        var nx = -edz / elen, nz = edx / elen;
+        var dist = Math.abs((clickX - ea.x) * nx + (clickZ - ea.z) * nz);
+        if (dist < bestDist) { bestDist = dist; bestEave = eaves[i]; }
+      }
+      if (!bestEave) return { x: clickX, z: clickZ };
+      var ea = bestEave.a, eb = bestEave.b;
+      var edx = eb.x - ea.x, edz = eb.z - ea.z;
+      var elen = Math.sqrt(edx * edx + edz * edz);
+      var t = ((clickX - ea.x) * edx + (clickZ - ea.z) * edz) / (elen * elen);
+      t = Math.max(0.1, Math.min(0.9, t));
+      var eaveX = ea.x + t * edx, eaveZ = ea.z + t * edz;
+      var nx = -edz / elen, nz = edx / elen;
+      var cx = (verts[0].x + verts[1].x + verts[2].x + verts[3].x) / 4;
+      var cz = (verts[0].z + verts[1].z + verts[2].z + verts[3].z) / 4;
+      if ((cx - eaveX) * nx + (cz - eaveZ) * nz < 0) { nx = -nx; nz = -nz; }
+      var hd = depth / 2;
+      return { x: eaveX + nx * hd, z: eaveZ + nz * hd };
     }
 
     // Get downslope angle for a roof face section
@@ -10403,9 +10507,10 @@ app.get("/design", (req, res) => {
       var angle = getRoofSlopeAngle(face);
       pushUndo();
 
+      var snapped = snapDormerToEave(face, pt.x, pt.z, DORMER_DEFAULT_DEPTH);
       var newDormer = {
         type: dormerPlaceType,
-        vertices: computeDormerVerts(pt.x, pt.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
+        vertices: computeDormerVerts(snapped.x, snapped.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
         pitch: 15,
         pitchSide: 15,
         pitchFront: 15,
@@ -11238,6 +11343,7 @@ app.get("/design", (req, res) => {
     /* ── Drawing mode toggle ── */
     function toggleRoofDrawingMode() {
       if (treePlacingMode) toggleTreeMode();
+      if (smartRoofPickMode) { smartRoofPickMode = false; clearRoofPreview(); clearSnapGuides(); roofTempVertices = []; }
       roofDrawingMode = !roofDrawingMode;
       var canvas = document.getElementById('canvas3d');
       var banner = document.getElementById('roofModeBanner');
@@ -11543,9 +11649,22 @@ app.get("/design", (req, res) => {
       return boundary;
     }
 
-    /* Orthogonalize: snap near-90° angles to exact right angles */
+    /* Orthogonalize: snap edges to building's dominant axis */
     function orthogonalize(pts) {
       if (pts.length < 4) return pts;
+
+      // Find dominant axis from the longest edge
+      var bestLen = 0, domAngle = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var j = (i + 1) % pts.length;
+        var dx = pts[j].x - pts[i].x, dz = pts[j].z - pts[i].z;
+        var len = dx * dx + dz * dz;
+        if (len > bestLen) { bestLen = len; domAngle = Math.atan2(dz, dx); }
+      }
+      // Dominant axis unit vectors
+      var ax = Math.cos(domAngle), az = Math.sin(domAngle);
+      var bx = -az, bz = ax; // perpendicular
+
       var result = pts.slice();
       for (var pass = 0; pass < 3; pass++) {
         for (var i = 0; i < result.length; i++) {
@@ -11555,13 +11674,25 @@ app.get("/design", (req, res) => {
           var dx1 = curr.x - prev.x, dz1 = curr.z - prev.z;
           var dx2 = next.x - curr.x, dz2 = next.z - curr.z;
           var angle = Math.abs(Math.atan2(dx1 * dz2 - dz1 * dx2, dx1 * dx2 + dz1 * dz2));
-          // If angle is close to 90° (within 15°), snap
+          // If angle is close to 90° (within 15°), snap to dominant axis grid
           if (Math.abs(angle - Math.PI / 2) < 0.26) {
-            // Project next edge to be perpendicular to prev edge
+            // Determine which dominant direction the incoming edge is closest to
             var len1 = Math.sqrt(dx1 * dx1 + dz1 * dz1) || 1;
-            var nx = -dz1 / len1, nz = dx1 / len1; // perpendicular
-            var dot = (next.x - curr.x) * nx + (next.z - curr.z) * nz;
-            result[(i + 1) % result.length] = { x: curr.x + nx * dot, z: curr.z + nz * dot };
+            var edx = dx1 / len1, edz = dz1 / len1;
+            var dotA = Math.abs(edx * ax + edz * az);
+            var dotB = Math.abs(edx * bx + edz * bz);
+            // Perpendicular to incoming edge, aligned to dominant grid
+            var nx, nz;
+            if (dotA >= dotB) {
+              // Incoming edge is along axis A, so next should be along axis B
+              nx = bx; nz = bz;
+            } else {
+              nx = ax; nz = az;
+            }
+            // Choose sign to match outgoing direction
+            var outDot = (next.x - curr.x) * nx + (next.z - curr.z) * nz;
+            if (outDot < 0) { nx = -nx; nz = -nz; outDot = -outDot; }
+            result[(i + 1) % result.length] = { x: curr.x + nx * outDot, z: curr.z + nz * outDot };
           }
         }
       }
@@ -11746,7 +11877,7 @@ app.get("/design", (req, res) => {
       var queue = [{ r: startRow, c: startCol }];
       visited[startRow][startCol] = true;
       var filled = [];
-      var dirs = [[-1,0],[1,0],[0,-1],[0,1]]; // 4-connected
+      var dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]; // 8-connected
 
       while (queue.length > 0) {
         var cell = queue.shift();
@@ -11773,33 +11904,94 @@ app.get("/design", (req, res) => {
       return filled;
     }
 
-    /* Convert flood-fill cells to a boundary polygon */
+    /* Convert flood-fill cells to a boundary polygon using Moore contour tracing */
     function cellsToBoundary(cells, grid) {
       if (cells.length < 3) return [];
 
-      // Build set of filled cells for fast lookup
-      var filledSet = {};
+      // Build 2D bitmap of filled cells for fast lookup
+      var minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
       for (var i = 0; i < cells.length; i++) {
-        filledSet[cells[i].r + ',' + cells[i].c] = true;
+        if (cells[i].r < minR) minR = cells[i].r;
+        if (cells[i].r > maxR) maxR = cells[i].r;
+        if (cells[i].c < minC) minC = cells[i].c;
+        if (cells[i].c > maxC) maxC = cells[i].c;
+      }
+      var bRows = maxR - minR + 3, bCols = maxC - minC + 3; // +3 for 1-cell padding
+      var bitmap = [];
+      for (var r = 0; r < bRows; r++) {
+        bitmap[r] = [];
+        for (var c = 0; c < bCols; c++) bitmap[r][c] = 0;
+      }
+      for (var i = 0; i < cells.length; i++) {
+        bitmap[cells[i].r - minR + 1][cells[i].c - minC + 1] = 1;
       }
 
-      // Find boundary cells (filled cells with at least one empty 4-neighbor)
-      var boundaryPts = [];
-      for (var i = 0; i < cells.length; i++) {
-        var r = cells[i].r, c = cells[i].c;
-        if (!filledSet[(r-1)+','+c] || !filledSet[(r+1)+','+c] ||
-            !filledSet[r+','+(c-1)] || !filledSet[r+','+(c+1)]) {
-          boundaryPts.push({
-            x: grid.minX + c * grid.cellSize,
-            z: grid.minZ + r * grid.cellSize
-          });
+      // Find starting cell: topmost row, leftmost column
+      var startR = -1, startC = -1;
+      for (var r = 0; r < bRows && startR < 0; r++) {
+        for (var c = 0; c < bCols; c++) {
+          if (bitmap[r][c] === 1) { startR = r; startC = c; break; }
         }
       }
+      if (startR < 0) return [];
 
-      if (boundaryPts.length < 3) return [];
+      // Moore boundary trace (clockwise)
+      // 8-neighbor directions: 0=up, 1=up-right, 2=right, 3=down-right, 4=down, 5=down-left, 6=left, 7=up-left
+      var dr = [-1, -1, 0, 1, 1, 1, 0, -1];
+      var dc = [0, 1, 1, 1, 0, -1, -1, -1];
 
-      // Use convex hull for clean building outline
-      return convexHull2d(boundaryPts);
+      var contour = [];
+      var cr = startR, cc = startC;
+      var dir = 6; // start looking left (came from the left since we found leftmost)
+      var maxSteps = cells.length * 4; // safety limit
+      var steps = 0;
+
+      do {
+        contour.push({ r: cr, c: cc });
+        // Search clockwise from (dir + 5) % 8 for next boundary cell
+        var searchStart = (dir + 5) % 8; // backtrack: turn around and go clockwise
+        var found = false;
+        for (var i = 0; i < 8; i++) {
+          var d = (searchStart + i) % 8;
+          var nr = cr + dr[d], nc = cc + dc[d];
+          if (nr >= 0 && nr < bRows && nc >= 0 && nc < bCols && bitmap[nr][nc] === 1) {
+            dir = d;
+            cr = nr;
+            cc = nc;
+            found = true;
+            break;
+          }
+        }
+        if (!found) break;
+        steps++;
+      } while ((cr !== startR || cc !== startC) && steps < maxSteps);
+
+      if (contour.length < 3) {
+        // Fallback to convex hull
+        var pts = [];
+        for (var i = 0; i < cells.length; i++) {
+          var r = cells[i].r, c = cells[i].c;
+          var hasEmpty = false;
+          for (var d = 0; d < 8; d++) {
+            var nr = r - minR + 1 + dr[d], nc = c - minC + 1 + dc[d];
+            if (nr < 0 || nr >= bRows || nc < 0 || nc >= bCols || bitmap[nr][nc] === 0) { hasEmpty = true; break; }
+          }
+          if (hasEmpty) pts.push({ x: grid.minX + c * grid.cellSize, z: grid.minZ + r * grid.cellSize });
+        }
+        return pts.length >= 3 ? convexHull2d(pts) : [];
+      }
+
+      // Convert contour cells back to world coordinates
+      var boundary = [];
+      for (var i = 0; i < contour.length; i++) {
+        var worldC = contour[i].c - 1 + minC; // undo padding offset
+        var worldR = contour[i].r - 1 + minR;
+        boundary.push({
+          x: grid.minX + worldC * grid.cellSize,
+          z: grid.minZ + worldR * grid.cellSize
+        });
+      }
+      return boundary;
     }
 
     /* Split a footprint polygon into faces using Solar API segment centroids */
@@ -11902,7 +12094,7 @@ app.get("/design", (req, res) => {
       console.log('Ground elev:', grid.groundElev.toFixed(2), 'threshold:', (grid.groundElev + 1.0).toFixed(2));
 
       // Flood-fill from click: follow roof surface, stop at edges
-      var filled = floodFillRoof(grid, clickRow, clickCol, 0.6, 15);
+      var filled = floodFillRoof(grid, clickRow, clickCol, 0.6, 20);
 
       console.log('Flood fill cells:', filled.length);
 
@@ -11937,7 +12129,7 @@ app.get("/design", (req, res) => {
       }
       console.log('Boundary extent: X ' + bMinX.toFixed(2) + ' to ' + bMaxX.toFixed(2) + ' (' + (bMaxX-bMinX).toFixed(1) + 'm), Z ' + bMinZ.toFixed(2) + ' to ' + bMaxZ.toFixed(2) + ' (' + (bMaxZ-bMinZ).toFixed(1) + 'm)');
 
-      boundary = douglasPeucker(boundary, 0.4);
+      boundary = douglasPeucker(boundary, 0.25);
       boundary = orthogonalize(boundary);
       console.log('Boundary points (simplified):', boundary.length);
       if (boundary.length < 3) return;
@@ -11969,26 +12161,136 @@ app.get("/design", (req, res) => {
       }
     }
 
-    /* ── Smart Roof: enters detect mode, waits for click ── */
+    /* ── Smart Roof: auto-loads LiDAR if needed, then detects ── */
     function autoGenerateRoof() {
-      if (!lidarRawPoints || lidarRawPoints.length === 0) {
-        alert('LiDAR data not loaded yet. Toggle LiDAR (L) first, then try Smart Roof.');
-        return;
-      }
-      if (!solarData) {
-        fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
-          .then(function(r) { return r.json(); })
-          .then(function(data) { solarData = data; });
-      }
       if (roofDrawingMode) toggleRoofDrawingMode();
       if (treePlacingMode) toggleTreeMode();
-      roofDetectMode = true;
-      var canvas = document.getElementById('canvas3d');
-      canvas.style.cursor = 'crosshair';
+
       var banner = document.getElementById('roofModeBanner');
       if (banner) {
         banner.style.display = 'flex';
-        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Click on the building to detect roof faces. Esc to cancel.';
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Detecting roof...';
+      }
+
+      // Auto-load LiDAR if not loaded yet
+      if (!lidarRawPoints || lidarRawPoints.length === 0) {
+        if (!lidarFetched && !lidarLoading) {
+          loadLidarPoints();
+        }
+        // Poll until LiDAR is ready, then continue
+        var waitCount = 0;
+        var waitInterval = setInterval(function() {
+          waitCount++;
+          if (lidarRawPoints && lidarRawPoints.length > 0) {
+            clearInterval(waitInterval);
+            autoGenerateRoofContinue();
+          } else if (waitCount > 60 || lidarLoadError) {
+            // 30s timeout or load error
+            clearInterval(waitInterval);
+            if (banner) banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> LiDAR data unavailable for this location.';
+          }
+        }, 500);
+        return;
+      }
+      autoGenerateRoofContinue();
+    }
+
+    function autoGenerateRoofContinue() {
+      // Fetch Solar API data in background if not cached
+      if (!solarData) {
+        fetch('/api/solar/building-insights?lat=' + designLat + '&lng=' + designLng)
+          .then(function(r) { return r.json(); })
+          .then(function(data) { solarData = data; autoFromCalibIfReady(); })
+          .catch(function() { autoFromCalibIfReady(); });
+      } else {
+        autoFromCalibIfReady();
+      }
+
+      function autoFromCalibIfReady() {
+        // Use calibration control points as building corners if available
+        if (calibSavedTransform && calibSavedTransform.controlPoints && calibSavedTransform.controlPoints.length >= 3) {
+          var corners = calibSavedTransform.controlPoints.map(function(cp) {
+            return { x: cp.sat.x, z: cp.sat.z };
+          });
+
+          // Orthogonalize and generate roof from calibration corners
+          var footprint = orthogonalize(corners);
+          if (footprint.length < 3) footprint = corners;
+
+          var segs = solarData ? ((solarData.solarPotential || {}).roofSegmentStats || []) : [];
+          var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+          var faces = splitBySegments(footprint, segs);
+          var facesFound = 0;
+
+          pushUndo();
+          faces.forEach(function(face, i) {
+            var idx = finalizeRoofFace(face.vertices, face.pitch, face.azimuth, 0);
+            roofFaces3d[idx].color = faceColors[i % faceColors.length];
+            rebuildRoofFace(idx);
+            facesFound++;
+          });
+
+          var banner = document.getElementById('roofModeBanner');
+          if (banner) {
+            banner.innerHTML = facesFound > 0
+              ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Created ' + facesFound + ' roof face' + (facesFound > 1 ? 's' : '') + ' from calibration corners.'
+              : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> No roof faces created.';
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 4000);
+          }
+          return;
+        }
+
+        // No calibration corners — fall back to corner-picking mode
+        smartRoofPickMode = true;
+        roofTempVertices = [];
+        var canvas = document.getElementById('canvas3d');
+        canvas.style.cursor = 'crosshair';
+        var banner = document.getElementById('roofModeBanner');
+        if (banner) {
+          banner.style.display = 'flex';
+          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Click the outside corners of the building. Press Enter or double-click to finish. Esc to cancel.';
+        }
+      }
+    }
+
+    /* ── Finalize SmartRoof from user-picked corners ── */
+    function finalizeSmartRoof() {
+      if (roofTempVertices.length < 3) return;
+      var numCorners = roofTempVertices.length;
+
+      pushUndo();
+
+      // Orthogonalize the user-picked corners
+      var footprint = orthogonalize(roofTempVertices.slice());
+      if (footprint.length < 3) footprint = roofTempVertices.slice();
+
+      // Split by Solar API segments and assign pitch/azimuth per face
+      var segs = solarData ? ((solarData.solarPotential || {}).roofSegmentStats || []) : [];
+      var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+      var faces = splitBySegments(footprint, segs);
+      var facesFound = 0;
+
+      faces.forEach(function(face, i) {
+        var idx = finalizeRoofFace(face.vertices, face.pitch, face.azimuth, 0);
+        roofFaces3d[idx].color = faceColors[i % faceColors.length];
+        rebuildRoofFace(idx);
+        facesFound++;
+      });
+
+      // Clean up
+      clearRoofPreview();
+      clearSnapGuides();
+      roofTempVertices = [];
+      smartRoofPickMode = false;
+      var canvas = document.getElementById('canvas3d');
+      canvas.style.cursor = '';
+
+      var banner = document.getElementById('roofModeBanner');
+      if (banner) {
+        banner.innerHTML = facesFound > 0
+          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> Created ' + facesFound + ' roof face' + (facesFound > 1 ? 's' : '') + ' from ' + numCorners + ' corners.'
+          : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg> No roof faces created.';
+        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 4000);
       }
     }
 
@@ -12006,6 +12308,30 @@ app.get("/design", (req, res) => {
           var hit = raycastGroundPlane(e);
           if (!hit) return;
           detectRoofAtPoint(hit.x, hit.z);
+          return;
+        }
+
+        if (smartRoofPickMode) {
+          var hit = raycastGroundPlane(e);
+          if (!hit) return;
+
+          var px = roofSnappedPos ? roofSnappedPos.x : hit.x;
+          var pz = roofSnappedPos ? roofSnappedPos.z : hit.z;
+
+          // Auto-close: click near first vertex with 3+ vertices → finalize
+          if (roofTempVertices.length >= 3) {
+            var first = roofTempVertices[0];
+            var dx = px - first.x, dz = pz - first.z;
+            if (Math.sqrt(dx * dx + dz * dz) < 1.0) {
+              finalizeSmartRoof();
+              return;
+            }
+          }
+
+          roofTempVertices.push({ x: px, z: pz });
+          addRoofPreviewHandle(px, pz);
+          updateRoofPreviewLines();
+          clearSnapGuides();
           return;
         }
 
@@ -12077,6 +12403,15 @@ app.get("/design", (req, res) => {
 
       // Double-click: complete polygon OR enter edit mode
       canvas.addEventListener('dblclick', function(e) {
+        if (smartRoofPickMode && roofTempVertices.length >= 3) {
+          // dblclick fires two clicks, remove the duplicate last vertex
+          roofTempVertices.pop();
+          if (roofTempHandles.length > 0) {
+            scene3d.remove(roofTempHandles.pop());
+          }
+          finalizeSmartRoof();
+          return;
+        }
         if (roofDrawingMode && roofTempVertices.length >= 3) {
           // dblclick fires two clicks, remove the duplicate last vertex
           roofTempVertices.pop();
@@ -12178,8 +12513,8 @@ app.get("/design", (req, res) => {
 
       // Pointermove: drag handle, snap guides, or show close hint
       canvas.addEventListener('pointermove', function(e) {
-        // Snap guides + highlight first vertex in drawing mode
-        if (roofDrawingMode && roofTempVertices.length > 0) {
+        // Snap guides + highlight first vertex in drawing/smart roof mode
+        if ((roofDrawingMode || smartRoofPickMode) && roofTempVertices.length > 0) {
           var hit = raycastGroundPlane(e);
           if (hit) {
             computeSnapGuides(hit.x, hit.z);
@@ -12398,6 +12733,12 @@ app.get("/design", (req, res) => {
           return;
         }
 
+        if (e.key === 'Enter' && smartRoofPickMode && roofTempVertices.length >= 3) {
+          e.preventDefault();
+          finalizeSmartRoof();
+          return;
+        }
+
         if (e.key === 'Enter' && roofDrawingMode && roofTempVertices.length >= 3) {
           e.preventDefault();
           pushUndo();
@@ -12410,6 +12751,18 @@ app.get("/design", (req, res) => {
         }
 
         if (e.key === 'Escape') {
+          if (smartRoofPickMode) {
+            e.preventDefault();
+            clearRoofPreview();
+            clearSnapGuides();
+            roofTempVertices = [];
+            smartRoofPickMode = false;
+            var canvas = document.getElementById('canvas3d');
+            canvas.style.cursor = '';
+            var banner = document.getElementById('roofModeBanner');
+            if (banner) banner.style.display = 'none';
+            return;
+          }
           if (dormerPlaceMode) {
             e.preventDefault();
             exitDormerPlaceMode();
