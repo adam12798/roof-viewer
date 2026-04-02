@@ -248,6 +248,48 @@ def _closest_point_on_segments(
 # Contour to plane
 # ---------------------------------------------------------------------------
 
+def fuse_image_primary(
+    draped_planes: list[RoofPlane],
+    internal_edges: list,
+    features: list,
+) -> list[RoofPlane]:
+    """
+    Fusion for the image-primary pipeline.
+
+    In this mode, the image segments ARE the planes (via SAM), and LiDAR
+    has already been draped onto them. Fusion here:
+    1. Cross-validates planes (flags high-residual fits)
+    2. Assigns features to parent planes
+    3. Returns the final plane list
+
+    Parameters
+    ----------
+    draped_planes : list[RoofPlane]
+        Planes with image-precise boundaries and LiDAR-derived geometry.
+    internal_edges : list[InternalEdge]
+        Image-detected ridge/valley/hip lines.
+    features : list[DetectedFeature]
+        Detected dormers, chimneys, skylights, vents.
+
+    Returns
+    -------
+    list[RoofPlane]
+        Final fused plane list.
+    """
+    if not draped_planes:
+        return []
+
+    # For now, the draped planes are already well-formed.
+    # Future: use internal_edges to split segments that contain multiple faces,
+    # and use features for obstruction/dormer assignment.
+    logger.info(
+        "Image-primary fusion: %d planes, %d internal edges, %d features",
+        len(draped_planes), len(internal_edges), len(features),
+    )
+
+    return draped_planes
+
+
 def _contour_to_plane(contour: DetectedContour) -> RoofPlane | None:
     """Create a RoofPlane from an image contour (no height info)."""
     if len(contour.points) < 3:

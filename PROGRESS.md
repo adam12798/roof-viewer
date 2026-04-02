@@ -5,6 +5,35 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-04-01 (Session 31)
+
+### Gradient-Based Roof Edge Detection (Pipeline v0.3.0)
+- [x] **New `gradient_detector.py`** — Detects roof face boundaries from LiDAR height gradients using 3 rules:
+  - Rule 1: Height drops >0.5m between neighbors → eaves, step flashing
+  - Rule 2: Slope sign reversal (gradient dx/dz flips) → ridges, valleys
+  - Rule 3: Slope angle change >30° diagonally → hip lines
+- [x] **Height grid reconstruction** — Converts scattered LiDAR points back to regular 0.5m grid, fills gaps with nearest-neighbor interpolation
+- [x] **Flood fill face segmentation** — Fills between detected edges to find connected roof face regions, removes noise faces <2m²
+- [x] **SVD plane fitting per face** — Computes pitch, azimuth, height per face using existing SVD code
+- [x] **Orchestrator wired** — `pipeline_mode="gradient"` is now default in auto mode; falls back to RANSAC if gradient fails
+- [x] **Tested on synthetic data** — Correctly splits gable roof into 2 faces and hip roof into 4 faces with accurate pitch/azimuth
+
+### SAM/MobileSAM Integration (Pipeline v0.2.0)
+- [x] **MobileSAM installed** — PyTorch (CPU) + MobileSAM + timm, auto-downloads checkpoint
+- [x] **`model_manager.py`** — Singleton model loader, CPU device (MPS float64 bug workaround)
+- [x] **`SAMDetector` class** — Point-prompted segmentation + LSD edge detection + feature detection (dormers/chimneys/skylights)
+- [x] **`lidar_draper.py`** — Samples LiDAR within image-defined regions for 3D geometry
+- [x] **Image-primary pipeline path** — SAM segments → LiDAR draping → fusion (available via `pipeline_mode="image_primary"`)
+- [x] **LiDAR overlap filtering** — Rejects SAM segments without elevated LiDAR points inside (removes trees, roads, neighbors)
+- [ ] **SAM accuracy** — Noisy on real-world images (segments trees, roads, driveways); gradient approach preferred for now
+
+### Infrastructure
+- [x] **`setup.sh`** — Portable setup script on SSD: checks deps, installs node_modules, creates ~/roof_venv, verifies .env
+- [x] **Pipeline mode selection** — `auto` (gradient first), `gradient`, `image_primary`, `lidar_primary` via `options.pipeline_mode`
+- [x] **New dependencies** — torch, torchvision, mobile-sam, timm added to requirements.txt
+
+---
+
 ## Completed — 2026-03-30 (Session 30)
 
 ### Roof Auto-Detect Python Microservice

@@ -133,6 +133,7 @@ class RoofParseOptions(BaseModel):
     merge_coplanar: bool = Field(True, description="Merge nearly-coplanar adjacent planes")
     detect_dormers: bool = Field(True, description="Run dormer detection sub-pipeline")
     detect_obstructions: bool = Field(True, description="Run obstruction detection sub-pipeline")
+    pipeline_mode: str = Field("auto", description="Pipeline mode: 'auto', 'image_primary', or 'lidar_primary'")
 
 
 class DesignCenter(BaseModel):
@@ -484,6 +485,8 @@ class RoofParseMetadata(BaseModel):
     pipeline_version: str = Field(..., description="Version of the parsing pipeline")
     lidar_points_used: int = Field(0, ge=0, description="Number of LiDAR points processed")
     image_resolution_used: float = Field(0, gt=0, description="Effective image resolution in m/px")
+    pipeline_mode_used: str = Field("lidar_primary", description="Which pipeline mode was actually used")
+    sam_masks_found: int = Field(0, ge=0, description="Number of roof masks SAM detected")
 
 
 class RoofParseResponse(BaseModel):

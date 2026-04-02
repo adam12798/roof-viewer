@@ -2316,11 +2316,14 @@ app.get("/project/:id", (req, res) => {
   const tab = req.query.tab || "dashboard";
   ensureDesigns(project);
   saveProjects(projects);
+  const allUsers = loadUsers().filter(u => u.active).map(u => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, email: u.email }));
   const designUrl = `/design?lat=${project.lat}&lng=${project.lng}&address=${encodeURIComponent(project.address)}&projectId=${project.id}`;
   const salesUrl = `/sales?projectId=${project.id}`;
   const customerName = esc(project.customer?.name || project.projectName || "Untitled");
   const shortAddr = esc((project.address || "").split(",").slice(0,2).join(","));
   const typeLabel = project.propertyType === "commercial" ? "Commercial" : "Residential";
+  const assigneeName = project.assignee || '';
+  const assigneeInitials = assigneeName ? assigneeName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2) : '';
   const timeAgo = iso => { if (!iso) return "—"; const s = Math.floor((Date.now()-new Date(iso))/1000); if(s<60)return"Just now"; if(s<3600)return Math.floor(s/60)+"m ago"; if(s<86400)return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago"; };
 
   // ── Tab content ───────────────────────────────────────────────────────────
@@ -3301,6 +3304,64 @@ app.get("/project/:id", (req, res) => {
     .rename-btn-save.active { background:#7c3aed; color:#fff; }
     .rename-btn-save.active:hover { background:#6d28d9; }
 
+    /* Delete confirmation modal */
+    .delete-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999; align-items:center; justify-content:center; }
+    .delete-overlay.open { display:flex; }
+    .delete-modal { background:#fff; border-radius:14px; padding:28px 32px; width:460px; box-shadow:0 20px 60px rgba(0,0,0,0.18); position:relative; }
+    .delete-modal-close { position:absolute; top:16px; right:18px; background:none; border:none; font-size:1.3rem; color:#6b7280; cursor:pointer; padding:4px; line-height:1; }
+    .delete-modal-close:hover { color:#111; }
+    .delete-modal h2 { font-size:1.1rem; font-weight:700; color:#111; margin-bottom:12px; }
+    .delete-modal p { font-size:0.9rem; color:#6b7280; line-height:1.5; margin:0; }
+    .delete-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
+    .delete-modal-actions button { padding:8px 22px; border-radius:8px; font-size:0.88rem; font-weight:600; cursor:pointer; border:none; transition:background 0.15s; }
+    .delete-btn-cancel { background:none; color:#374151; }
+    .delete-btn-cancel:hover { background:#f3f4f6; }
+    .delete-btn-confirm { background:#991b1b; color:#fff; }
+    .delete-btn-confirm:hover { background:#7f1d1d; }
+
+    /* Assign dropdown */
+    .assign-wrap { position: relative; }
+    .assign-dropdown {
+      display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 300;
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.12); width: 320px;
+      max-height: 420px; overflow: hidden; flex-direction: column;
+    }
+    .assign-dropdown.open { display: flex; }
+    .assign-search-wrap {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-bottom: 1px solid #f3f4f6;
+    }
+    .assign-search {
+      border: none; outline: none; font-size: 0.88rem; color: #111;
+      flex: 1; background: none;
+    }
+    .assign-search::placeholder { color: #9ca3af; }
+    .assign-count {
+      padding: 8px 14px; font-size: 0.75rem; color: #9ca3af;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .assign-count strong { color: #111; font-weight: 600; }
+    .assign-list { overflow-y: auto; max-height: 280px; }
+    .assign-user {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; cursor: pointer; transition: background 0.1s;
+    }
+    .assign-user:hover { background: #f9fafb; }
+    .assign-user-info { display: flex; flex-direction: column; }
+    .assign-user-name { font-size: 0.88rem; color: #374151; font-weight: 400; }
+    .assign-user.active .assign-user-name { font-weight: 700; color: #111; }
+    .assign-user-email { font-size: 0.78rem; color: #9ca3af; margin-top: 1px; }
+    .assign-user.active .assign-user-email { color: #7c3aed; }
+    .assign-check { color: #7c3aed; font-size: 1.1rem; }
+    .assign-unassign {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px; border: none; background: none;
+      font-size: 0.88rem; color: #374151; cursor: pointer;
+      border-top: 1px solid #f3f4f6; width: 100%; text-align: left;
+    }
+    .assign-unassign:hover { background: #f9fafb; }
+
     .nav-item {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 16px;
@@ -3848,11 +3909,24 @@ app.get("/project/:id", (req, res) => {
       Remote Assessment Completed
       <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
     </button>
-    <button class="sh-dropdown">
-      <div class="assignee-dot">J</div>
-      Juliana Imeraj
-      <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-    </button>
+    <div class="assign-wrap" id="assignWrap">
+      <button class="sh-dropdown" id="assignBtn" onclick="event.stopPropagation(); toggleAssignDropdown()">
+        ${assigneeName ? `<div class="assignee-dot">${assigneeInitials}</div> ${esc(assigneeName)}` : '<span style="color:#9ca3af">Unassigned</span>'}
+        <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="assign-dropdown" id="assignDropdown">
+        <div class="assign-search-wrap">
+          <svg width="14" height="14" fill="none" stroke="#9ca3af" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" class="assign-search" id="assignSearch" placeholder="Search" oninput="filterAssignUsers()" onclick="event.stopPropagation()"/>
+        </div>
+        <div class="assign-count" id="assignCount"></div>
+        <div class="assign-list" id="assignList"></div>
+        <button class="assign-unassign" onclick="selectAssignee('')">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Unassign
+        </button>
+      </div>
+    </div>
     <div class="sh-right">
       <div class="dm-wrap" id="dmWrap">
         <button class="mode-btn mode-btn-design" id="dmBtn" onclick="toggleDmMenu(event)">
@@ -3880,6 +3954,22 @@ app.get("/project/:id", (req, res) => {
 
     <!-- Sidebar -->
     <nav class="sidebar">
+      <div class="sidebar-customer">
+        <div>
+          <div class="sidebar-customer-name">${project.projectName || 'Untitled'}</div>
+          <div class="sidebar-customer-sub">${project.address ? project.address.split(',')[0] : ''}</div>
+        </div>
+        <div class="sidebar-more-wrap">
+          <button class="sidebar-more" onclick="event.stopPropagation(); toggleSidebarMenu()">···</button>
+          <div class="sidebar-more-menu" id="sidebarMoreMenu">
+            <button class="menu-item" onclick="sidebarRename()">Rename</button>
+            <button class="menu-item" onclick="sidebarAssign()">Assign to team</button>
+            <div class="menu-divider"></div>
+            <button class="menu-item danger" onclick="sidebarDelete()">Delete</button>
+            <button class="menu-item" onclick="sidebarArchive()">Archive</button>
+          </div>
+        </div>
+      </div>
       ${navItem("dashboard","Dashboard",`<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>`)}
       ${navItem("designs","Designs",`<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>`)}
       ${navItem("energy","Energy usage",`<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`)}
@@ -4275,21 +4365,67 @@ app.get("/project/:id", (req, res) => {
       }).then(function(r) { if (r.ok) location.reload(); });
     }
     function sidebarAssign() {
-      var team = prompt('Assign to team member:');
-      if (team && team.trim()) {
-        fetch('/api/projects/${project.id}/reassign', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assignee: team.trim() })
-        }).then(function(r) { if (r.ok) location.reload(); });
-      }
+      document.getElementById('sidebarMoreMenu').classList.remove('open');
+      toggleAssignDropdown();
     }
+
+    /* ── Assign dropdown ── */
+    var ALL_USERS = ${JSON.stringify(allUsers)};
+    var CURRENT_ASSIGNEE = ${JSON.stringify(assigneeName)};
+    var ORG_NAME = ${JSON.stringify(project.organization || 'Internal')};
+
+    function toggleAssignDropdown() {
+      var dd = document.getElementById('assignDropdown');
+      var wasOpen = dd.classList.contains('open');
+      // close other dropdowns
+      document.getElementById('dmDropdown').classList.remove('open');
+      if (wasOpen) { dd.classList.remove('open'); return; }
+      dd.classList.add('open');
+      document.getElementById('assignSearch').value = '';
+      filterAssignUsers();
+      setTimeout(function(){ document.getElementById('assignSearch').focus(); }, 50);
+    }
+    function filterAssignUsers() {
+      var q = document.getElementById('assignSearch').value.trim().toLowerCase();
+      var filtered = ALL_USERS.filter(function(u) {
+        var full = (u.firstName + ' ' + u.lastName + ' ' + u.email).toLowerCase();
+        return !q || full.indexOf(q) !== -1;
+      });
+      var list = document.getElementById('assignList');
+      var shown = Math.min(filtered.length, 10);
+      document.getElementById('assignCount').innerHTML = 'Displaying ' + shown + ' of ' + ALL_USERS.length + ' users in <strong>' + ORG_NAME + '</strong>';
+      list.innerHTML = filtered.slice(0, 10).map(function(u) {
+        var fullName = u.firstName + ' ' + u.lastName;
+        var isActive = fullName === CURRENT_ASSIGNEE;
+        return '<div class="assign-user' + (isActive ? ' active' : '') + '" onclick="selectAssignee(\\'' + fullName.replace(/'/g, "\\\\'") + '\\')">' +
+          '<div class="assign-user-info">' +
+            '<div class="assign-user-name">' + fullName + '</div>' +
+            (u.email ? '<div class="assign-user-email">' + u.email + '</div>' : '') +
+          '</div>' +
+          (isActive ? '<span class="assign-check">✓</span>' : '') +
+        '</div>';
+      }).join('');
+    }
+    function selectAssignee(name) {
+      document.getElementById('assignDropdown').classList.remove('open');
+      fetch('/api/projects/${project.id}/reassign', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignee: name })
+      }).then(function(r) { if (r.ok) location.reload(); });
+    }
+
     function sidebarDelete() {
-      if (confirm('Are you sure you want to delete this project? This cannot be undone.')) {
-        fetch('/api/projects/${project.id}', {
-          method: 'DELETE'
-        }).then(function(r) { if (r.ok) window.location.href = '/crm'; });
-      }
+      document.getElementById('sidebarMoreMenu').classList.remove('open');
+      document.getElementById('deleteOverlay').classList.add('open');
+    }
+    function closeDeleteModal() {
+      document.getElementById('deleteOverlay').classList.remove('open');
+    }
+    function confirmDelete() {
+      fetch('/api/projects/${project.id}', {
+        method: 'DELETE'
+      }).then(function(r) { if (r.ok) window.location.href = '/crm'; });
     }
     function sidebarArchive() {
       fetch('/api/projects/${project.id}/archive', {
@@ -4304,6 +4440,10 @@ app.get("/project/:id", (req, res) => {
       var smMenu = document.getElementById('sidebarMoreMenu');
       if (smMenu && !smMenu.closest('.sidebar-more-wrap').contains(e.target)) {
         smMenu.classList.remove('open');
+      }
+      var assignWrap = document.getElementById('assignWrap');
+      if (assignWrap && !assignWrap.contains(e.target)) {
+        document.getElementById('assignDropdown').classList.remove('open');
       }
     });
 
@@ -4391,6 +4531,18 @@ app.get("/project/:id", (req, res) => {
       <div class="rename-modal-actions">
         <button class="rename-btn-cancel" onclick="closeRenameModal()">Cancel</button>
         <button class="rename-btn-save" id="renameSaveBtn" onclick="submitRename()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="delete-overlay" id="deleteOverlay" onclick="if(event.target===this)closeDeleteModal()">
+    <div class="delete-modal">
+      <button class="delete-modal-close" onclick="closeDeleteModal()">&times;</button>
+      <h2>Delete project</h2>
+      <p>Are you sure you want to permanently delete your selected project? This action is irreversible.</p>
+      <div class="delete-modal-actions">
+        <button class="delete-btn-cancel" onclick="closeDeleteModal()">Cancel</button>
+        <button class="delete-btn-confirm" onclick="confirmDelete()">Delete</button>
       </div>
     </div>
   </div>
@@ -6487,7 +6639,7 @@ app.get("/design", (req, res) => {
           <div style="flex:1"></div>
           <span id="calibPointCount" style="color:#aaa;font-size:0.8rem;">0 point pairs</span>
           <button id="calibClear" style="padding:5px 12px;border:1px solid #555;border-radius:6px;background:none;color:#ccc;font-size:0.78rem;cursor:pointer;">Clear All</button>
-          <button id="calibSkip" style="padding:5px 12px;border:1px solid #555;border-radius:6px;background:none;color:#ccc;font-size:0.78rem;cursor:pointer;">Skip</button>
+          <button id="calibSkip" style="display:none;padding:5px 12px;border:1px solid #555;border-radius:6px;background:none;color:#ccc;font-size:0.78rem;cursor:pointer;">Skip</button>
           <button id="calibConfirm" disabled style="padding:5px 14px;border:none;border-radius:6px;background:#555;color:#888;font-size:0.78rem;font-weight:600;cursor:not-allowed;">Confirm (need 4+ pairs)</button>
         </div>
         <!-- Side-by-side body -->
@@ -13531,7 +13683,14 @@ app.get("/design", (req, res) => {
         updateCalibUI();
       });
     }
-    function closeCalibration(){calibrationActive=false;document.getElementById('calibOverlay').style.display='none';}
+    function closeCalibration(){
+      // Only allow closing if calibration has been completed
+      if(!projectHasCalibration && !calibSavedTransform){
+        console.log('Calibration required — cannot close without completing');
+        return;
+      }
+      calibrationActive=false;document.getElementById('calibOverlay').style.display='none';
+    }
 
     function setupCalibCanvas(canvasId,panelKey,pointsKey,color){
       var canvas=document.getElementById(canvasId);if(!canvas)return;
@@ -13603,6 +13762,7 @@ app.get("/design", (req, res) => {
 
       fetch('/api/projects/'+projectId+'/calibration',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(transform)});
       applyCalibration(transform);
+      projectHasCalibration = true;
       var btn=document.getElementById('btnCalibrate');if(btn){btn.classList.add('tb2-calibrated');}
       closeCalibration();
     });
@@ -13611,6 +13771,11 @@ app.get("/design", (req, res) => {
       if(calibrationActive){closeCalibration();return;}
       openCalibration();
     });
+
+    // Auto-open calibration if not done — user must calibrate before designing
+    if(!projectHasCalibration){
+      setTimeout(function(){ openCalibration(); }, 500);
+    }
 
     var _origBuildLidar=buildLidarPointCloud;
     buildLidarPointCloud=function(points){
