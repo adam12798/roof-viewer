@@ -153,6 +153,7 @@ def detect_roof_faces(
     # Step 8: Compute azimuth and pitch from ridge geometry
     ridge_azimuth, ridge_pitch, ridge_info = _ridge_geometry(
         height_grid, ridge_cells, x_origin, z_origin, grid_resolution,
+        anchor_cells=anchor_cells,
     )
     logger.info(
         "Ridge geometry: azimuth=%.1f°, pitch=%.1f°, length=%.1fm",
@@ -162,6 +163,8 @@ def detect_roof_faces(
     # Step 9: Grow faces from anchor dots through roof-like cells
     assigned = np.zeros((rows, cols), dtype=bool)
     planes = []
+    # Faces sharing the same ridge belong to one roof structure
+    main_structure_id = str(uuid.uuid4())[:8]
 
     # Grow face from the anchor side
     for ar, ac in anchor_cells:
@@ -196,6 +199,7 @@ def detect_roof_faces(
             override_pitch=ridge_pitch,
         )
         if plane is not None:
+            plane.structure_id = main_structure_id
             planes.append(plane)
 
     # Step 10: Cross the ridge — find the other face
@@ -234,6 +238,7 @@ def detect_roof_faces(
             override_pitch=ridge_pitch,
         )
         if plane is not None:
+            plane.structure_id = main_structure_id  # same ridge = same structure
             planes.append(plane)
 
     # Step 11: Check ridge ends for hip faces
@@ -251,6 +256,7 @@ def detect_roof_faces(
                 grid_resolution, max_roughness, min_up_component,
             )
             if plane is not None:
+                plane.structure_id = main_structure_id  # hip = same structure
                 planes.append(plane)
 
     # Step 12: Edge drop-off analysis — find lower roofs beyond eaves
@@ -324,6 +330,8 @@ def detect_roof_faces(
             grid_resolution, max_roughness, min_up_component,
         )
         if plane is not None:
+            # Step-down = separate structure (porch, addition, etc.)
+            plane.structure_id = str(uuid.uuid4())[:8]
             planes.append(plane)
 
     logger.info("Anchor-seeded detection complete: %d roof planes", len(planes))
@@ -586,15 +594,25 @@ def _trace_ridge(
     slope_dz = float(dz[rr, rc])
 
     # If slope is near-zero at the ridge (expected for central differences),
-    # average slope from nearby cells
-    if abs(slope_dx) < 0.001 and abs(slope_dz) < 0.001:
-        patch_r = slice(max(0, rr-2), min(rows, rr+3))
-        patch_c = slice(max(0, rc-2), min(cols, rc+3))
-        slope_dx = float(np.mean(np.abs(dx[patch_r, patch_c])))
-        slope_dz = float(np.mean(np.abs(dz[patch_r, patch_c])))
+    # sample from cells 2-3 steps away where the gradient is one-sided.
+    # Use the anchor-side slope (not averaged abs which kills sign info).
+    if abs(slope_dx) < 0.01 and abs(slope_dz) < 0.01:
+        best_mag = 0.0
+        for offset in range(2, 6):
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = rr + dr * offset, rc + dc * offset
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    sdx = float(dx[nr, nc])
+                    sdz = float(dz[nr, nc])
+                    mag = math.sqrt(sdx**2 + sdz**2)
+                    if mag > best_mag:
+                        slope_dx, slope_dz = sdx, sdz
+                        best_mag = mag
 
-    # Ridge direction is perpendicular to slope
-    ridge_dir = (-slope_dz, slope_dx)
+    # Ridge direction is perpendicular to slope in (row, col) grid space.
+    # Slope in grid space is (dz, dx) [row=z, col=x].
+    # Perpendicular of (dz, dx) = (-dx, dz) in (row, col).
+    ridge_dir = (-slope_dx, slope_dz)
     mag = math.sqrt(ridge_dir[0]**2 + ridge_dir[1]**2)
     if mag < 0.001:
         # Fallback: try both axes
@@ -666,13 +684,14 @@ def _ridge_geometry(
     x_origin: float,
     z_origin: float,
     resolution: float,
+    anchor_cells: list[tuple[int, int]] | None = None,
 ) -> tuple[float, float, dict]:
     """
     Compute azimuth and pitch from the traced ridge line.
 
     Returns (azimuth_deg, pitch_deg, info_dict).
-    - azimuth: direction the roof face (anchor side) faces, perpendicular to ridge
-    - pitch: computed from ridge peak to ridge endpoint height drop
+    - azimuth: direction the anchor-side face faces, perpendicular to ridge
+    - pitch: computed from ridge peak to eave height drop
     """
     # Ridge endpoints and peak
     start_r, start_c = ridge_cells[0]
@@ -686,14 +705,35 @@ def _ridge_geometry(
     if ridge_len_cells < 1:
         return 0.0, 0.0, {'length_m': 0.0}
 
-    # Ridge direction in metres
+    # Ridge direction in metres (x=col, z=row)
     ridge_dx = dc * resolution  # x direction
     ridge_dz = dr * resolution  # z direction
 
     # Azimuth: perpendicular to ridge direction
-    # Ridge runs along (ridge_dx, ridge_dz), face normal is perpendicular
-    # We return the azimuth of one face; the other is +180°
-    face_azimuth = math.degrees(math.atan2(-ridge_dz, ridge_dx)) % 360.0
+    # Two perpendicular candidates — pick the one pointing toward the anchors
+    perp1_az = math.degrees(math.atan2(-ridge_dz, ridge_dx)) % 360.0
+    perp2_az = (perp1_az + 180.0) % 360.0
+
+    face_azimuth = perp1_az  # default
+
+    if anchor_cells:
+        # Compute which perpendicular direction points from ridge toward anchors
+        mid_r, mid_c = ridge_cells[len(ridge_cells) // 2]
+        avg_ar = np.mean([a[0] for a in anchor_cells])
+        avg_ac = np.mean([a[1] for a in anchor_cells])
+        # Vector from ridge midpoint to anchor centroid in (x, z) = (col, row)
+        to_anchor_x = (avg_ac - mid_c) * resolution
+        to_anchor_z = (avg_ar - mid_r) * resolution
+        # Pick the perpendicular that aligns with the anchor direction
+        # Convert azimuth to vector: az=0°→north(−z), az=90°→east(+x)
+        for candidate_az in [perp1_az, perp2_az]:
+            az_rad = math.radians(candidate_az)
+            az_x = math.sin(az_rad)
+            az_z = -math.cos(az_rad)
+            dot = az_x * to_anchor_x + az_z * to_anchor_z
+            if dot > 0:
+                face_azimuth = candidate_az
+                break
 
     # Ridge length
     ridge_length_m = math.sqrt(ridge_dx**2 + ridge_dz**2)
@@ -711,9 +751,10 @@ def _ridge_geometry(
     perp_dr = -dc / ridge_len_cells  # perpendicular row step
     perp_dc = dr / ridge_len_cells   # perpendicular col step
 
-    # Trace downhill to find eave
+    # Trace downhill to find eave — stop at substantial drop-offs
     eave_height = peak_height
     eave_dist = 0.0
+    prev_h = peak_height
     cr, cc = float(mid_r), float(mid_c)
     for step in range(1, 100):
         nr = int(round(cr + perp_dr * step))
@@ -721,12 +762,16 @@ def _ridge_geometry(
         if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
             break
         h = height_grid[nr, nc]
+        # Stop at sudden drop (>0.5m between consecutive cells) = eave/edge
+        if prev_h - h > 0.5:
+            break
+        # Stop if height starts rising again (crossed into another structure)
+        if h > prev_h + 0.1:
+            break
         if h < eave_height:
             eave_height = h
             eave_dist = step * resolution
-        # Stop if height starts rising again or drops below min
-        if h < peak_height * 0.3:
-            break
+        prev_h = h
 
     # Pitch from height drop over horizontal distance
     height_drop = peak_height - eave_height

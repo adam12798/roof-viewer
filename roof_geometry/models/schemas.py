@@ -214,6 +214,7 @@ class RoofPlane(BaseModel):
     area_m2: float = Field(..., gt=0, description="Surface area in square metres")
     is_flat: bool = Field(False, description="True if pitch < ~2 degrees")
     plane_type: PlaneType = Field(PlaneType.main, description="Classification of this plane")
+    structure_id: str = Field("", description="Groups faces that share a ridge into one roof structure")
     confidence: float = Field(..., ge=0, le=1, description="Detection confidence score")
     needs_review: bool = Field(False, description="Flagged for human review")
 
