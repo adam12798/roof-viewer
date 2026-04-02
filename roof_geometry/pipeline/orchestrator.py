@@ -18,7 +18,9 @@ import numpy as np
 
 from models.schemas import (
     ConfidenceReport,
+    Point2D,
     RegistrationTransform,
+    RidgeLine,
     RoofGraph,
     RoofParseMetadata,
     RoofParseRequest,
@@ -132,12 +134,20 @@ class RoofParsingPipeline:
             fused = None
 
             # Gradient mode: default for auto — pure LiDAR height logic
+            ridge_world = None
+            cell_grid_info = None
             if requested_mode in ("auto", "gradient"):
-                gradient_result = self._try_gradient(processed, request.anchor_dots)
+                lidar_resolution = request.lidar.resolution if request.lidar else 0.5
+                gradient_result = self._try_gradient(processed, request.anchor_dots,
+                                                     grid_resolution=lidar_resolution)
                 if gradient_result is not None:
-                    fused = gradient_result
-                    pipeline_mode_used = "gradient"
-                    logger.info("Using GRADIENT mode (%d planes)", len(fused))
+                    gradient_planes, ridge_world, cell_grid_info = gradient_result
+                    if gradient_planes:
+                        fused = gradient_planes
+                        pipeline_mode_used = "gradient"
+                        logger.info("Using GRADIENT mode (%d planes)", len(fused))
+                    else:
+                        logger.info("Gradient detection found no planes — falling back")
 
             # Image-primary mode: SAM-based (explicit request only)
             if fused is None and requested_mode == "image_primary":
@@ -176,12 +186,28 @@ class RoofParsingPipeline:
                 sam_masks_found=sam_masks_found,
             )
 
+            # Build ridge_line from gradient detector output if available
+            ridge_line = None
+            if ridge_world is not None:
+                start, end, az, pitch, length, peak_h = ridge_world
+                ridge_line = RidgeLine(
+                    start=Point2D(x=start[0], z=start[1]),
+                    end=Point2D(x=end[0], z=end[1]),
+                    peak_height_m=float(peak_h),
+                    length_m=float(length),
+                    azimuth_deg=float(az),
+                    pitch_deg=float(pitch),
+                )
+
             return RoofParseResponse(
                 registration=registration,
                 roof_graph=roof_graph,
                 crm_faces=crm_faces,
                 confidence_report=confidence_report,
                 metadata=metadata,
+                ridge_line=ridge_line,
+                cell_labels_grid=cell_grid_info['grid'] if cell_grid_info else None,
+                grid_info={k: v for k, v in cell_grid_info.items() if k != 'grid'} if cell_grid_info else None,
             )
 
         except Exception as e:
@@ -223,10 +249,12 @@ class RoofParsingPipeline:
         self,
         processed_lidar: np.ndarray,
         anchor_dots: list | None = None,
-    ) -> list | None:
+        grid_resolution: float = 0.5,
+    ) -> tuple[list, tuple] | None:
         """
         Anchor-seeded roof detection: use calibration dots to learn
         what 'roof' looks like, then grow faces from those seeds.
+        Returns (planes, ridge_world, cell_grid_info) or None on failure.
         """
         try:
             # Convert anchor dots to (x, z) tuples
@@ -234,16 +262,16 @@ class RoofParsingPipeline:
             if anchor_dots:
                 anchor_xz = [(d.x, d.z) for d in anchor_dots]
 
-            planes = self._time_stage(
+            planes, ridge_world, cell_grid_info = self._time_stage(
                 "gradient_detection",
                 detect_roof_faces,
                 processed_lidar,
                 anchor_dots=anchor_xz,
+                grid_resolution=grid_resolution,
             )
-            if planes:
-                return planes
-            logger.info("Gradient detection found no planes — falling back")
-            return None
+            # Always return cell_grid_info so the classification grid reaches the frontend
+            # even when no planes were found. The caller decides whether to fall back.
+            return planes, ridge_world, cell_grid_info
         except Exception as e:
             logger.warning("Gradient detection failed: %s — falling back", e)
             return None

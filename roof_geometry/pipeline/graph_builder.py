@@ -529,18 +529,84 @@ def _detect_dormers(
         cx = sum(xs) / len(xs)
         cz = sum(zs) / len(zs)
 
+        # Build the 5-point triangular footprint.
+        # The dormer faces outward in its azimuth direction (downslope).
+        # From birds-eye view the shape is a pentagon:
+        #
+        #         peak          ← highest point, centre-back (up-slope)
+        #        /    \
+        #   back-L    back-R    ← where each side wall meets the main roof
+        #     |          |
+        #   front-L  front-R   ← parent-plane eave edge (may hang past it)
+        #
+        # Ordered: front-left, front-right, back-right, peak, back-left
+        az_rad = math.radians(plane.azimuth_deg)
+        # Unit vector pointing in the facing (downslope) direction
+        face_x = math.sin(az_rad)
+        face_z = math.cos(az_rad)
+        # Unit vector pointing left (90° counter-clockwise from facing)
+        lat_x = -face_z
+        lat_z = face_x
+
+        hw = width / 2.0   # half-width
+
+        # Project each parent-plane vertex onto the facing axis and take the
+        # maximum — this is the eave line (furthest downslope boundary).
+        center_proj = cx * face_x + cz * face_z
+        parent_projs = [v.x * face_x + v.z * face_z for v in parent.vertices]
+        eave_proj = max(parent_projs)
+
+        # Distance from dormer centre to the eave (downslope).
+        # Positive means the eave is further downslope than the centre.
+        front_d = eave_proj - center_proj
+
+        # Distance from dormer centre to the ridge contact (up-slope).
+        # Use the projected depth of the dormer plane itself.
+        dormer_projs = [v.x * face_x + v.z * face_z for v in plane.vertices]
+        ridge_proj = min(dormer_projs)  # furthest up-slope vertex
+        back_d = center_proj - ridge_proj  # should be positive
+
+        # Guard against degenerate cases
+        if front_d <= 0:
+            front_d = depth / 2.0
+        if back_d <= 0:
+            back_d = depth / 2.0
+
+        # Elevation rises as we move up-slope (opposite to facing direction).
+        pitch_tan = math.tan(math.radians(plane.pitch_deg))
+
+        def _pt(dx: float, dz: float) -> Point3D:
+            """Return a Point3D offset from dormer centre, with slope elevation."""
+            px = cx + lat_x * dx + face_x * dz
+            pz = cz + lat_z * dx + face_z * dz
+            # dz > 0 → downslope (lower); dz < 0 → upslope (higher)
+            elev = plane.elevation_m + max(0.0, -dz) * pitch_tan
+            return Point3D(x=round(px, 3), y=round(elev, 3), z=round(pz, 3))
+
+        footprint = [
+            _pt(+hw, +front_d),   # front-left   (at parent eave, lowest)
+            _pt(-hw, +front_d),   # front-right
+            _pt(-hw, -back_d),    # back-right
+            _pt(0.0, -back_d),    # peak         (ridge contact, highest)
+            _pt(+hw, -back_d),    # back-left
+        ]
+
+        # Recompute actual dimensions from the adjusted contact points
+        actual_depth = front_d + back_d
+
         dormers.append(Dormer(
             id=f"dormer_{uuid.uuid4().hex[:8]}",
             dormer_type=dtype,
             position=Point2D(x=round(cx, 3), z=round(cz, 3)),
             width_m=round(width, 2),
-            depth_m=round(depth, 2),
+            depth_m=round(actual_depth, 2),
             height_m=round(max(height, 0.1), 2),
             pitch_deg=round(plane.pitch_deg, 2),
             azimuth_deg=round(plane.azimuth_deg, 2),
             parent_plane_id=parent.id,
             confidence=round(plane.confidence, 3),
             needs_review=plane.confidence < 0.6,
+            footprint=footprint,
         ))
 
     logger.info("Detected %d dormers", len(dormers))

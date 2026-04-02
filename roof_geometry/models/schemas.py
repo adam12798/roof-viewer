@@ -252,6 +252,15 @@ class Dormer(BaseModel):
     parent_plane_id: str = Field(..., description="ID of the roof plane this dormer sits on")
     confidence: float = Field(..., ge=0, le=1, description="Detection confidence")
     needs_review: bool = Field(False, description="Flagged for human review")
+    footprint: list[Point3D] = Field(
+        default_factory=list,
+        description=(
+            "5 contact points where the dormer meets the parent roof plane, "
+            "ordered: front-left, front-right, back-right, peak, back-left. "
+            "front-* are at the eave (lowest elevation); peak is the ridge "
+            "contact (highest elevation, centre-back)."
+        ),
+    )
 
 
 class Obstruction(BaseModel):
@@ -306,6 +315,10 @@ class RoofGraph(BaseModel):
                     height=d.height_m,
                     pitch=d.pitch_deg,
                     azimuth=d.azimuth_deg,
+                    footprint=[
+                        {"x": round(p.x, 3), "y": round(p.y, 3), "z": round(p.z, 3)}
+                        for p in d.footprint
+                    ],
                 )
                 for d in self.dormers
                 if d.parent_plane_id == plane.id
@@ -443,6 +456,13 @@ class CRMDormer(BaseModel):
     height: float = Field(..., description="Height in metres")
     pitch: float = Field(..., description="Pitch in degrees")
     azimuth: float = Field(..., description="Azimuth in degrees")
+    footprint: list[dict[str, float]] = Field(
+        default_factory=list,
+        description=(
+            "5 contact points [{x, y, z}, ...] ordered: "
+            "front-left, front-right, back-right, peak, back-left"
+        ),
+    )
 
 
 class CRMRoofFace(BaseModel):
@@ -477,6 +497,20 @@ class CRMRoofFace(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Ridge line model
+# ---------------------------------------------------------------------------
+
+class RidgeLine(BaseModel):
+    """Direct ridge line output from the gradient detector."""
+    start: Point2D = Field(..., description="Ridge start point in local metres")
+    end: Point2D = Field(..., description="Ridge end point in local metres")
+    peak_height_m: float = Field(..., description="Elevation of the ridge above ground in metres")
+    length_m: float = Field(..., description="Ridge length in metres")
+    azimuth_deg: float = Field(..., description="Ridge azimuth in degrees")
+    pitch_deg: float = Field(..., description="Roof pitch in degrees")
+
+
+# ---------------------------------------------------------------------------
 # Response model
 # ---------------------------------------------------------------------------
 
@@ -500,3 +534,6 @@ class RoofParseResponse(BaseModel):
     )
     confidence_report: ConfidenceReport = Field(..., description="Detection confidence summary")
     metadata: RoofParseMetadata = Field(..., description="Processing metadata")
+    ridge_line: RidgeLine | None = Field(None, description="Direct ridge line from gradient detector")
+    cell_labels_grid: list[list[int]] | None = Field(None, description="Grid of CellLabel int values (rows×cols) for visualization")
+    grid_info: dict | None = Field(None, description="Grid metadata: x_origin, z_origin, resolution, rows, cols")

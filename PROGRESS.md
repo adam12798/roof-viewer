@@ -5,6 +5,136 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-04-02 (Session 35)
+
+### Ridge Detection & Classification Refinements
+
+#### LiDAR Point Density Increase
+- [x] **4× more data from Google Solar API** — `pixelSizeMeters` changed from 0.5 → 0.25m; API returns 4× real DSM pixels
+- [x] **Grid size scaled** — client grid 177×177 → 281×281 (~79k points vs ~31k); step matches 0.25m DSM
+- [x] **Smaller dot size** — Three.js `PointsMaterial.size` 6.6 → 3.5; denser cloud renders as fine dots
+- [x] **Resolution threaded to Python** — `request.lidar.resolution` (0.25) passed through orchestrator → `detect_roof_faces` `grid_resolution`
+
+#### Resolution-Aware Classification Parameters
+- [x] **All cell-count params now auto-scale from physical distances** — no more hardcoded cell counts that break at finer resolution:
+  - `patch_size`: `max(5, round(2.5m / resolution))` — 5 cells @ 0.5m → 11 cells @ 0.25m
+  - `_EDGE_LOOK` (RIDGE_EDGE_DOT detection): `max(4, round(2.0m / resolution))`
+  - `window_size` (density validation): `max(5, round(2.5m / resolution))`
+  - `max_endpoint_gap`: `max(2, round(1.0m / resolution))`
+  - `min_ridge_dot_count`: `max(5, round(2.5m / resolution))`
+  - `min_inliers` (PCA fit): `max(3, round(1.5m / resolution))`
+  - `expanded_search_radius` (Pass 2): `max(3, round(1.5m / resolution))`
+- [x] **`gradient_threshold` scaled** — `0.1 × grid_resolution` keeps flat/sloped cutoff at ~5.7° regardless of resolution (was producing false FLAT_ROOF on 30° roofs at 0.25m)
+
+#### Ridge Candidate Rules
+- [x] **Stricter uphill disqualifier** — a RIDGE_DOT must be a local maximum in the slope direction; if the uphill neighbor is ANY higher than the current cell, it's disqualified (was only disqualified if BOTH uphill was higher AND downhill was lower)
+- [x] **Ridge tilt + endpoint Δh enforced on both code paths** — PCA path and fallback trace path both trim from the higher end until tilt ≤ 8° AND endpoint height difference ≤ 0.5m
+- [x] **Anchor-height pre-filter** — ridge candidates below `max_anchor_height − 0.5m` discarded before PCA; prevents tree/ground clusters at wrong height
+- [x] **Anchor search radius** reduced 20m → 10m
+- [x] **`autoAlignDone` wait** — auto-detect interval now waits for both LiDAR data AND auto-align to finish before firing, fixing two-line problem from calibration timing race
+
+#### New Classification Labels
+- [x] **`RIDGE_EDGE_DOT = 9`** (bright orange) — RIDGE_DOT at gable end where uphill side has ROOF/RIDGE_DOT and outward side has GROUND or LOWER_ROOF within ~2m; included in PCA candidates and density validation
+
+#### Bug Fixes
+- [x] **`cell_labels_grid` always returned** — even when gradient detection finds no planes, `cell_grid_info` now propagates to frontend so coloring works on all designs
+- [x] **`lidarVisible` synced** — `recolorLidarByClassification` sets `lidarVisible = true` to prevent `revealLidar()` race from hiding colored dots
+- [x] **`.name` on numpy.int64** — fixed `CellLabel(cell_labels[r,c]).name` call that was crashing gradient detection on every request
+
+---
+
+## Completed — 2026-04-02 (Session 34)
+
+### Ridge Detection Pipeline Overhaul (PCA/SVD + Classification Grid)
+
+#### Per-Cell Grid Classification System
+- [x] **`CellLabel` IntEnum** — 9 labels: `UNSURE(0)`, `GROUND(1)`, `ROOF(2)`, `LOWER_ROOF(3)`, `FLAT_ROOF(4)`, `RIDGE_DOT(5)`, `NEAR_RIDGE(6)`, `TREE(7)`, `EAVE_DOT(8)`
+- [x] **`_classify_grid_cells()`** — 3-pass classifier:
+  - Pass 1: per-cell height/gradient classification (GROUND vs ROOF vs UNSURE)
+  - Pass 2: UNSURE cells adopt majority-neighbor label via expansion
+  - Pass 3: RIDGE_DOT/NEAR_RIDGE/EAVE_DOT promotion from ROOF cells
+- [x] **`_local_variance_3x3()`** helper — computes 3×3 local height variance for tree detection
+- [x] **`cell_labels_grid` + `grid_info`** returned in `RoofParseResponse` schema for frontend visualization
+
+#### Tree Detection
+- [x] **Variance threshold** — cells with 3×3 height variance > 0.15m² are flagged as TREE; variance is too high for smooth roof surface
+- [x] **Height threshold** — anything taller than `max_anchor_height + 6m` is classified TREE regardless of variance
+- [x] **Tree disqualification** — TREE cells cannot be promoted to RIDGE_DOT or NEAR_RIDGE
+
+#### RIDGE_DOT / NEAR_RIDGE Classification
+- [x] **Slope-prediction condition** — `cond_a = h_up < (h + grad_mag) - 0.05`: uphill cell is lower than slope predicts → ridge nearby
+- [x] **Normal-slope disqualifier** — cells where `h_down < h AND h_up > h` (normal downhill gradient) cannot be RIDGE_DOT
+- [x] **FLAT_ROOF aspect ratio check** — connected FLAT_ROOF regions with `length < 1m OR width < 1m OR aspect > 6` are reclassified as RIDGE_DOT (narrow ridge cap, not a flat roof section)
+
+#### EAVE_DOT Classification
+- [x] **Eave drop condition** — `h_down < (h - grad_mag) - 0.15 OR h_down < h - 0.4`: downslope cell drops faster than slope predicts or >40cm absolute
+- [x] **Only on downslope side** — disqualified when `h_up > h` (uphill, not an eave)
+- [x] **Parallel to ridge** — EAVE_DOT forms a line along the bottom edge of the roof face
+
+#### PCA/SVD Ridge Line Fitting
+- [x] **`_fit_ridge_line()`** — replaces fragile single-path trace with PCA fit through RIDGE_DOT candidates
+  - Collects all RIDGE_DOT cells; falls back to NEAR_RIDGE if insufficient
+  - Height cluster filter: 1m sliding window to find densest cluster, rejects cells from neighboring structures with different heights (>1m gap)
+  - RANSAC outlier rejection for noisy candidate sets
+  - Returns `(ridge_cells, direction_vector)` for snapping
+- [x] **`_validate_ridge_density()`** — 4/5 window check: requires ≥4 of any 5 consecutive cells to be labeled; endpoint gap trim removes tail if last supported dot is >2 cells from endpoint (prevents stray dots from extending ridge)
+
+#### Ridge Direction Snapping
+- [x] **`_snap_ridge_to_slope()`** — snaps PCA-fitted ridge direction to either:
+  - 90° from slope (gable roof)
+  - 45° from slope (hip roof)
+  - Within 15° tolerance; logs warning and keeps PCA fit if neither matches
+- [x] **`_reproject_ridge_cells()`** — re-samples ridge cells along snapped direction keeping centroid fixed after direction correction
+
+#### Flat Opposite Side Detection
+- [x] **`_is_flat_region()`** — samples up to 20 cells from opposite-ridge seeds, returns True if mean gradient magnitude < 0.03
+- [x] **`allow_flat` param in `_grow_face()`** — when True, skips the streak-of-low-gradient stop condition so flat roof grows fully
+- [x] **`override_pitch` bug fix** — changed `if override_pitch > 0` to `if override_pitch is not None`; `0.0` (flat) now correctly overrides SVD pitch
+
+#### Ridge Span and Overhang
+- [x] **5-foot overhang** — `_correct_ridge_from_eaves()` extended to span face edge-to-edge + 1.524m (5ft) past each gable end
+- [x] **Height cluster filter** — rejects ridge candidates from neighboring structures with height difference > 1m from main cluster
+
+#### LiDAR Classification Visualization
+- [x] **`recolorLidarByClassification()`** in `server.js` — maps each LiDAR point to its grid cell label and recolors the Three.js point cloud:
+  - Gray: UNSURE/GROUND, Green: ROOF, Blue: LOWER_ROOF, Purple: FLAT_ROOF
+  - Red: RIDGE_DOT, Yellow: NEAR_RIDGE, Orange-brown: TREE, Cyan: EAVE_DOT
+- [x] **Auto-triggered** — called in `autoDetectRoofContinue` after each detection response; sets `lidarPoints.visible = true`
+
+---
+
+## Completed — 2026-04-02 (Session 33)
+
+### Dormer Geometry Overhaul
+- [x] **Triangular/pentagon footprint** — Dormers changed from rectangular (4-vertex) to arrowhead pentagon (5-vertex): front-left, front-right (eave edge, full width), back-right, back-left (shoulders at mid-depth), peak (center-back tip). `computeDormerVerts` updated; back corners are no longer collinear with the peak.
+- [x] **Flush roof with main roof plane** — Removed the floating `wallH = 1.1m` gap. Dormer roof panels now start exactly at `wH + roofSurfaceY` (the main roof contact height) and rise above it with pitch. Ridge back connects flush to the main roof at the peak contact.
+- [x] **Full perimeter walls** — All 5 pentagon edges now get exterior walls from `Y=0` (ground) to the contact height, matching the `buildRoofWalls` treatment of the main roof faces. Previously only 3 edges had walls.
+- [x] **Independent back/front handle mirroring** — Front pair (v[0], v[1]): mirror width symmetrically, depth shifts both together. Back pair (v[2], v[4]): mirror width symmetrically, depth shifts both together. Peak (v[3]): moves freely. Back handles never affect front handles.
+- [x] **Python pipeline footprint** — `Dormer` schema gains `footprint: list[Point3D]` (5 contact points). `CRMDormer` gains `footprint: list[dict]`. `_detect_dormers` in `graph_builder.py` computes the pentagon from azimuth/pitch: front edge at eave line of parent plane, back at ridge contact, depth derived from actual contact geometry.
+- [x] **Migration for saved dormers** — `migrateDormerVerts()` auto-upgrades 4-vertex rectangular dormers to 5-vertex pentagon on load/restore so old projects don't break.
+
+---
+
+## Completed — 2026-04-02 (Session 32)
+
+### Ridge Line Visualization (replacing face generation for verification)
+- [x] **Ridge line instead of roof faces** — Auto-detect (A key) now draws a single yellow line along the detected ridge instead of generating full roof face geometry; used to verify detection accuracy before building out face rendering
+- [x] **Direct `ridge_line` field in API response** — `gradient_detector.py` now returns ridge world coordinates directly (not derived from graph edge adjacency); surfaced via new `RidgeLine` model in `schemas.py` and passed through `orchestrator.py`
+- [x] **Correct 3D height** — Ridge Y position looked up from `buildElevGrid()` using the same formula as the LiDAR point cloud renderer `(raw_elev - (minZ+1.0)) * vertExag + lidarOffset.y`; previously used Python's ground-normalized height which didn't match the THREE.js coordinate system
+- [x] **5-foot overhang** — Line extends 1.524m past each gable end
+- [x] **Corrected ridge uses post-eave-correction endpoints** — `ridge_world` is now computed after `_correct_ridge_from_eaves()` (step 9b) so the endpoints reflect the final corrected ridge length
+- [x] **Ridge collinearity check** — `_ridge_geometry()` validates that intermediate traced cells fall within 1.5 grid cells of the start→end axis; logs collinearity % and re-anchors direction to inner quartiles if >30% of cells are off-axis
+- [x] **Tree rejection in uphill trace** — `_trace_uphill()` now respects `roof_mask`; previously walked to raw height maximum regardless of roughness, causing it to climb trees taller than the roof. Now only steps into cells that passed the planarity/roughness filter
+
+### Infrastructure
+- [x] **venv rebuilt** — Python 3.12 venv recreated on current drive (old venv had hardcoded paths to `/Volumes/USB20FD/`); all dependencies reinstalled
+
+### Known WIP
+- [ ] **Ridge accuracy on complex roofs** — Works well on simple gables; hip/complex rooflines may need further tuning of the uphill mask and collinearity thresholds
+- [ ] **Focus radius clipping** — Points beyond `max_anchor_distance + 5m` (min 12m) are excluded in `_convert_lidar_to_local`; large roofs may have their ridge endpoints clipped
+
+---
+
 ## Completed — 2026-04-01 (Session 31)
 
 ### Gradient-Based Roof Edge Detection (Pipeline v0.3.0)

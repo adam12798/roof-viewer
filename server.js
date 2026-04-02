@@ -2188,14 +2188,14 @@ app.get("/api/lidar/points", async (req, res) => {
   if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
-  const gridSize = 177;       // 177×177 = 31,329 points
+  const gridSize = 281;       // 281×281 = ~79,000 points at 0.25m steps
   const halfExtent = 35;      // 35 meters from pin in each direction (~70m × 70m, matches satellite image)
 
   try {
     const GeoTIFF = require("geotiff");
 
     // Fetch DSM from Google Solar API — request 75m radius to cover full satellite image extent
-    const layersUrl = `https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${latF}&location.longitude=${lngF}&radiusMeters=75&view=FULL_LAYERS&requiredQuality=HIGH&pixelSizeMeters=0.5&key=${API_KEY}`;
+    const layersUrl = `https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${latF}&location.longitude=${lngF}&radiusMeters=75&view=FULL_LAYERS&requiredQuality=HIGH&pixelSizeMeters=0.25&key=${API_KEY}`;
     const layersResp = await fetch(layersUrl);
     if (!layersResp.ok) {
       const err = await layersResp.json().catch(() => ({}));
@@ -7470,6 +7470,7 @@ app.get("/design", (req, res) => {
     var roofTempHandles = [];
     var roofTempLines = null;
     var roofSnapGuides = [];       // THREE.Line objects for snap guide lines
+    var ridgeLines3d = [];         // THREE.Line objects for detected ridge lines
     var roofSnappedPos = null;     // snapped cursor position {x, z} or null
     var roofSelectedFace = -1;
     var roofSelectedSection = -1;
@@ -7484,6 +7485,8 @@ app.get("/design", (req, res) => {
     var roofEdgeDragOrigVerts = null;
     var roofHoveredEdgeFace = -1;
     var roofHoveredEdgeIdx = -1;
+    var roofHoveredVertexFace = -1;
+    var roofHoveredVertexIdx = -1;
     var roofUndoStack = [];
     var roofRedoStack = [];
     var ROOF_UNDO_MAX = 50;
@@ -7998,7 +8001,7 @@ app.get("/design", (req, res) => {
               rf.dormers.forEach(function(dd) {
                 var newD = {
                   type: dd.type,
-                  vertices: dd.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+                  vertices: migrateDormerVerts(dd.vertices),
                   pitch: dd.pitch || 15,
                   pitchSide: dd.pitchSide || 15,
                   pitchFront: dd.pitchFront || 15,
@@ -8633,17 +8636,19 @@ app.get("/design", (req, res) => {
       }
     });
 
-    function loadLidarPoints() {
+    function loadLidarPoints(silent) {
       if (lidarFetched || lidarLoading) return;
       if (typeof designLat === 'undefined') {
-        setStatus3d('No location — search for an address first');
+        if (!silent) setStatus3d('No location — search for an address first');
         return;
       }
 
       lidarLoading = true;
-      setStatus3d('Loading LiDAR points...');
       var overlay = document.getElementById('lidarLoadingOverlay');
-      if (overlay) overlay.style.display = 'flex';
+      if (!silent) {
+        setStatus3d('Loading LiDAR points...');
+        if (overlay) overlay.style.display = 'flex';
+      }
 
       fetch('/api/lidar/points?lat=' + designLat + '&lng=' + designLng)
         .then(function(r) { return r.json(); })
@@ -8651,17 +8656,23 @@ app.get("/design", (req, res) => {
           lidarLoading = false;
           if (data.error) {
             if (overlay) overlay.style.display = 'none';
-            lidarLoadError = data.error; setStatus3d('LiDAR: ' + data.error); return;
+            lidarLoadError = data.error;
+            if (!silent) setStatus3d('LiDAR: ' + data.error);
+            return;
           }
           if (!data.points || data.points.length === 0) {
             if (overlay) overlay.style.display = 'none';
             lidarLoadError = data.message || 'No LiDAR data for this location';
-            setStatus3d(lidarLoadError);
+            if (!silent) setStatus3d(lidarLoadError);
             return;
           }
-          if (overlay) overlay.querySelector && overlay.querySelector('span') ?
-            overlay.querySelector('span').textContent = 'Aligning LiDAR...' :
-            setStatus3d('Aligning LiDAR...');
+          if (!silent) {
+            if (overlay && overlay.querySelector && overlay.querySelector('span')) {
+              overlay.querySelector('span').textContent = 'Aligning LiDAR...';
+            } else {
+              setStatus3d('Aligning LiDAR...');
+            }
+          }
           buildLidarPointCloud(data.points);
           lidarFetched = true;
         })
@@ -8669,7 +8680,7 @@ app.get("/design", (req, res) => {
           lidarLoading = false;
           if (overlay) overlay.style.display = 'none';
           lidarLoadError = e.message;
-          setStatus3d('Error: ' + e.message);
+          if (!silent) setStatus3d('Error: ' + e.message);
         });
     }
 
@@ -8743,7 +8754,7 @@ app.get("/design", (req, res) => {
       ptTexture.needsUpdate = true;
 
       var mat = new THREE.PointsMaterial({
-        size: 6.6,
+        size: 3.5,
         map: ptTexture,
         vertexColors: true,
         sizeAttenuation: true,
@@ -8763,6 +8774,48 @@ app.get("/design", (req, res) => {
 
     var autoAlignDone = false;
     var onAutoAlignDone = null; // callback after auto-align finishes
+
+    // Classification label → RGB color (matches CellLabel enum in gradient_detector.py)
+    var LABEL_COLORS = [
+      [0.40, 0.40, 0.40],  // 0 UNSURE     — gray
+      [0.25, 0.25, 0.25],  // 1 GROUND     — dark gray
+      [0.20, 0.85, 0.20],  // 2 ROOF       — green
+      [0.20, 0.40, 0.95],  // 3 LOWER_ROOF — blue
+      [0.75, 0.20, 0.90],  // 4 FLAT_ROOF  — purple
+      [1.00, 0.10, 0.10],  // 5 RIDGE_DOT  — bright red
+      [1.00, 0.90, 0.00],  // 6 NEAR_RIDGE — yellow
+      [0.85, 0.45, 0.10],  // 7 TREE       — orange-brown
+      [0.00, 0.90, 0.90],  // 8 EAVE_DOT        — cyan
+      [1.00, 0.55, 0.00],  // 9 RIDGE_EDGE_DOT  — bright orange
+    ];
+
+    function recolorLidarByClassification(cellLabelsGrid, gridInfo) {
+      if (!lidarPoints || !cellLabelsGrid || !gridInfo) return;
+      lidarVisible = true;          // prevent revealLidar() race from hiding points
+      lidarPoints.visible = true;
+      var geo = lidarPoints.geometry;
+      var positions = geo.attributes.position.array;
+      var colors = geo.attributes.color.array;
+      var n = positions.length / 3;
+      var ox = lidarPoints.position.x;
+      var oz = lidarPoints.position.z;
+      for (var i = 0; i < n; i++) {
+        // Raw buffer position + Three.js offset = world local coords matching Python grid
+        var wx = positions[i * 3]     + ox;
+        var wz = positions[i * 3 + 2] + oz;
+        var col = Math.round((wx - gridInfo.x_origin) / gridInfo.resolution);
+        var row = Math.round((wz - gridInfo.z_origin) / gridInfo.resolution);
+        var label = 0;
+        if (row >= 0 && row < gridInfo.rows && col >= 0 && col < gridInfo.cols) {
+          label = cellLabelsGrid[row][col];
+        }
+        var c = LABEL_COLORS[label] || LABEL_COLORS[0];
+        colors[i * 3]     = c[0];
+        colors[i * 3 + 1] = c[1];
+        colors[i * 3 + 2] = c[2];
+      }
+      geo.attributes.color.needsUpdate = true;
+    }
 
     function autoAlignLidar(points, positions, minZ, zRange) {
       autoAlignDone = false;
@@ -8975,13 +9028,15 @@ app.get("/design", (req, res) => {
     var hoveredTreeIdx = -1;
 
     function findTreeUnderCursor(event) {
-      var hit = raycastGroundPlane(event);
-      if (!hit) return -1;
+      var canvas = document.getElementById('canvas3d');
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
       for (var i = 0; i < trees3d.length; i++) {
-        var t = trees3d[i];
-        var dx = hit.x - t.center.x;
-        var dz = hit.z - t.center.z;
-        if (dx * dx + dz * dz <= t.radius * t.radius) return i;
+        if (!trees3d[i].mesh) continue;
+        var hits = raycaster3d.intersectObjects(trees3d[i].mesh.children, false);
+        if (hits.length > 0) return i;
       }
       return -1;
     }
@@ -10131,17 +10186,45 @@ app.get("/design", (req, res) => {
 
     /* ── Dormer 3D Geometry ── */
 
-    // Compute dormer vertices from center position, orientation angle, width and depth
+    // Compute dormer vertices from center position, orientation angle, width and depth.
+    // Returns 5 vertices forming an arrowhead/house pentagon (triangular footprint):
+    //   0=front-left, 1=front-right  (eave edge, local depth -hd, full width)
+    //   2=back-right, 4=back-left    (shoulders, local depth 0 = midpoint, full width)
+    //   3=peak                       (center-back tip, local depth +hd, width 0)
+    //
+    // Birds-eye shape:
+    //       peak (0, +hd)
+    //      /           \
+    //  (-hw, 0)       (+hw, 0)   ← shoulders
+    //     |               |
+    //  (-hw,-hd) ─ (+hw,-hd)    ← eave
     function computeDormerVerts(cx, cz, angle, width, depth) {
       var cos = Math.cos(angle), sin = Math.sin(angle);
       var hw = width / 2, hd = depth / 2;
-      // front-left, front-right, back-right, back-left (front = downslope)
+      // Local→world: x_w = cx + lx*cos - lz*sin,  z_w = cz + lx*sin + lz*cos
       return [
-        { x: cx + (-hw) * cos - (-hd) * sin, z: cz + (-hw) * sin + (-hd) * cos },
-        { x: cx + ( hw) * cos - (-hd) * sin, z: cz + ( hw) * sin + (-hd) * cos },
-        { x: cx + ( hw) * cos - ( hd) * sin, z: cz + ( hw) * sin + ( hd) * cos },
-        { x: cx + (-hw) * cos - ( hd) * sin, z: cz + (-hw) * sin + ( hd) * cos }
+        { x: cx + (-hw)*cos - (-hd)*sin, z: cz + (-hw)*sin + (-hd)*cos }, // 0 front-left  (local -hw, -hd)
+        { x: cx + ( hw)*cos - (-hd)*sin, z: cz + ( hw)*sin + (-hd)*cos }, // 1 front-right (local +hw, -hd)
+        { x: cx + ( hw)*cos            , z: cz + ( hw)*sin             }, // 2 back-right  (local +hw,   0)
+        { x: cx              - ( hd)*sin, z: cz              + ( hd)*cos }, // 3 peak        (local   0, +hd)
+        { x: cx + (-hw)*cos            , z: cz + (-hw)*sin             }  // 4 back-left   (local -hw,   0)
       ];
+    }
+
+    // Upgrade a saved dormer's vertex list to the current 5-point format.
+    // Old dormers have 4 rectangular vertices; recompute from their geometry.
+    function migrateDormerVerts(verts) {
+      if (verts.length >= 5) return verts.map(function(v) { return { x: v.x, z: v.z }; });
+      // Derive center, width, depth, angle from the 4 rectangular corners
+      var fl = verts[0], fr = verts[1], br = verts[2], bl = verts[3];
+      var cx = (fl.x + fr.x + br.x + bl.x) / 4;
+      var cz = (fl.z + fr.z + br.z + bl.z) / 4;
+      var width = Math.sqrt(Math.pow(fr.x - fl.x, 2) + Math.pow(fr.z - fl.z, 2));
+      var fmx = (fl.x + fr.x) / 2, fmz = (fl.z + fr.z) / 2;
+      var bmx = (br.x + bl.x) / 2, bmz = (br.z + bl.z) / 2;
+      var depth = Math.sqrt(Math.pow(bmx - fmx, 2) + Math.pow(bmz - fmz, 2));
+      var angle = Math.atan2(fr.z - fl.z, fr.x - fl.x);
+      return computeDormerVerts(cx, cz, angle, width, depth);
     }
 
     // Get Y height at a point on the roof surface for a given face and section
@@ -10163,25 +10246,23 @@ app.get("/design", (req, res) => {
     function buildDormerMesh(dormer, face, isGhost) {
       var group = new THREE.Group();
       var v = dormer.vertices;
-      if (!v || v.length < 4) return group;
+      if (!v || v.length < 5) return group;
 
       var wH = getRoofWallHeight(face);
-      var opacity = isGhost ? 0.4 : 0.85;
 
-      // Get base Y positions on roof surface for each corner
-      var baseY = [];
-      for (var i = 0; i < 4; i++) {
-        baseY.push(getRoofSurfaceY(face, v[i].x, v[i].z));
+      // World Y of each contact point — where the dormer footprint meets the main roof surface.
+      // Walls run from Y=0 (ground) up to these heights; roof panels start here.
+      var contactY = [];
+      for (var i = 0; i < 5; i++) {
+        contactY.push(wH + getRoofSurfaceY(face, v[i].x, v[i].z));
       }
 
       // Dormer dimensions
       var frontW = Math.sqrt(Math.pow(v[1].x - v[0].x, 2) + Math.pow(v[1].z - v[0].z, 2));
-      var sideL = Math.sqrt(Math.pow(v[3].x - v[0].x, 2) + Math.pow(v[3].z - v[0].z, 2));
+      var fmx = (v[0].x + v[1].x) / 2, fmz = (v[0].z + v[1].z) / 2;
+      var sideL = Math.sqrt(Math.pow(v[3].x - fmx, 2) + Math.pow(v[3].z - fmz, 2));
 
-      // Wall height (dormer walls rise from roof surface)
-      var wallH = 1.1; // ~3.5ft dormer wall height (avg US dormer)
-
-      // Ridge height from dormer pitch
+      // Ridge height above the front contact — the dormer roof rises from the main roof surface
       var pitch = dormer.pitch || 15;
       var ridgeH;
       if (dormer.type === 'shed') {
@@ -10190,11 +10271,9 @@ app.get("/design", (req, res) => {
         ridgeH = (frontW / 2) * Math.tan(pitch * Math.PI / 180);
       }
 
-      // Key Y levels
-      var frontBaseY = (baseY[0] + baseY[1]) / 2;
-      var backBaseY = (baseY[2] + baseY[3]) / 2;
-      var wallTopY = Math.max(frontBaseY, backBaseY) + wallH;
-      var ridgeTopY = wallTopY + ridgeH;
+      // Front contact mid-height and ridge top (no wallH gap — flush with main roof)
+      var frontContactY = (contactY[0] + contactY[1]) / 2;
+      var ridgeTopY = frontContactY + ridgeH;
 
       // Build geometry based on type
       var wallMat = new THREE.MeshBasicMaterial({
@@ -10258,84 +10337,76 @@ app.get("/design", (req, res) => {
         group.add(new THREE.Mesh(geo, mat));
       }
 
-      // Midpoints for ridge
+      // Ridge and roof geometry — all Y values are world-space (no group offset)
       var midFrontX = (v[0].x + v[1].x) / 2, midFrontZ = (v[0].z + v[1].z) / 2;
-      var midBackX = (v[3].x + v[2].x) / 2, midBackZ = (v[3].z + v[2].z) / 2;
-      var ridgeFrontX, ridgeFrontZ, ridgeBackX, ridgeBackZ;
+      var ridgeFrontX, ridgeFrontZ, ridgeFrontY, ridgeBackX, ridgeBackZ, ridgeBackY;
 
       if (dormer.type === 'gable') {
-        // Ridge runs from front-mid to back-mid at ridgeTopY
-        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ;
-        ridgeBackX = midBackX; ridgeBackZ = midBackZ;
+        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = ridgeTopY;
+        // Ridge back is flush with main roof at the peak contact point
+        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = contactY[3];
 
-        // Front gable wall (triangle)
-        addTri(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
-               ridgeFrontX, ridgeTopY, ridgeFrontZ, wallMat);
-        // Back gable wall (triangle)
-        addTri(v[3].x, wallTopY, v[3].z, ridgeBackX, ridgeTopY, ridgeBackZ,
-               v[2].x, wallTopY, v[2].z, wallMat);
-        // Left roof slope
-        addQuad(v[0].x, wallTopY, v[0].z, ridgeFrontX, ridgeTopY, ridgeFrontZ,
-                ridgeBackX, ridgeTopY, ridgeBackZ, v[3].x, wallTopY, v[3].z, roofMat);
-        // Right roof slope
-        addQuad(v[1].x, wallTopY, v[1].z, v[2].x, wallTopY, v[2].z,
-                ridgeBackX, ridgeTopY, ridgeBackZ, ridgeFrontX, ridgeTopY, ridgeFrontZ, roofMat);
+        // Front gable pediment (triangle above the front wall)
+        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z,
+               ridgeFrontX, ridgeFrontY, ridgeFrontZ, wallMat);
+        // Left roof slope: front-left → ridge-front → ridge-back(peak) → back-left
+        addQuad(v[0].x, contactY[0], v[0].z, ridgeFrontX, ridgeFrontY, ridgeFrontZ,
+                ridgeBackX, ridgeBackY, ridgeBackZ, v[4].x, contactY[4], v[4].z, roofMat);
+        // Right roof slope: front-right → back-right → ridge-back(peak) → ridge-front
+        addQuad(v[1].x, contactY[1], v[1].z, v[2].x, contactY[2], v[2].z,
+                ridgeBackX, ridgeBackY, ridgeBackZ, ridgeFrontX, ridgeFrontY, ridgeFrontZ, roofMat);
+
       } else if (dormer.type === 'hip') {
-        // Ridge is shorter than width, inset from front and back
         var hipInset = sideL * 0.3;
-        var dirX = midBackX - midFrontX, dirZ = midBackZ - midFrontZ;
+        var dirX = v[3].x - midFrontX, dirZ = v[3].z - midFrontZ;
         var dirLen = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
         dirX /= dirLen; dirZ /= dirLen;
-        ridgeFrontX = midFrontX + dirX * hipInset;
-        ridgeFrontZ = midFrontZ + dirZ * hipInset;
-        ridgeBackX = midBackX - dirX * hipInset;
-        ridgeBackZ = midBackZ - dirZ * hipInset;
+        ridgeFrontX = midFrontX + dirX * hipInset; ridgeFrontZ = midFrontZ + dirZ * hipInset;
+        ridgeBackX  = v[3].x   - dirX * hipInset; ridgeBackZ  = v[3].z   - dirZ * hipInset;
 
         var pitchFront = dormer.pitchFront || pitch;
-        var ridgeHFront = (frontW / 2) * Math.tan(pitchFront * Math.PI / 180);
-        var hipRidgeY = wallTopY + ridgeHFront;
+        var hipRidgeY = frontContactY + (frontW / 2) * Math.tan(pitchFront * Math.PI / 180);
+        ridgeFrontY = hipRidgeY; ridgeBackY = hipRidgeY;
 
+        // Back hip: two triangles to the peak contact
+        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[2].x, contactY[2], v[2].z,
+               v[3].x, contactY[3], v[3].z, roofMat);
+        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[3].x, contactY[3], v[3].z,
+               v[4].x, contactY[4], v[4].z, roofMat);
         // Front triangle
-        addTri(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
+        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z,
                ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
-        // Back triangle
-        addTri(v[3].x, wallTopY, v[3].z, ridgeBackX, hipRidgeY, ridgeBackZ,
-               v[2].x, wallTopY, v[2].z, roofMat);
         // Left trapezoid
-        addQuad(v[0].x, wallTopY, v[0].z, ridgeFrontX, hipRidgeY, ridgeFrontZ,
-                ridgeBackX, hipRidgeY, ridgeBackZ, v[3].x, wallTopY, v[3].z, roofMat);
+        addQuad(v[0].x, contactY[0], v[0].z, ridgeFrontX, hipRidgeY, ridgeFrontZ,
+                ridgeBackX, hipRidgeY, ridgeBackZ, v[4].x, contactY[4], v[4].z, roofMat);
         // Right trapezoid
-        addQuad(v[1].x, wallTopY, v[1].z, v[2].x, wallTopY, v[2].z,
+        addQuad(v[1].x, contactY[1], v[1].z, v[2].x, contactY[2], v[2].z,
                 ridgeBackX, hipRidgeY, ridgeBackZ, ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
+
       } else if (dormer.type === 'shed') {
-        // Single sloped plane from front (low) to back (high)
-        var shedTopY = wallTopY + ridgeH;
-        // Roof plane
-        addQuad(v[0].x, wallTopY, v[0].z, v[1].x, wallTopY, v[1].z,
-                v[2].x, shedTopY, v[2].z, v[3].x, shedTopY, v[3].z, roofMat);
-        // Back wall (rectangle from wallTopY to shedTopY)
-        addQuad(v[3].x, wallTopY, v[3].z, v[2].x, wallTopY, v[2].z,
-                v[2].x, shedTopY, v[2].z, v[3].x, shedTopY, v[3].z, wallMat);
+        // Shed rises from front contact heights to back contact + ridgeH
+        var sc2 = contactY[2] + ridgeH, sc3 = contactY[3] + ridgeH, sc4 = contactY[4] + ridgeH;
+        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z, v[2].x, sc2, v[2].z, roofMat);
+        addTri(v[0].x, contactY[0], v[0].z, v[2].x, sc2, v[2].z, v[3].x, sc3, v[3].z, roofMat);
+        addTri(v[0].x, contactY[0], v[0].z, v[3].x, sc3, v[3].z, v[4].x, sc4, v[4].z, roofMat);
+        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = frontContactY;
+        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = sc3;
       }
 
-      // Side walls (all types)
-      // Front wall
-      addQuad(v[0].x, baseY[0], v[0].z, v[1].x, baseY[1], v[1].z,
-              v[1].x, wallTopY, v[1].z, v[0].x, wallTopY, v[0].z, wallMat);
-      // Left wall
-      addQuad(v[3].x, baseY[3], v[3].z, v[0].x, baseY[0], v[0].z,
-              v[0].x, wallTopY, v[0].z, v[3].x, wallTopY, v[3].z, wallMat);
-      // Right wall
-      addQuad(v[1].x, baseY[1], v[1].z, v[2].x, baseY[2], v[2].z,
-              v[2].x, wallTopY, v[2].z, v[1].x, wallTopY, v[1].z, wallMat);
-      // Back wall
-      addQuad(v[2].x, baseY[2], v[2].z, v[3].x, baseY[3], v[3].z,
-              v[3].x, wallTopY, v[3].z, v[2].x, wallTopY, v[2].z, wallMat);
+      // Exterior walls around all 5 edges — from Y=0 (ground) to contact height,
+      // matching the main roof wall treatment in buildRoofWalls.
+      for (var wi = 0; wi < 5; wi++) {
+        var wa = wi, wb = (wi + 1) % 5;
+        addQuad(v[wa].x, contactY[wa], v[wa].z,
+                v[wb].x, contactY[wb], v[wb].z,
+                v[wb].x, 0, v[wb].z,
+                v[wa].x, 0, v[wa].z, wallMat);
+      }
 
-      // White ridge line on top of dormer
+      // White ridge line
       if (!isGhost && (dormer.type === 'gable' || dormer.type === 'hip')) {
         var rX0 = ridgeFrontX, rZ0 = ridgeFrontZ, rX1 = ridgeBackX, rZ1 = ridgeBackZ;
-        var rY = (dormer.type === 'hip') ? (wallTopY + (frontW / 2) * Math.tan((dormer.pitchFront || pitch) * Math.PI / 180)) : ridgeTopY;
+        var rY = ridgeFrontY;
         var rdx = rX1 - rX0, rdz = rZ1 - rZ0;
         var rLen = Math.sqrt(rdx * rdx + rdz * rdz);
         if (rLen > 0.01) {
@@ -10344,29 +10415,27 @@ app.get("/design", (req, res) => {
             new THREE.MeshBasicMaterial({ color: 0xffffff })
           );
           var rDir = new THREE.Vector3(rdx, 0, rdz).normalize();
-          var rUp = new THREE.Vector3(0, 1, 0);
           var rQuat = new THREE.Quaternion();
-          rQuat.setFromUnitVectors(rUp, rDir);
+          rQuat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), rDir);
           ridgeCyl.quaternion.copy(rQuat);
           ridgeCyl.position.set((rX0 + rX1) / 2, rY + 0.02, (rZ0 + rZ1) / 2);
           group.add(ridgeCyl);
         }
       }
 
-      // Outline (cyan edges around base footprint)
+      // Outline (cyan edges at contact heights)
       if (!isGhost) {
         var outlineGroup = new THREE.Group();
-        var outlineColor = dormer.selected ? 0x00e5ff : 0x00e5ff;
         var EDGE_R = 0.04;
-        for (var ei = 0; ei < 4; ei++) {
-          var a = v[ei], b = v[(ei + 1) % 4];
-          var ay2 = baseY[ei], by2 = baseY[(ei + 1) % 4];
+        for (var ei = 0; ei < 5; ei++) {
+          var a = v[ei], b = v[(ei + 1) % 5];
+          var ay2 = contactY[ei], by2 = contactY[(ei + 1) % 5];
           var edx = b.x - a.x, edz = b.z - a.z;
           var elen = Math.sqrt(edx * edx + edz * edz);
           if (elen < 0.01) continue;
           var cyl = new THREE.Mesh(
             new THREE.CylinderGeometry(EDGE_R, EDGE_R, elen, 6, 1),
-            new THREE.MeshBasicMaterial({ color: outlineColor })
+            new THREE.MeshBasicMaterial({ color: 0x00e5ff })
           );
           cyl.position.set((a.x + b.x) / 2, (ay2 + by2) / 2, (a.z + b.z) / 2);
           cyl.lookAt(b.x, by2, b.z);
@@ -10377,7 +10446,7 @@ app.get("/design", (req, res) => {
         dormer.outlineLines = outlineGroup;
       }
 
-      group.position.y = wH;
+      // No group Y offset — all geometry is in world space
       return group;
     }
 
@@ -11066,7 +11135,7 @@ app.get("/design", (req, res) => {
           rf.dormers.forEach(function(dd) {
             var newD = {
               type: dd.type,
-              vertices: dd.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
+              vertices: migrateDormerVerts(dd.vertices),
               pitch: dd.pitch,
               pitchSide: dd.pitchSide,
               pitchFront: dd.pitchFront,
@@ -12331,11 +12400,11 @@ app.get("/design", (req, res) => {
 
       // Ensure LiDAR is loaded first
       if (!lidarRawPoints || lidarRawPoints.length === 0) {
-        if (!lidarFetched && !lidarLoading) loadLidarPoints();
+        if (!lidarFetched && !lidarLoading) loadLidarPoints(true);
         var waitCount = 0;
         var waitInterval = setInterval(function() {
           waitCount++;
-          if (lidarRawPoints && lidarRawPoints.length > 0) {
+          if (lidarRawPoints && lidarRawPoints.length > 0 && autoAlignDone) {
             clearInterval(waitInterval);
             autoDetectRoofContinue();
           } else if (waitCount > 60 || lidarLoadError) {
@@ -12396,7 +12465,7 @@ app.get("/design", (req, res) => {
         lidar: {
           points: lidarPts,
           bounds: [-35, -35, 35, 35],
-          resolution: 0.5,
+          resolution: 0.25,
           source: 'google_solar_dsm'
         },
         image: {
@@ -12430,54 +12499,122 @@ app.get("/design", (req, res) => {
           return;
         }
 
-        // Feed CRM-compatible faces into the existing roof system
-        var crmFaces = data.crm_faces || [];
-        if (crmFaces.length === 0) {
+        // Recolor LiDAR point cloud by cell classification (ROOF/TREE/RIDGE_DOT/etc.)
+        if (data.cell_labels_grid && data.grid_info) {
+          recolorLidarByClassification(data.cell_labels_grid, data.grid_info);
+        }
+
+        // Prefer direct ridge_line from gradient detector (most accurate)
+        if (data.ridge_line) {
+          ridgeLines3d.forEach(function(l) { scene3d.remove(l); });
+          ridgeLines3d = [];
+          var dr = data.ridge_line;
+          var EXTEND_M = 1.524; // 5 feet
+
+          // Look up scene Y from the LiDAR grid using the same formula as buildLidarPointCloud
+          // Y_scene = (raw_elev - (minElev + 1.0)) * vertExag + lidarPoints.position.y
+          function ridgeSceneY(worldX, worldZ) {
+            if (!lidarRawPoints) return 0.3;
+            var grid = buildElevGrid(lidarRawPoints);
+            var lidarOffX = lidarPoints ? lidarPoints.position.x : 0;
+            var lidarOffZ = lidarPoints ? lidarPoints.position.z : 0;
+            var lx = worldX - lidarOffX;
+            var lz = worldZ - lidarOffZ;
+            // Sample a small region around the point and take the max elevation
+            var bestElev = -Infinity;
+            var searchR = 2;
+            for (var dr2 = -searchR; dr2 <= searchR; dr2++) {
+              for (var dc2 = -searchR; dc2 <= searchR; dc2++) {
+                var r = Math.round((lz - grid.minZ) / grid.cellSize) + dr2;
+                var c = Math.round((lx - grid.minX) / grid.cellSize) + dc2;
+                if (r >= 0 && r < grid.rows && c >= 0 && c < grid.cols) {
+                  var e = grid.elev[r][c];
+                  if (e > bestElev) bestElev = e;
+                }
+              }
+            }
+            if (bestElev === -Infinity) return 0.3;
+            var groundThreshold = grid.groundElev + 1.0;
+            var lyOff = lidarPoints ? lidarPoints.position.y : -0.75;
+            return (bestElev - groundThreshold) * vertExag + lyOff;
+          }
+
+          var sx = dr.start.x, sz = dr.start.z;
+          var ex = dr.end.x,   ez = dr.end.z;
+          var dx2 = ex - sx, dz2 = ez - sz;
+          var rlen = Math.sqrt(dx2*dx2 + dz2*dz2);
+          if (rlen > 0.001) {
+            var nx2 = dx2/rlen, nz2 = dz2/rlen;
+            var p1x = sx - nx2*EXTEND_M, p1z = sz - nz2*EXTEND_M;
+            var p2x = ex + nx2*EXTEND_M, p2z = ez + nz2*EXTEND_M;
+            var y1 = ridgeSceneY(sx, sz);
+            var y2 = ridgeSceneY(ex, ez);
+            var rGeo = new THREE.BufferGeometry();
+            rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+              p1x, y1, p1z,
+              p2x, y2, p2z
+            ]), 3));
+            var rMat = new THREE.LineBasicMaterial({ color: 0xffcc00, linewidth: 3, depthTest: false });
+            var rLine = new THREE.Line(rGeo, rMat);
+            rLine.renderOrder = 999;
+            scene3d.add(rLine);
+            ridgeLines3d.push(rLine);
+          }
           if (banner) {
-            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> No roof planes detected.';
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> Ridge: ' + (dr.length_m * 3.281).toFixed(1) + ' ft, azimuth ' + Math.round(dr.azimuth_deg) + '°, pitch ' + Math.round(dr.pitch_deg) + '°.';
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
+          }
+          return;
+        }
+
+        // Fallback: draw ridge lines from roof graph edge classification
+        var ridgeEdges = ((data.roof_graph && data.roof_graph.edges) || []).filter(function(e) {
+          return e.edge_type === 'ridge';
+        });
+
+        if (ridgeEdges.length === 0) {
+          if (banner) {
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> No ridge lines detected.';
             setTimeout(function() { if (banner) banner.style.display = 'none'; }, 4000);
           }
           return;
         }
 
-        pushUndo();
-        var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
-        var facesCreated = 0;
-        var reviewCount = 0;
+        // Remove any previously drawn ridge lines
+        ridgeLines3d.forEach(function(l) { scene3d.remove(l); });
+        ridgeLines3d = [];
 
-        crmFaces.forEach(function(crm, i) {
-          // Convert vertices to {x, z} format
-          var verts = crm.vertices.map(function(v) { return { x: v.x, z: v.z }; });
-          if (verts.length < 3) return;
+        var EXTEND_M = 1.524; // 5 feet in metres
+        var linesCreated = 0;
+        var ridgeMat = new THREE.LineBasicMaterial({ color: 0xffcc00, linewidth: 3, depthTest: false });
 
-          // Ensure 4 vertices (fit rectangle if needed)
-          if (verts.length !== 4) verts = fitRectangle(verts);
+        ridgeEdges.forEach(function(edge) {
+          var sx = edge.start_point.x, sy = edge.start_point.y, sz = edge.start_point.z;
+          var ex = edge.end_point.x, ey = edge.end_point.y, ez = edge.end_point.z;
 
-          var pitch = crm.pitch || 0;
-          var azimuth = crm.azimuth || 180;
-          var height = crm.height || 0;
-          var deletedSections = crm.deleted_sections || [false, false, false, false];
-          var sectionPitches = crm.section_pitches || [pitch, pitch, pitch, pitch];
+          var dx = ex - sx, dy = ey - sy, dz = ez - sz;
+          var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+          if (len < 0.001) return;
+          var nx = dx/len, ny = dy/len, nz = dz/len;
 
-          var idx = finalizeRoofFace(verts, pitch, azimuth, height, deletedSections, sectionPitches);
-          roofFaces3d[idx].color = crm.color || faceColors[i % faceColors.length];
-          rebuildRoofFace(idx);
-          facesCreated++;
+          // Extend 5 ft past each endpoint
+          var p1x = sx - nx*EXTEND_M, p1y = sy - ny*EXTEND_M, p1z = sz - nz*EXTEND_M;
+          var p2x = ex + nx*EXTEND_M, p2y = ey + ny*EXTEND_M, p2z = ez + nz*EXTEND_M;
+
+          var geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+            p1x, p1y, p1z,
+            p2x, p2y, p2z
+          ]), 3));
+          var line = new THREE.Line(geo, ridgeMat);
+          line.renderOrder = 999;
+          scene3d.add(line);
+          ridgeLines3d.push(line);
+          linesCreated++;
         });
 
-        // Count items needing review from confidence report
-        if (data.confidence_report) {
-          var cr = data.confidence_report;
-          reviewCount = (cr.planes_needing_review || []).length +
-                        (cr.edges_needing_review || []).length +
-                        (cr.dormers_needing_review || []).length;
-        }
-
         if (banner) {
-          var msg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/></svg> Auto-detected ' + facesCreated + ' roof face' + (facesCreated > 1 ? 's' : '');
-          if (reviewCount > 0) msg += ' (' + reviewCount + ' need review)';
-          msg += '.';
-          banner.innerHTML = msg;
+          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/></svg> Detected ' + linesCreated + ' ridge line' + (linesCreated > 1 ? 's' : '') + ' (5 ft overhang each side).';
           setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
         }
 
@@ -12513,7 +12650,7 @@ app.get("/design", (req, res) => {
       // Auto-load LiDAR if not loaded yet
       if (!lidarRawPoints || lidarRawPoints.length === 0) {
         if (!lidarFetched && !lidarLoading) {
-          loadLidarPoints();
+          loadLidarPoints(true);
         }
         // Poll until LiDAR is ready, then continue
         var waitCount = 0;
@@ -12824,6 +12961,10 @@ app.get("/design", (req, res) => {
           pushUndo();
           roofDraggingFaceIdx = found.faceIdx;
           roofDraggingHandle = found.vertexIdx;
+          var df = roofFaces3d[found.faceIdx];
+          if (df.handleMeshes && df.handleMeshes[found.vertexIdx]) {
+            df.handleMeshes[found.vertexIdx].material.color.set(0x00e5ff);
+          }
           if (controls3d) controls3d.enabled = false;
           canvas.style.cursor = 'grabbing';
           e.preventDefault();
@@ -12899,50 +13040,44 @@ app.get("/design", (req, res) => {
           if (!sv) return;
           var dhi = dormerDraggingHandle;
 
-          // Vertices: 0=front-left, 1=front-right, 2=back-right, 3=back-left
-          // Front edge pair: 0,1   Back edge pair: 2,3
-          // Left edge pair: 0,3    Right edge pair: 1,2
-          // Compute the dormer's local axes from original verts
+          // Vertices: 0=front-left, 1=front-right, 2=back-right, 3=peak, 4=back-left
+          // Front pair (0,1): mirror width; depth shifts both together. Back untouched.
+          // Back pair (2,4): mirror width; depth shifts both together. Front untouched.
+          // Peak (3): moves freely on its own. Front untouched.
+
+          // Local axes from original verts
           var frontMidX = (sv[0].x + sv[1].x) / 2, frontMidZ = (sv[0].z + sv[1].z) / 2;
-          var backMidX = (sv[3].x + sv[2].x) / 2, backMidZ = (sv[3].z + sv[2].z) / 2;
-          // Width axis (front-left to front-right)
+          // Width axis (front-left → front-right)
           var wdx = sv[1].x - sv[0].x, wdz = sv[1].z - sv[0].z;
           var wLen = Math.sqrt(wdx * wdx + wdz * wdz) || 1;
-          var wux = wdx / wLen, wuz = wdz / wLen; // width unit vector
-          // Depth axis (front-mid to back-mid)
-          var ddx = backMidX - frontMidX, ddz = backMidZ - frontMidZ;
+          var wux = wdx / wLen, wuz = wdz / wLen;
+          // Depth axis (front-mid → peak)
+          var ddx = sv[3].x - frontMidX, ddz = sv[3].z - frontMidZ;
           var dLen = Math.sqrt(ddx * ddx + ddz * ddz) || 1;
-          var dux = ddx / dLen, duz = ddz / dLen; // depth unit vector
+          var dux = ddx / dLen, duz = ddz / dLen;
 
-          // Project drag delta onto width and depth axes
           var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
-          var projW = deltaX * wux + deltaZ * wuz; // along width
-          var projD = deltaX * dux + deltaZ * duz; // along depth
+          var projW = deltaX * wux + deltaZ * wuz;
+          var projD = deltaX * dux + deltaZ * duz;
 
-          // Determine which side the dragged handle is on
-          var isFront = (dhi === 0 || dhi === 1);
-          var isLeft = (dhi === 0 || dhi === 3);
+          // Start from original positions
+          for (var ci = 0; ci < 5; ci++) {
+            dv[ci] = { x: sv[ci].x, z: sv[ci].z };
+          }
 
-          // Width sign: left handles move in -width direction
-          var wSign = isLeft ? -1 : 1;
-          // Mirror amount: each side moves by projW in its direction
-          var mirrorW = projW * wSign;
-
-          // Apply symmetric width change to both front and back on the same side
-          // and mirror the opposite side
-          for (var ci = 0; ci < 4; ci++) {
-            var cIsLeft = (ci === 0 || ci === 3);
-            var cIsFront = (ci === 0 || ci === 1);
-            var cWmove = cIsLeft ? -mirrorW : mirrorW;
-            var cDmove = 0;
-            // Depth: only move the edge the user is dragging (front or back)
-            if (cIsFront === isFront) {
-              cDmove = projD;
-            }
-            dv[ci] = {
-              x: sv[ci].x + wux * cWmove + dux * cDmove,
-              z: sv[ci].z + wuz * cWmove + duz * cDmove
-            };
+          if (dhi === 0 || dhi === 1) {
+            // Front pair: mirror width, shift both in depth; back untouched
+            var wDeltaF = (dhi === 0) ? -projW : projW;
+            dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
+            dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
+          } else if (dhi === 2 || dhi === 4) {
+            // Back pair: mirror width, shift both in depth; front and peak untouched
+            var wDeltaB = (dhi === 2) ? projW : -projW;
+            dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
+            dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
+          } else {
+            // Peak (3): free movement, front untouched
+            dv[3] = { x: dhit.x, z: dhit.z };
           }
 
           rebuildDormer(dface, dormerDraggingDormerIdx);
@@ -12979,19 +13114,44 @@ app.get("/design", (req, res) => {
           if (roofSelectedFace === roofDraggingFaceIdx) updateRoofPropsPanel();
           return;
         }
+        // Vertex hover highlight
+        var prevVFace = roofHoveredVertexFace, prevVIdx = roofHoveredVertexIdx;
+        roofHoveredVertexFace = -1;
+        roofHoveredVertexIdx = -1;
+        if (!roofDrawingMode && !roofMovingMode && !dormerPlaceMode) {
+          var vtxHover = findHandleUnderCursor(e);
+          if (vtxHover) {
+            roofHoveredVertexFace = vtxHover.faceIdx;
+            roofHoveredVertexIdx = vtxHover.vertexIdx;
+            canvas.style.cursor = 'grab';
+          }
+        }
+        if (prevVFace !== roofHoveredVertexFace || prevVIdx !== roofHoveredVertexIdx) {
+          if (prevVFace >= 0 && prevVFace < roofFaces3d.length) {
+            var pvf = roofFaces3d[prevVFace];
+            if (pvf.handleMeshes && pvf.handleMeshes[prevVIdx]) {
+              pvf.handleMeshes[prevVIdx].material.color.set(0xffffff);
+            }
+          }
+          if (roofHoveredVertexFace >= 0 && roofHoveredVertexFace < roofFaces3d.length) {
+            var hvf = roofFaces3d[roofHoveredVertexFace];
+            if (hvf.handleMeshes && hvf.handleMeshes[roofHoveredVertexIdx]) {
+              hvf.handleMeshes[roofHoveredVertexIdx].material.color.set(0x00e5ff);
+            }
+          }
+        }
         // Edge hover highlight
         var prevFace = roofHoveredEdgeFace, prevEdge = roofHoveredEdgeIdx;
         roofHoveredEdgeFace = -1;
         roofHoveredEdgeIdx = -1;
-        if (!roofDrawingMode && !roofMovingMode && !dormerPlaceMode) {
+        if (!roofDrawingMode && !roofMovingMode && !dormerPlaceMode && roofHoveredVertexFace < 0) {
           var edgeHover = findEdgeHandleUnderCursor(e);
           if (edgeHover) {
             roofHoveredEdgeFace = edgeHover.faceIdx;
             roofHoveredEdgeIdx = edgeHover.edgeIdx;
             canvas.style.cursor = 'grab';
           } else if (!roofDrawingMode) {
-            // Only reset cursor if we were showing grab
-            if (prevFace >= 0) canvas.style.cursor = '';
+            if (prevFace >= 0 && roofHoveredVertexFace < 0) canvas.style.cursor = '';
           }
         }
         // Update edge line colors on hover change
@@ -13047,10 +13207,15 @@ app.get("/design", (req, res) => {
           markDirty();
         }
         if (roofDraggingHandle >= 0) {
+          var relFace = roofFaces3d[roofDraggingFaceIdx];
+          if (relFace && relFace.handleMeshes && relFace.handleMeshes[roofDraggingHandle]) {
+            relFace.handleMeshes[roofDraggingHandle].material.color.set(0xffffff);
+          }
           roofDraggingHandle = -1;
           roofDraggingFaceIdx = -1;
           if (controls3d) controls3d.enabled = true;
           canvas.style.cursor = '';
+          markDirty();
         }
       });
 
@@ -13782,10 +13947,10 @@ app.get("/design", (req, res) => {
       _origBuildLidar(points);
 
       function revealLidar() {
-        if (lidarPoints) lidarPoints.visible = true;
+        if (lidarPoints) lidarPoints.visible = lidarVisible;
         var overlay = document.getElementById('lidarLoadingOverlay');
         if (overlay) overlay.style.display = 'none';
-        setStatus3d(points.length.toLocaleString() + ' points loaded');
+        if (lidarVisible) setStatus3d(points.length.toLocaleString() + ' points loaded');
       }
 
       // Apply calibration AFTER auto-align finishes to avoid race condition
