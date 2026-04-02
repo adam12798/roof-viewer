@@ -171,16 +171,29 @@ def detect_roof_faces(
         if assigned[ar, ac]:
             continue
 
-        face_mask = _grow_face(
+        result = _grow_face(
             height_grid, dx, dz, roof_mask, assigned,
             ar, ac, grid_resolution, height_drop_max,
         )
-        if face_mask is None:
+        if result is None:
             continue
+        face_mask, variance_stops = result
+
+        # Save original mask before tree inference
+        original_mask = face_mask.copy()
+
+        # Infer through tree if the face was blocked by variance
+        if variance_stops:
+            face_mask, n_inferred = _infer_through_tree(
+                face_mask, height_grid, variance_stops, assigned, grid_resolution,
+            )
+            tree_inferred = n_inferred > 0
+        else:
+            tree_inferred = False
 
         assigned |= face_mask
 
-        # Validate edges: real roof faces must have substantial drop-offs
+        # Validate edges
         edge_info = _classify_edge_dropoff(
             height_grid, face_mask, assigned,
             1.5, height_drop_max,
@@ -191,15 +204,19 @@ def detect_roof_faces(
         logger.info("Face from anchor (%d,%d): %d ground edges, %d roof step-downs, %d weak",
                     ar, ac, n_ground, n_roof, n_weak)
 
-        # Use ridge-derived azimuth instead of SVD-derived
+        # Fit plane from ORIGINAL cells only (not tree-inferred ones)
+        # but use the full mask for boundary extraction
         plane = _fit_and_build_plane(
-            face_mask, height_grid, x_origin, z_origin,
+            original_mask, height_grid, x_origin, z_origin,
             grid_resolution, max_roughness, min_up_component,
             override_azimuth=ridge_azimuth,
             override_pitch=ridge_pitch,
         )
         if plane is not None:
             plane.structure_id = main_structure_id
+            if tree_inferred:
+                plane.confidence = 0.6
+                plane.needs_review = True
             planes.append(plane)
 
     # Step 9b: Correct ridge using eave boundaries
@@ -238,12 +255,13 @@ def detect_roof_faces(
         if len(planes) >= max_regions:
             break
 
-        face_mask = _grow_face(
+        result = _grow_face(
             height_grid, dx, dz, roof_mask, assigned,
             sr, sc, grid_resolution, height_drop_max,
         )
-        if face_mask is None:
+        if result is None:
             continue
+        face_mask, _ = result
 
         assigned |= face_mask
 
@@ -320,12 +338,13 @@ def detect_roof_faces(
             height_grid, local_thresh, patch_size, min_height=ground_height_thresh,
         )
 
-        face_mask = _grow_face(
+        result = _grow_face(
             height_grid, dx, dz, local_mask, assigned,
             sr, sc, grid_resolution, height_drop_max,
         )
-        if face_mask is None:
+        if result is None:
             continue
+        face_mask, _ = result
 
         # Validate: the face boundary must show a substantial drop-off
         # somewhere — otherwise it's not a real roof, just noise
@@ -351,6 +370,9 @@ def detect_roof_faces(
             # Step-down = separate structure (porch, addition, etc.)
             plane.structure_id = str(uuid.uuid4())[:8]
             planes.append(plane)
+
+    # Step 13: Sister faces that share a ridge into one structure
+    _sister_faces(planes)
 
     logger.info("Anchor-seeded detection complete: %d roof planes", len(planes))
     return planes
@@ -962,13 +984,13 @@ def _find_hip_faces(
             nr, nc = er + dr, ec + dc
             if 0 <= nr < rows and 0 <= nc < cols:
                 if not assigned[nr, nc] and roof_mask[nr, nc]:
-                    face_mask = _grow_face(
+                    result = _grow_face(
                         height_grid, dx, dz, roof_mask, assigned,
                         nr, nc, resolution, height_drop_max,
                     )
-                    if face_mask is not None and face_mask.sum() >= 3:
-                        assigned |= face_mask
-                        hip_faces.append(face_mask)
+                    if result is not None and result[0].sum() >= 3:
+                        assigned |= result[0]
+                        hip_faces.append(result[0])
                         break  # One face per endpoint
 
     return hip_faces
@@ -988,26 +1010,25 @@ def _grow_face(
     seed_c: int,
     resolution: float,
     height_drop_max: float,
-) -> np.ndarray | None:
+) -> tuple[np.ndarray, list[tuple[int, int]]] | None:
     """
-    Grow a face from a seed cell using gradient consistency + roughness.
+    Grow a face from a seed cell using gradient consistency + plane fitting.
 
     Stops at:
+      - Height deviation from fitted plane > 0.3m (dissolving edge)
       - Substantial height drops (> height_drop_max) → real edge/eave
-      - Gradient reversal (> 25°) → ridge or different plane
-      - High local roughness → tree canopy, not roof
-      - Already-assigned cells → another face
-      - Cells below min height (0.5m) → ground
+      - Gradient reversal (> 30° in mask, > 15° outside) → ridge
+      - High 3x3 neighbor variance (> 0.15) → tree canopy
+      - Gradient magnitude drop (< 50% of face average) → leaving roof
+      - Already-assigned cells / ground-level cells
 
-    Uses roof_mask as a soft gate: cells IN the mask are accepted freely;
-    cells OUTSIDE the mask get a tighter gradient consistency check to
-    prevent flooding into trees while still reaching real eaves.
+    Returns (face_mask, variance_stops) where variance_stops are cells
+    where growth stopped due to tree variance (used for tree inference).
     """
     rows, cols = height_grid.shape
     min_cell_height = 0.5
 
     if assigned[seed_r, seed_c]:
-        # Try to find a nearby unassigned cell
         best_r, best_c, best_dist = None, None, float('inf')
         for dr_s in range(-5, 6):
             for dc_s in range(-5, 6):
@@ -1025,23 +1046,33 @@ def _grow_face(
     face[seed_r, seed_c] = True
     boundary = collections.deque([(seed_r, seed_c)])
 
-    # Initial slope direction from seed
+    # Slope tracking
     avg_dx = float(dx[seed_r, seed_c])
     avg_dz = float(dz[seed_r, seed_c])
     n_cells = 1
 
-    # Tighter gradient consistency for cells outside roughness mask
+    # Running plane fit — refit periodically for plane deviation check
+    face_pts_list = [(seed_c * resolution, height_grid[seed_r, seed_c], seed_r * resolution)]
+    plane_eq = None
+    last_fit_count = 0
+
+    # Gradient magnitude tracking
+    seed_grad_mag = math.sqrt(avg_dx**2 + avg_dz**2)
+    grad_mag_sum = seed_grad_mag
+    grad_mag_count = 1
+    low_grad_streak = 0
+
+    # Variance-blocked cells (tree boundary) for later inference
+    variance_stops = []
+
     consistency_in_mask = np.radians(30.0)
     consistency_outside = np.radians(15.0)
-    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-
-    # Precompute 3x3 local roughness for quick per-cell checks
-    # (cheaper than 5x5 — just check if immediate neighbors form a plane)
+    nbrs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
     while boundary:
         cr, cc = boundary.popleft()
 
-        for dr, dc in neighbors:
+        for dr, dc in nbrs:
             nr, nc = cr + dr, cc + dc
 
             if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
@@ -1051,21 +1082,20 @@ def _grow_face(
 
             nh = height_grid[nr, nc]
 
-            # Stop at ground-level cells
+            # Ground check
             if nh < min_cell_height:
                 continue
 
-            # Stop at substantial height drops → real edge
+            # Height drop check
             h_diff = abs(nh - height_grid[cr, cc])
             if h_diff > height_drop_max:
                 continue
 
-            # Quick 3x3 neighbor variance check — reject chaotic surfaces (trees)
-            # Measure how much this cell deviates from its neighbors' plane
+            # 3x3 neighbor variance — reject tree canopy
             n_count = 0
             h_sum = 0.0
             h_sq_sum = 0.0
-            for dr2, dc2 in neighbors:
+            for dr2, dc2 in nbrs:
                 nr2, nc2 = nr + dr2, nc + dc2
                 if 0 <= nr2 < rows and 0 <= nc2 < cols:
                     h2 = height_grid[nr2, nc2]
@@ -1074,21 +1104,17 @@ def _grow_face(
                         h_sq_sum += h2 * h2
                         n_count += 1
             if n_count >= 3:
-                h_mean = h_sum / n_count
-                h_var = h_sq_sum / n_count - h_mean * h_mean
-                # Trees have high neighbor variance; roofs are smooth
-                # At 0.5m grid, a 22° roof changes ~0.2m/cell → variance ~0.04
-                # Trees have irregular canopy → variance >> 0.1
+                h_var = h_sq_sum / n_count - (h_sum / n_count) ** 2
                 if h_var > 0.15:
+                    variance_stops.append((nr, nc))
                     continue
 
-            # Gradient consistency check → stops at ridges
+            # Gradient consistency → stops at ridges
             cand_dx = float(dx[nr, nc])
             cand_dz = float(dz[nr, nc])
             cand_mag = math.sqrt(cand_dx**2 + cand_dz**2)
             avg_mag = math.sqrt(avg_dx**2 + avg_dz**2)
 
-            # Use tighter threshold for cells outside roughness mask
             in_mask = roof_mask[nr, nc]
             max_angle = consistency_in_mask if in_mask else consistency_outside
 
@@ -1098,18 +1124,49 @@ def _grow_face(
                 if math.acos(cos_a) > max_angle:
                     continue
 
+            # Gradient magnitude drop — at the eave, gradient fades to ~0
+            if grad_mag_count > 5:
+                avg_grad_mag = grad_mag_sum / grad_mag_count
+                if avg_grad_mag > 0.02 and cand_mag < avg_grad_mag * 0.3:
+                    low_grad_streak += 1
+                    if low_grad_streak >= 3:
+                        continue
+                else:
+                    low_grad_streak = 0
+
+            # Plane deviation check — reject cells that drift off-plane
+            # (catches dissolving edges where each step is small but
+            # cumulative drift takes us off the roof)
+            if plane_eq is not None and n_cells > 10:
+                cell_x = nc * resolution
+                cell_z = nr * resolution
+                expected_h = -(plane_eq[0] * cell_x + plane_eq[2] * cell_z + plane_eq[3]) / plane_eq[1] if abs(plane_eq[1]) > 0.01 else nh
+                deviation = abs(nh - expected_h)
+                if deviation > 0.3:
+                    continue
+
             # Accept
             face[nr, nc] = True
             boundary.append((nr, nc))
             n_cells += 1
             avg_dx += (cand_dx - avg_dx) / n_cells
             avg_dz += (cand_dz - avg_dz) / n_cells
+            grad_mag_sum += cand_mag
+            grad_mag_count += 1
+            face_pts_list.append((nc * resolution, nh, nr * resolution))
+
+            # Periodically refit plane (every 20 cells)
+            if n_cells - last_fit_count >= 20 and n_cells >= 10:
+                pts_arr = np.array(face_pts_list)
+                plane_eq = _fit_plane_svd(pts_arr)
+                last_fit_count = n_cells
 
     if n_cells < 3:
         return None
 
-    logger.debug("Grew face from (%d,%d): %d cells", seed_r, seed_c, n_cells)
-    return face
+    logger.debug("Grew face from (%d,%d): %d cells, %d variance stops",
+                 seed_r, seed_c, n_cells, len(variance_stops))
+    return face, variance_stops
 
 
 # ---------------------------------------------------------------------------
@@ -1247,6 +1304,187 @@ def _find_stepdown_seeds(
 
     # Deduplicate — many boundary cells may map to the same offset seed
     return offset_seeds
+
+
+# ---------------------------------------------------------------------------
+# Tree-Over-Roof Inference
+# ---------------------------------------------------------------------------
+
+def _infer_through_tree(
+    face_mask: np.ndarray,
+    height_grid: np.ndarray,
+    variance_stops: list[tuple[int, int]],
+    assigned: np.ndarray,
+    resolution: float,
+    min_eave_height: float = 1.5,
+) -> tuple[np.ndarray, int]:
+    """
+    Extend a face through tree-blocked cells using the known plane equation.
+
+    When face growth stops at tree variance but the plane equation predicts
+    the roof continues underneath, project the plane forward to infer the
+    hidden portion. Stops when the projected height drops below eave level.
+
+    Returns (extended_mask, n_inferred) — the extended mask includes both
+    the original face and inferred cells. n_inferred is how many cells were
+    added by inference.
+    """
+    rows, cols = height_grid.shape
+    if not variance_stops or face_mask.sum() < 10:
+        return face_mask, 0
+
+    # Fit plane to the known face
+    face_rows, face_cols = np.where(face_mask)
+    pts = np.column_stack([
+        face_cols * resolution,
+        height_grid[face_rows, face_cols],
+        face_rows * resolution,
+    ])
+    plane_eq = _fit_plane_svd(pts)
+    if plane_eq is None:
+        return face_mask, 0
+
+    # Find eave height from the face (lowest point on the face)
+    eave_h = float(height_grid[face_rows, face_cols].min())
+    eave_h = max(eave_h, min_eave_height)
+
+    # From each variance stop, project the plane outward
+    extended = face_mask.copy()
+    n_inferred = 0
+    visited = set()
+    queue = collections.deque()
+
+    for vr, vc in variance_stops:
+        if assigned[vr, vc] or extended[vr, vc]:
+            continue
+        if (vr, vc) in visited:
+            continue
+        # Check that the plane predicts a roof here
+        ex = vc * resolution
+        ez = vr * resolution
+        if abs(plane_eq[1]) > 0.01:
+            expected_h = -(plane_eq[0] * ex + plane_eq[2] * ez + plane_eq[3]) / plane_eq[1]
+        else:
+            continue
+        if expected_h < eave_h:
+            continue
+        queue.append((vr, vc))
+        visited.add((vr, vc))
+
+    # Compute max inference distance from face boundary
+    face_rows_set = set(zip(face_rows.tolist(), face_cols.tolist()))
+    max_infer_dist = 15  # max 15 cells (~7.5m) from face boundary
+
+    nbrs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    while queue:
+        cr, cc = queue.popleft()
+
+        # Check distance from original face boundary
+        min_dist = min(
+            (abs(cr - fr) + abs(cc - fc) for fr, fc in face_rows_set),
+            default=999,
+        )
+        if min_dist > max_infer_dist:
+            continue
+
+        # Project plane to get expected height
+        ex = cc * resolution
+        ez = cr * resolution
+        if abs(plane_eq[1]) > 0.01:
+            expected_h = -(plane_eq[0] * ex + plane_eq[2] * ez + plane_eq[3]) / plane_eq[1]
+        else:
+            continue
+
+        # Stop if projected height is below eave
+        if expected_h < eave_h:
+            continue
+
+        # Accept this cell as inferred roof
+        extended[cr, cc] = True
+        n_inferred += 1
+
+        # Only grow through cells with high variance (still under tree)
+        # Don't flood into normal cells — let face growth handle those
+        for dr, dc in nbrs:
+            nr, nc = cr + dr, cc + dc
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+            if extended[nr, nc] or assigned[nr, nc] or (nr, nc) in visited:
+                continue
+            # Check if this neighbor also has high variance (tree)
+            n_ct = 0
+            hs = 0.0
+            hsq = 0.0
+            for dr2, dc2 in nbrs:
+                nr2, nc2 = nr + dr2, nc + dc2
+                if 0 <= nr2 < rows and 0 <= nc2 < cols:
+                    h2 = height_grid[nr2, nc2]
+                    if not np.isnan(h2):
+                        hs += h2
+                        hsq += h2 * h2
+                        n_ct += 1
+            if n_ct >= 3:
+                v = hsq / n_ct - (hs / n_ct) ** 2
+                if v > 0.08:  # still tree-like
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+
+    if n_inferred > 0:
+        logger.info("Inferred %d cells through tree (from %d variance stops)",
+                    n_inferred, len(variance_stops))
+
+    return extended, n_inferred
+
+
+# ---------------------------------------------------------------------------
+# Structure Sistering
+# ---------------------------------------------------------------------------
+
+def _sister_faces(planes: list[RoofPlane]) -> None:
+    """
+    Group faces that share a ridge into the same roof structure.
+
+    Two faces are sistered if:
+      - Their azimuths are ~180° apart (±20°) — opposite sides of a ridge
+      - Their pitches are similar (±10°)
+      - Their highest points are within 1.5m of each other (same ridge height)
+
+    Modifies planes in-place by setting matching structure_ids.
+    """
+    if len(planes) < 2:
+        return
+
+    for i in range(len(planes)):
+        for j in range(i + 1, len(planes)):
+            p1, p2 = planes[i], planes[j]
+
+            # Already in the same structure?
+            if p1.structure_id == p2.structure_id and p1.structure_id:
+                continue
+
+            # Check azimuth opposition (should be ~180° apart)
+            az_diff = abs(p1.azimuth_deg - p2.azimuth_deg)
+            az_diff = min(az_diff, 360.0 - az_diff)
+            if abs(az_diff - 180.0) > 20.0:
+                continue
+
+            # Check pitch similarity
+            if abs(p1.pitch_deg - p2.pitch_deg) > 10.0:
+                continue
+
+            # Check ridge height similarity (highest point of each face)
+            if abs(p1.height_m - p2.height_m) > 1.5:
+                continue
+
+            # Sister them — use the first face's structure_id
+            shared_id = p1.structure_id or p2.structure_id or str(uuid.uuid4())[:8]
+            p1.structure_id = shared_id
+            p2.structure_id = shared_id
+            logger.info(
+                "Sistered faces %s and %s (az=%.0f/%.0f, pitch=%.0f/%.0f) → structure %s",
+                p1.id, p2.id, p1.azimuth_deg, p2.azimuth_deg,
+                p1.pitch_deg, p2.pitch_deg, shared_id,
+            )
 
 
 # ---------------------------------------------------------------------------
