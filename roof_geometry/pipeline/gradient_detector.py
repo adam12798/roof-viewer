@@ -50,7 +50,7 @@ def detect_roof_faces(
     anchor_dots: list[tuple[float, float]] | None = None,
     grid_resolution: float = 0.5,
     patch_size: int = 5,
-    roughness_cap: float = 0.25,
+    roughness_cap: float = 0.15,
     height_drop_max: float = 0.5,
     min_height: float = 0.5,
     max_roughness: float = 0.20,
@@ -201,6 +201,24 @@ def detect_roof_faces(
         if plane is not None:
             plane.structure_id = main_structure_id
             planes.append(plane)
+
+    # Step 9b: Correct ridge using eave boundaries
+    # If a face's eave edge drops off at a certain lateral position, the
+    # ridge should end there too — eave and ridge run parallel. This fixes
+    # cases where trees obscure the ridge endpoint.
+    if planes and len(ridge_cells) >= 2:
+        ridge_cells = _correct_ridge_from_eaves(
+            height_grid, ridge_cells, assigned, ridge_point, grid_resolution,
+        )
+        # Recompute geometry with corrected ridge
+        ridge_azimuth, ridge_pitch, ridge_info = _ridge_geometry(
+            height_grid, ridge_cells, x_origin, z_origin, grid_resolution,
+            anchor_cells=anchor_cells,
+        )
+        logger.info(
+            "Corrected ridge: azimuth=%.1f°, pitch=%.1f°, length=%.1fm",
+            ridge_azimuth, ridge_pitch, ridge_info['length_m'],
+        )
 
     # Step 10: Cross the ridge — find the other face
     # Seeds: roof-like cells just past the ridge on the opposite side
@@ -402,7 +420,7 @@ def _learn_roof_signature(
     dz: np.ndarray,
     anchor_cells: list[tuple[int, int]],
     patch_size: int = 5,
-    roughness_cap: float = 0.25,
+    roughness_cap: float = 0.15,
 ) -> tuple[float, tuple[float, float]]:
     """
     Learn what "roof" looks like from patches around anchor dots.
@@ -634,8 +652,8 @@ def _trace_ridge(
         for step in range(200):
             # Step in the ridge direction. Stay on the ridge by requiring:
             # 1. Cell is near ridge elevation (not wandered onto a lower roof)
-            # 2. Cell is a local maximum perpendicular to ridge (it IS the ridge)
-            # 3. Step aligns with ridge direction (don't wander sideways)
+            # 2. Step aligns with ridge direction (don't wander sideways)
+            # 3. Cell has low neighbor variance (roof, not tree)
             candidates = []
             for test_dr in [-1, 0, 1]:
                 for test_dc in [-1, 0, 1]:
@@ -653,6 +671,23 @@ def _trace_ridge(
                     dot = test_dr * dr_float + test_dc * dc_float
                     if dot < 0.1:
                         continue
+                    # Check local 3x3 variance — reject tree canopy
+                    n_count = 0
+                    h_sum = 0.0
+                    h_sq_sum = 0.0
+                    for dr2 in [-1, 0, 1]:
+                        for dc2 in [-1, 0, 1]:
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < rows and 0 <= nc2 < cols:
+                                h2 = height_grid[nr2, nc2]
+                                if not np.isnan(h2):
+                                    h_sum += h2
+                                    h_sq_sum += h2 * h2
+                                    n_count += 1
+                    if n_count >= 3:
+                        h_var = h_sq_sum / n_count - (h_sum / n_count) ** 2
+                        if h_var > 0.15:
+                            continue
                     score = dot * 2.0 + h / ridge_height
                     candidates.append((score, h, nr, nc))
 
@@ -676,6 +711,105 @@ def _trace_ridge(
                 all_cells.insert(0, (cr, cc))
 
     return all_cells
+
+
+def _correct_ridge_from_eaves(
+    height_grid: np.ndarray,
+    ridge_cells: list[tuple[int, int]],
+    assigned: np.ndarray,
+    ridge_point: tuple[int, int],
+    resolution: float,
+) -> list[tuple[int, int]]:
+    """
+    Correct the ridge length using the grown face's lateral extent.
+
+    The eave and ridge run parallel on a normal roof — they start and end
+    at the same lateral position (the rake/gable end). If trees obscured
+    the ridge, the face boundary tells us where it should actually end.
+
+    If the ridge is shorter than the face, extend it.
+    If the ridge went past the face (into trees), clip it.
+    """
+    rows, cols = height_grid.shape
+    if len(ridge_cells) < 2:
+        return ridge_cells
+
+    # Get ridge direction vector (start → end)
+    r0, c0 = ridge_cells[0]
+    r1, c1 = ridge_cells[-1]
+    rd = r1 - r0
+    cd = c1 - c0
+    ridge_len = math.sqrt(rd**2 + cd**2)
+    if ridge_len < 1:
+        return ridge_cells
+
+    # Normalize ridge direction
+    rd_n = rd / ridge_len
+    cd_n = cd / ridge_len
+
+    # Find the lateral extent of the assigned face projected onto the ridge axis
+    face_rows, face_cols = np.where(assigned)
+    if len(face_rows) == 0:
+        return ridge_cells
+
+    # Project each face cell onto the ridge direction
+    # (distance along the ridge from the ridge start)
+    projections = (face_rows - r0) * rd_n + (face_cols - c0) * cd_n
+    face_min_proj = float(projections.min())
+    face_max_proj = float(projections.max())
+
+    # Also project ridge endpoints
+    ridge_min_proj = 0.0  # by definition (start)
+    ridge_max_proj = ridge_len
+
+    # Compare: clip or extend
+    new_min = max(face_min_proj - 2, ridge_min_proj)  # allow 2 cells of slack
+    new_max = min(face_max_proj + 2, ridge_max_proj)
+
+    # If the face is wider than the ridge, extend the ridge
+    if face_min_proj < ridge_min_proj - 1:
+        new_min = face_min_proj
+    if face_max_proj > ridge_max_proj + 1:
+        new_max = face_max_proj
+
+    # Filter ridge cells to those within the corrected range
+    corrected = []
+    for r, c in ridge_cells:
+        proj = (r - r0) * rd_n + (c - c0) * cd_n
+        if new_min - 1 <= proj <= new_max + 1:
+            corrected.append((r, c))
+
+    # If we need to extend the ridge, add cells at ridge height
+    rr_p, rc_p = ridge_point
+    ridge_height = height_grid[rr_p, rc_p]
+
+    if face_max_proj > ridge_max_proj + 2:
+        # Extend toward the face extent
+        last_r, last_c = ridge_cells[-1]
+        for step in range(1, int(face_max_proj - ridge_max_proj) + 2):
+            nr = int(round(last_r + rd_n * step))
+            nc = int(round(last_c + cd_n * step))
+            if 0 <= nr < rows and 0 <= nc < cols:
+                h = height_grid[nr, nc]
+                if not np.isnan(h) and h > ridge_height - 1.5:
+                    corrected.append((nr, nc))
+
+    if face_min_proj < ridge_min_proj - 2:
+        first_r, first_c = ridge_cells[0]
+        for step in range(1, int(ridge_min_proj - face_min_proj) + 2):
+            nr = int(round(first_r - rd_n * step))
+            nc = int(round(first_c - cd_n * step))
+            if 0 <= nr < rows and 0 <= nc < cols:
+                h = height_grid[nr, nc]
+                if not np.isnan(h) and h > ridge_height - 1.5:
+                    corrected.insert(0, (nr, nc))
+
+    if len(corrected) < 2:
+        return ridge_cells
+
+    logger.info("Ridge corrected: %d→%d cells (face proj: %.1f to %.1f, ridge was 0 to %.1f)",
+                len(ridge_cells), len(corrected), face_min_proj, face_max_proj, ridge_len)
+    return corrected
 
 
 def _ridge_geometry(
@@ -856,17 +990,18 @@ def _grow_face(
     height_drop_max: float,
 ) -> np.ndarray | None:
     """
-    Grow a face from a seed cell using gradient consistency.
+    Grow a face from a seed cell using gradient consistency + roughness.
 
     Stops at:
       - Substantial height drops (> height_drop_max) → real edge/eave
-      - Gradient reversal (> 35°) → ridge or different plane
+      - Gradient reversal (> 25°) → ridge or different plane
+      - High local roughness → tree canopy, not roof
       - Already-assigned cells → another face
       - Cells below min height (0.5m) → ground
 
-    Does NOT stop at roughness mask boundaries — the mask is only used as a
-    preference (roof_mask cells are explored first), not a hard boundary.
-    This ensures faces extend all the way to real physical edges.
+    Uses roof_mask as a soft gate: cells IN the mask are accepted freely;
+    cells OUTSIDE the mask get a tighter gradient consistency check to
+    prevent flooding into trees while still reaching real eaves.
     """
     rows, cols = height_grid.shape
     min_cell_height = 0.5
@@ -895,8 +1030,13 @@ def _grow_face(
     avg_dz = float(dz[seed_r, seed_c])
     n_cells = 1
 
-    consistency_rad = np.radians(35.0)
+    # Tighter gradient consistency for cells outside roughness mask
+    consistency_in_mask = np.radians(30.0)
+    consistency_outside = np.radians(15.0)
     neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Precompute 3x3 local roughness for quick per-cell checks
+    # (cheaper than 5x5 — just check if immediate neighbors form a plane)
 
     while boundary:
         cr, cc = boundary.popleft()
@@ -920,16 +1060,42 @@ def _grow_face(
             if h_diff > height_drop_max:
                 continue
 
+            # Quick 3x3 neighbor variance check — reject chaotic surfaces (trees)
+            # Measure how much this cell deviates from its neighbors' plane
+            n_count = 0
+            h_sum = 0.0
+            h_sq_sum = 0.0
+            for dr2, dc2 in neighbors:
+                nr2, nc2 = nr + dr2, nc + dc2
+                if 0 <= nr2 < rows and 0 <= nc2 < cols:
+                    h2 = height_grid[nr2, nc2]
+                    if not np.isnan(h2):
+                        h_sum += h2
+                        h_sq_sum += h2 * h2
+                        n_count += 1
+            if n_count >= 3:
+                h_mean = h_sum / n_count
+                h_var = h_sq_sum / n_count - h_mean * h_mean
+                # Trees have high neighbor variance; roofs are smooth
+                # At 0.5m grid, a 22° roof changes ~0.2m/cell → variance ~0.04
+                # Trees have irregular canopy → variance >> 0.1
+                if h_var > 0.15:
+                    continue
+
             # Gradient consistency check → stops at ridges
             cand_dx = float(dx[nr, nc])
             cand_dz = float(dz[nr, nc])
             cand_mag = math.sqrt(cand_dx**2 + cand_dz**2)
             avg_mag = math.sqrt(avg_dx**2 + avg_dz**2)
 
+            # Use tighter threshold for cells outside roughness mask
+            in_mask = roof_mask[nr, nc]
+            max_angle = consistency_in_mask if in_mask else consistency_outside
+
             if cand_mag > 0.005 and avg_mag > 0.005:
                 cos_a = (cand_dx * avg_dx + cand_dz * avg_dz) / (cand_mag * avg_mag)
                 cos_a = max(-1.0, min(1.0, cos_a))
-                if math.acos(cos_a) > consistency_rad:
+                if math.acos(cos_a) > max_angle:
                     continue
 
             # Accept
