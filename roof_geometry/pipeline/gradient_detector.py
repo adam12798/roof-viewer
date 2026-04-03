@@ -37,6 +37,9 @@ class CellLabel(enum.IntEnum):
     TREE        = 7   # elevated but high local variance — tree canopy, excluded from ridge
     EAVE_DOT        = 8   # bottom edge of roof slope — parallel to ridge, height drops sharply downhill
     RIDGE_EDGE_DOT  = 9   # ridge dot at the gable end — ground on the outward side, roof on the inward side
+    VALLEY_DOT      = 10  # concave plane-plane intersection (both planes slope toward the line)
+    STEP_EDGE       = 11  # ROOF → LOWER_ROOF height discontinuity
+    OBSTRUCTION_DOT = 12  # small non-planar cluster elevated above roof surface (chimney, vent, etc.)
 
 from models.schemas import (
     PlaneEquation,
@@ -71,6 +74,7 @@ def detect_roof_faces(
     max_roughness: float = 0.20,
     min_up_component: float = 0.3,
     max_regions: int = 20,
+    use_plane_first: bool = True,
     **kwargs,
 ) -> list[RoofPlane]:
     """
@@ -98,7 +102,21 @@ def detect_roof_faces(
         Post-process: reject near-vertical normals.
     max_regions : int
         Max number of faces to detect.
+    use_plane_first : bool
+        When True, use plane-first classification (RANSAC → structure → classify).
+        Falls back to the grid-based approach if plane extraction fails.
     """
+    if use_plane_first:
+        result = _detect_roof_faces_plane_first(
+            lidar_pts,
+            anchor_dots=anchor_dots,
+            grid_resolution=grid_resolution,
+            max_roughness=max_roughness,
+            max_regions=max_regions,
+        )
+        if result is not None:
+            return result
+        logger.info("Plane-first detection returned None — falling back to grid-based approach")
     # Auto-scale cell-count parameters from physical distances so they work
     # correctly at any grid resolution (0.5m, 0.25m, etc.)
     if patch_size == 0:
@@ -108,21 +126,35 @@ def detect_roof_faces(
         logger.warning("Too few LiDAR points (%d)", len(lidar_pts))
         return [], None, None
 
-    if not anchor_dots or len(anchor_dots) < 1:
-        logger.warning("No anchor dots provided — cannot seed detection")
-        return [], None, None
-
-    # Step 1: Build height grid
+    # Step 1: Build height grid (always, so classification grid is available)
     height_grid, x_origin, z_origin = build_height_grid(lidar_pts, grid_resolution)
     rows, cols = height_grid.shape
-    logger.info("Height grid: %dx%d cells", cols, rows)
+    logger.info("Height grid: %dx%d cells, x_origin=%.3f z_origin=%.3f", cols, rows, x_origin, z_origin)
 
     if rows < 5 or cols < 5:
-        logger.warning("Height grid too small for anchor-seeded detection")
+        logger.warning("Height grid too small for detection")
         return [], None, None
 
     # Step 2: Compute gradients
     dx, dz = compute_gradients(height_grid)
+
+    if not anchor_dots or len(anchor_dots) < 1:
+        logger.warning("No anchor dots provided — returning classification grid only")
+        # Build a basic classification grid without anchor-based roof signature
+        roof_mask = _build_roughness_mask(height_grid, roughness_cap, patch_size, min_height)
+        cell_labels = _classify_grid_cells(
+            height_grid, roof_mask, dx, dz,
+            min_height=min_height, grid_resolution=grid_resolution,
+        )
+        cell_grid_info = {
+            'grid': cell_labels.tolist(),
+            'x_origin': x_origin,
+            'z_origin': z_origin,
+            'resolution': grid_resolution,
+            'rows': rows,
+            'cols': cols,
+        }
+        return [], None, cell_grid_info
 
     # Step 3: Convert anchor dots to grid coordinates
     anchor_cells = []
@@ -150,11 +182,8 @@ def detect_roof_faces(
     roof_like_count = roof_mask.sum()
     logger.info("Roof-like cells: %d / %d total", roof_like_count, rows * cols)
 
-    if roof_like_count < 3:
-        logger.warning("Too few roof-like cells")
-        return [], None, None
-
-    # Step 6: Classify all grid cells
+    # Step 6: Classify all grid cells (run BEFORE roof_like_count check so the
+    # classification grid is always available for frontend visualization)
     # Anything above the highest anchor point + margin is taller than the roof — treat as tree
     anchor_heights = [float(height_grid[ar, ac])
                       for ar, ac in anchor_cells
@@ -176,6 +205,10 @@ def detect_roof_faces(
         'rows': rows,
         'cols': cols,
     }
+
+    if roof_like_count < 3:
+        logger.warning("Too few roof-like cells — returning classification grid only")
+        return [], None, cell_grid_info
 
     # Step 7: Collect ridge candidates (RIDGE_DOT first, NEAR_RIDGE as fallback)
     slope_top_candidates = _find_slope_top_candidates(
@@ -506,6 +539,134 @@ def detect_roof_faces(
     _sister_faces(planes)
 
     logger.info("Anchor-seeded detection complete: %d roof planes", len(planes))
+    return planes, ridge_world, cell_grid_info
+
+
+# ---------------------------------------------------------------------------
+# Plane-first detection path
+# ---------------------------------------------------------------------------
+
+def _detect_roof_faces_plane_first(
+    lidar_pts: np.ndarray,
+    *,
+    anchor_dots: list[tuple[float, float]] | None = None,
+    grid_resolution: float = 0.5,
+    max_roughness: float = 0.20,
+    max_regions: int = 20,
+) -> tuple[list[RoofPlane], tuple | None, dict] | None:
+    """
+    Plane-first roof detection: extract planes via RANSAC, build structural
+    graph, classify points from plane membership, project back to grid.
+
+    Returns the same (planes, ridge_world, cell_grid_info) tuple as the
+    grid-based path, or None if plane extraction fails (triggers fallback).
+    """
+    from pipeline.plane_classifier import (
+        classify_from_planes,
+        compute_adaptive_thresholds,
+        compute_point_features,
+        compute_ridge_from_planes,
+        prefilter_outliers,
+        project_to_grid,
+    )
+    from pipeline.plane_extractor import extract_planes_with_membership
+    from pipeline.graph_builder import (
+        _build_adjacency,
+        _classify_edges,
+    )
+    from models.schemas import RoofParseOptions
+
+    if len(lidar_pts) < 10:
+        return None
+
+    # 1. Build height grid (needed for grid output regardless)
+    height_grid, x_origin, z_origin = build_height_grid(lidar_pts, grid_resolution)
+    rows, cols = height_grid.shape
+    logger.info("Plane-first: height grid %dx%d", cols, rows)
+
+    if rows < 5 or cols < 5:
+        return None
+
+    # 2. Compute point features (normals, curvature, density)
+    features = compute_point_features(lidar_pts)
+
+    # 3. Compute adaptive thresholds from data statistics
+    thresholds = compute_adaptive_thresholds(lidar_pts, features)
+
+    # 4. Pre-filter outliers
+    filtered_pts, keep_mask = prefilter_outliers(
+        lidar_pts, thresholds.nn_median_dist,
+    )
+
+    # 5. Extract planes with per-point membership
+    # Use lower thresholds than default to catch small attached structures
+    # (porches, garages, additions) that share a wall with the main roof.
+    options = RoofParseOptions(max_planes=max_regions)
+    planes, point_labels_filtered, per_plane_residuals = extract_planes_with_membership(
+        filtered_pts,
+        options,
+        distance_threshold=thresholds.distance_threshold,
+        max_roughness=max_roughness,
+        min_area_m2=4.0,    # was 15.0 — catch porches, small additions
+        min_inliers=20,     # was 60 — fewer points needed for small structures
+    )
+
+    if len(planes) < 1:
+        logger.info("Plane-first: no planes found — returning None for fallback")
+        return None
+
+    # Map point_labels back to original point cloud indices
+    # (prefilter_outliers may have removed some points)
+    N_orig = len(lidar_pts)
+    point_labels = np.full(N_orig, -1, dtype=int)
+    kept_indices = np.where(keep_mask)[0]
+    for i, orig_idx in enumerate(kept_indices):
+        point_labels[orig_idx] = point_labels_filtered[i]
+
+    # Also map features back (use original features since they were computed on full cloud)
+    # features was computed on lidar_pts (the full cloud), so it's already aligned.
+
+    # 6. Build adjacency and classify edges using graph_builder
+    adjacency, shared_edges_info = _build_adjacency(planes, 1.0, 0.5)
+    edges = _classify_edges(planes, shared_edges_info)
+
+    # 7. Classify all points
+    result = classify_from_planes(
+        lidar_pts,
+        planes,
+        point_labels,
+        features,
+        thresholds,
+        per_plane_residuals,
+        anchor_dots=anchor_dots,
+        adjacency=adjacency,
+        edges=edges,
+    )
+
+    # 8. Compute ridge from plane intersections
+    ridge_world = compute_ridge_from_planes(planes, edges)
+
+    # 9. Project per-point labels to the 2D grid for frontend
+    cell_labels = project_to_grid(
+        lidar_pts,
+        result.per_point_class,
+        height_grid,
+        grid_resolution,
+        x_origin,
+        z_origin,
+    )
+
+    cell_grid_info = {
+        'grid': cell_labels.tolist(),
+        'x_origin': x_origin,
+        'z_origin': z_origin,
+        'resolution': grid_resolution,
+        'rows': rows,
+        'cols': cols,
+    }
+
+    logger.info("Plane-first detection complete: %d planes, ridge=%s",
+                len(planes), "found" if ridge_world else "none")
     return planes, ridge_world, cell_grid_info
 
 
@@ -976,6 +1137,13 @@ def _classify_grid_cells(
                     if 0 <= nr_up < rows and 0 <= nc_up < cols
                     else h - 1.0)  # treat out-of-bounds as drop
 
+            # Cell one step downhill (opposite of uphill)
+            nr_down = int(round(r - uz))
+            nc_down = int(round(c - ux))
+            h_down = (height_grid[nr_down, nc_down]
+                      if 0 <= nr_down < rows and 0 <= nc_down < cols
+                      else h - 1.0)
+
             # Perpendicular direction (ridge runs this way)
             px, pz = -gz / grad_mag, gx / grad_mag
             nr_pp = int(round(r + pz));  nc_pp = int(round(c + px))
@@ -990,39 +1158,39 @@ def _classify_grid_cells(
                 cell_labels[r, c] = CellLabel.TREE
                 continue
 
-            # Disqualify any cell where the uphill neighbor is higher — a ridge must
-            # be a local maximum in the slope direction. If something is higher uphill,
-            # this cell is on the slope, not at the top.
-            if not np.isnan(h_up) and h_up > h:
-                continue  # leave as ROOF, not a ridge
+            # Ridge check: a RIDGE_DOT must be a local maximum in the slope
+            # direction.  If the uphill neighbor is higher, this cell is on the
+            # slope — skip ridge assignment but still check for eave below.
+            is_ridge_candidate = np.isnan(h_up) or h_up <= h
 
-            # Predict what the next uphill cell's height SHOULD be if slope continues.
-            # grad_mag is height-change per grid cell in the uphill direction.
-            # If actual h_up falls short of prediction, the slope broke — we're at the ridge.
-            h_predicted_up = h + grad_mag  # expected height one step further uphill
+            if is_ridge_candidate:
+                # Predict what the next uphill cell's height SHOULD be if slope continues.
+                # grad_mag is height-change per grid cell in the uphill direction.
+                # If actual h_up falls short of prediction, the slope broke — we're at the ridge.
+                h_predicted_up = h + grad_mag  # expected height one step further uphill
 
-            cond_a = (not np.isnan(h_up)) and (h_up < h_predicted_up - 0.05)  # strong: slope broke
-            cond_b = ((not np.isnan(h_pp)) and (not np.isnan(h_pm))
-                      and h_pp < h and h_pm < h)                                # local max perpendicular
-            cond_c = ((not np.isnan(h_up)) and (h_up < h_predicted_up - 0.02)
-                      and (np.isnan(h_pp) or h_pp < h
-                           or np.isnan(h_pm) or h_pm < h))                     # soft — low-pitch roofs
+                cond_a = (not np.isnan(h_up)) and (h_up < h_predicted_up - 0.05)  # strong: slope broke
+                cond_b = ((not np.isnan(h_pp)) and (not np.isnan(h_pm))
+                          and h_pp < h and h_pm < h)                                # local max perpendicular
+                cond_c = ((not np.isnan(h_up)) and (h_up < h_predicted_up - 0.02)
+                          and (np.isnan(h_pp) or h_pp < h
+                               or np.isnan(h_pm) or h_pm < h))                     # soft — low-pitch roofs
 
-            if cond_a or cond_b:
-                cell_labels[r, c] = CellLabel.RIDGE_DOT
-            elif cond_c:
-                cell_labels[r, c] = CellLabel.NEAR_RIDGE
-            else:
-                # EAVE_DOT: bottom edge of slope — height drops sharply going downhill.
-                # The downslope cell drops significantly relative to the current cell,
-                # meaning this cell sits at the roof's lower edge (eave line).
-                # Requires the cell to NOT be at the top of the slope (not already a ridge).
-                if not np.isnan(h_down):
-                    h_predicted_down = h - grad_mag  # expected height one step downhill
-                    eave_cond = h_down < h_predicted_down - 0.15  # drops faster than slope predicts
-                    eave_cond_strong = h_down < h - 0.4           # or absolute drop > 40cm
-                    if (eave_cond or eave_cond_strong) and not np.isnan(h_up) and h_up <= h:
-                        cell_labels[r, c] = CellLabel.EAVE_DOT
+                if cond_a or cond_b:
+                    cell_labels[r, c] = CellLabel.RIDGE_DOT
+                elif cond_c:
+                    cell_labels[r, c] = CellLabel.NEAR_RIDGE
+
+            # EAVE_DOT: bottom edge of slope — height drops sharply going downhill.
+            # The downslope cell drops significantly relative to the current cell,
+            # meaning this cell sits at the roof's lower edge (eave line).
+            # Only assign if not already promoted to ridge.
+            if cell_labels[r, c] == CellLabel.ROOF and not np.isnan(h_down):
+                h_predicted_down = h - grad_mag  # expected height one step downhill
+                eave_cond = h_down < h_predicted_down - 0.15  # drops faster than slope predicts
+                eave_cond_strong = h_down < h - 0.4           # or absolute drop > 40cm
+                if eave_cond or eave_cond_strong:
+                    cell_labels[r, c] = CellLabel.EAVE_DOT
 
     # ---- Pass 2.5: Reclassify narrow FLAT_ROOF regions as RIDGE_DOT ----
     # Real flat roofs have a reasonable aspect ratio. A very long, narrow flat

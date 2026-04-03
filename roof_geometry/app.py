@@ -5,7 +5,10 @@ FastAPI application for the roof-geometry parsing microservice.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

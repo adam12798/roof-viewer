@@ -5,6 +5,85 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## In Progress — 2026-04-03 (Session 37)
+
+### Plane-First Classification Overhaul
+Complete rewrite of LiDAR classification from "classify grid cells by height/gradient rules" to "extract planes → build structure → classify points from membership." All classification now flows from RANSAC plane detection rather than per-cell heuristics.
+
+#### New Module: `pipeline/plane_classifier.py` (~1450 lines)
+- [x] **`PointFeatures` dataclass** — per-point normals, curvature, local density, and `height_std` (std of Y coords in KNN neighborhood — key tree discriminator)
+- [x] **`compute_point_features()`** — Open3D fast path + scipy/numpy fallback; computes normals via KNN, curvature from covariance eigenvalues, and local height variance
+- [x] **`compute_adaptive_thresholds()`** — all thresholds derived from point cloud statistics (density, noise floor, height distribution); no fixed constants
+- [x] **`classify_from_planes()`** — 9-step classification pipeline:
+  - Step 0: Pattern-based tree rejection (learn roof signature from primary planes, score outliers)
+  - Step 1: ROOF/FLAT_ROOF from plane membership
+  - Step 1b: Per-point tree scrub (height_std + curvature on roof planes)
+  - Step 2: LOWER_ROOF from adjacency elevation comparison
+  - Step 3: RIDGE_DOT/VALLEY_DOT from plane-plane intersections
+  - Step 4: EAVE_DOT from plane boundary + GROUND neighbor
+  - Step 5: STEP_EDGE from step_flash edges
+  - Step 6: GROUND from height threshold
+  - Step 7: TREE from curvature + height_std + normal inconsistency
+  - Step 7b: Attached structure recovery (porches/garages near roof planes)
+  - Step 8: OBSTRUCTION_DOT from small elevated clusters
+- [x] **`project_to_grid()`** — maps per-point labels to 2D grid with tiered priority voting (structural > plane-based > heuristic) and neighbor fill
+
+#### New Labels
+- [x] **`VALLEY_DOT = 10`** (deep blue) — points near plane-plane valley intersections
+- [x] **`STEP_EDGE = 11`** (gold) — points at step_flash edges between planes
+- [x] **`OBSTRUCTION_DOT = 12`** (pink) — small elevated clusters on roof (chimneys, vents)
+
+#### Plane Extraction Enhancements (`pipeline/plane_extractor.py`)
+- [x] **`extract_planes_with_membership()`** — tracks original point indices through RANSAC+DBSCAN, returns `(planes, point_labels, per_plane_residuals)`
+- [x] **Lowered thresholds** — `min_area_m2=4.0` (was 15.0), `min_inliers=20` (was 60) to catch porches/garages
+
+#### Tree Detection — Pattern-Based with Height Variance
+- [x] **`height_std` feature** — per-point std of Y coords in KNN neighborhood; roof surfaces are smooth (low variance), tree canopy is bumpy (high variance); strongest single discriminator
+- [x] **Primary plane pre-screening** — planes are ranked by median `height_std`; only smooth planes qualify as "primary" for pattern learning, even if anchor dots land on tree canopy
+- [x] **Fast-path tree rejection** — planes with median height_std > 6× the smooth baseline are immediately rejected as TREE
+- [x] **6-dimension pattern scoring** — non-primary planes scored on: pitch outlier, height above peak, spatial distance, curvature, normal consistency, height_std; score ≥ 3 → TREE
+- [x] **Per-point scrub** — individual points on valid roof planes with high height_std or curvature reclassified as TREE
+
+#### LOWER_ROOF Classification Fix
+- [x] **Median-based comparison** — uses median height of non-tree planes (not max) to prevent one tall plane from demoting everything
+- [x] **Widened guards** — planes within 2.5m of median height skip demotion; pitch similarity guard widened to 12°
+- [x] **Neighbor threshold raised** — 2.5m (was 1.5m) to only catch genuine step-downs (porches, additions)
+- [x] **Primary fallback** — when no anchor-based primaries exist, uses 2 largest smooth planes as proxy
+
+#### Grid Alignment Fix (`server.js`)
+- [x] **Removed auto-align offset from grid lookup** — frontend was adding `lidarPoints.position.x/z` (auto-alignment offset) when looking up grid cells, but grid was built from raw coordinates; now uses raw buffer positions
+- [x] **`Math.round` → `Math.floor`** — matches Python's `int()` floor division in `build_height_grid()`
+
+#### Integration (`pipeline/gradient_detector.py`)
+- [x] **`use_plane_first=True`** default — new pipeline is the primary path
+- [x] **Fallback** — returns to old grid-based classification if plane extraction fails
+- [x] **`CellLabel` extended** — added VALLEY_DOT=10, STEP_EDGE=11, OBSTRUCTION_DOT=12
+
+#### Known Issues (In Progress)
+- [ ] Tree canopy still getting some ROOF labels — pattern scoring catches most tree planes but some with borderline height_std slip through
+- [ ] Back face of gable may still show LOWER_ROOF in some cases
+- [ ] Small attached structures (porches) need more testing
+
+---
+
+## Completed — 2026-04-03 (Session 36)
+
+### Classification Grid Fix — Colors Not Appearing After Auto-Detect
+- [x] **`h_down` NameError fix** — `_classify_grid_cells()` Pass 3 referenced `h_down` (downhill neighbor height) without computing it; added computation at line 980 as `(r - uz, c - ux)` mirroring the existing `h_up` logic
+- [x] **Classification grid always returned** — moved `build_height_grid()` + `_classify_grid_cells()` + `cell_grid_info` creation to run BEFORE the anchor-dots check and `roof_like_count < 3` early exit, so the classification grid reaches the frontend even without anchors or when detection finds no planes
+- [x] **No-anchor fallback path** — when `calibSavedTransform.controlPoints` is missing (no manual calibration dots), gradient detector now builds a basic classification grid from height/roughness data alone instead of returning `None`
+- [x] **Removed orchestrator fallback** — deleted redundant fallback classification grid generation from `orchestrator.py` that used `processed` (preprocessed/downsampled) data; classification now always comes from `detect_roof_faces()` using raw LiDAR coordinates for correct alignment
+
+### EAVE_DOT Classification Fix
+- [x] **Eave cells now reachable** — the uphill disqualifier (`h_up > h → continue`) was skipping the entire cell including the EAVE_DOT check; eave cells inherently have `h_up > h` (roof rises from eave toward ridge), so EAVE_DOT could never be assigned
+- [x] **Restructured Pass 3 logic** — replaced `continue` with `is_ridge_candidate` flag; ridge check runs only when `h_up <= h`, eave check runs independently for any cell still labeled ROOF after ridge evaluation
+
+### Diagnostic Logging
+- [x] **JS console logging** — auto-detect response now logs `cell_labels_grid` row count, `grid_info` JSON, and LiDAR buffer sample coordinates for alignment verification
+- [x] **Python INFO logging** — enabled `logging.basicConfig(level=logging.INFO)` in `app.py`; height grid dimensions and origin coordinates logged in `detect_roof_faces()`
+
+---
+
 ## Completed — 2026-04-02 (Session 35)
 
 ### Ridge Detection & Classification Refinements

@@ -6,3 +6,4 @@ public/._*
 __pycache__/
 *.pyc
 venv/
+*.pt

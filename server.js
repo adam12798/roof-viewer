@@ -5137,15 +5137,18 @@ app.get("/design", (req, res) => {
     }
     .vc-north-tick {
       position: absolute;
-      top: -1px;
+      top: -4px;
       left: 50%;
       transform: translateX(-50%);
       width: 0;
       height: 0;
-      border-left: 4px solid transparent;
-      border-right: 4px solid transparent;
-      border-top: 8px solid #e53935;
-      filter: drop-shadow(0 0 1px rgba(0,0,0,0.3));
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 10px solid #e53935;
+      filter: drop-shadow(0 0 2px rgba(0,0,0,0.4));
+      pointer-events: all;
+      cursor: pointer;
+      padding: 4px;
     }
     .viewcube-compass {
       position: absolute;
@@ -8459,6 +8462,7 @@ app.get("/design", (req, res) => {
 
       wrap3d.addEventListener('pointerdown', function(e) {
         if (!camera3d || !controls3d) return;
+        if (e.target.classList.contains('vc-north-tick')) return;
         e.stopPropagation();
         e.preventDefault();
         vcDragging3d = true;
@@ -8530,6 +8534,18 @@ app.get("/design", (req, res) => {
           handleFaceClick3d(this.dataset.view);
         });
       });
+
+      // North tick click — snap view to face north (keep current tilt)
+      var northTick = wrap3d.querySelector('.vc-north-tick');
+      if (northTick) {
+        northTick.addEventListener('click', function(e) {
+          e.stopPropagation();
+          if (vcDidDrag3d) { vcDidDrag3d = false; return; }
+          if (!camera3d || !controls3d) return;
+          var s = getCameraSpherical();
+          setCameraFromSpherical(s.r, s.polar, 0);
+        });
+      }
 
       // Double-click reset to top-down
       wrap3d.addEventListener('dblclick', function(e) {
@@ -8777,16 +8793,19 @@ app.get("/design", (req, res) => {
 
     // Classification label → RGB color (matches CellLabel enum in gradient_detector.py)
     var LABEL_COLORS = [
-      [0.40, 0.40, 0.40],  // 0 UNSURE     — gray
-      [0.25, 0.25, 0.25],  // 1 GROUND     — dark gray
-      [0.20, 0.85, 0.20],  // 2 ROOF       — green
-      [0.20, 0.40, 0.95],  // 3 LOWER_ROOF — blue
-      [0.75, 0.20, 0.90],  // 4 FLAT_ROOF  — purple
-      [1.00, 0.10, 0.10],  // 5 RIDGE_DOT  — bright red
-      [1.00, 0.90, 0.00],  // 6 NEAR_RIDGE — yellow
-      [0.85, 0.45, 0.10],  // 7 TREE       — orange-brown
+      [0.40, 0.40, 0.40],  // 0 UNSURE          — gray
+      [0.25, 0.25, 0.25],  // 1 GROUND          — dark gray
+      [0.20, 0.85, 0.20],  // 2 ROOF            — green
+      [0.20, 0.40, 0.95],  // 3 LOWER_ROOF      — blue
+      [0.75, 0.20, 0.90],  // 4 FLAT_ROOF       — purple
+      [1.00, 0.10, 0.10],  // 5 RIDGE_DOT       — bright red
+      [1.00, 0.90, 0.00],  // 6 NEAR_RIDGE      — yellow
+      [0.85, 0.45, 0.10],  // 7 TREE            — orange-brown
       [0.00, 0.90, 0.90],  // 8 EAVE_DOT        — cyan
       [1.00, 0.55, 0.00],  // 9 RIDGE_EDGE_DOT  — bright orange
+      [0.10, 0.10, 0.90],  // 10 VALLEY_DOT     — deep blue
+      [0.90, 0.90, 0.20],  // 11 STEP_EDGE      — gold
+      [1.00, 0.40, 0.70],  // 12 OBSTRUCTION_DOT — pink
     ];
 
     function recolorLidarByClassification(cellLabelsGrid, gridInfo) {
@@ -8800,11 +8819,12 @@ app.get("/design", (req, res) => {
       var ox = lidarPoints.position.x;
       var oz = lidarPoints.position.z;
       for (var i = 0; i < n; i++) {
-        // Raw buffer position + Three.js offset = world local coords matching Python grid
-        var wx = positions[i * 3]     + ox;
-        var wz = positions[i * 3 + 2] + oz;
-        var col = Math.round((wx - gridInfo.x_origin) / gridInfo.resolution);
-        var row = Math.round((wz - gridInfo.z_origin) / gridInfo.resolution);
+        // Use RAW buffer positions (without Three.js offset) to match Python grid,
+        // which was built from the raw point cloud coordinates.
+        var wx = positions[i * 3];
+        var wz = positions[i * 3 + 2];
+        var col = Math.floor((wx - gridInfo.x_origin) / gridInfo.resolution);
+        var row = Math.floor((wz - gridInfo.z_origin) / gridInfo.resolution);
         var label = 0;
         if (row >= 0 && row < gridInfo.rows && col >= 0 && col < gridInfo.cols) {
           label = cellLabelsGrid[row][col];
@@ -12500,8 +12520,15 @@ app.get("/design", (req, res) => {
         }
 
         // Recolor LiDAR point cloud by cell classification (ROOF/TREE/RIDGE_DOT/etc.)
+        console.log('Auto-detect response: cell_labels_grid=' + (data.cell_labels_grid ? data.cell_labels_grid.length + ' rows' : 'null') + ', grid_info=' + (data.grid_info ? JSON.stringify(data.grid_info) : 'null'));
+        if (lidarPoints) {
+          var pos = lidarPoints.geometry.attributes.position.array;
+          console.log('LiDAR buffer sample[0]: x=' + pos[0].toFixed(3) + ' z=' + pos[2].toFixed(3) + ' | offset: x=' + lidarPoints.position.x.toFixed(3) + ' z=' + lidarPoints.position.z.toFixed(3) + ' | world: x=' + (pos[0]+lidarPoints.position.x).toFixed(3) + ' z=' + (pos[2]+lidarPoints.position.z).toFixed(3));
+        }
         if (data.cell_labels_grid && data.grid_info) {
           recolorLidarByClassification(data.cell_labels_grid, data.grid_info);
+        } else {
+          console.warn('No classification grid in response — LiDAR colors unchanged');
         }
 
         // Prefer direct ridge_line from gradient detector (most accurate)

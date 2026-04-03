@@ -44,6 +44,118 @@ except ImportError:
     HAS_SHAPELY = False
 
 
+def extract_planes_with_membership(
+    point_cloud: np.ndarray,
+    options: RoofParseOptions | None = None,
+    *,
+    distance_threshold: float = 0.20,
+    min_inliers: int = 60,
+    ransac_n: int = 3,
+    num_iterations: int = 1500,
+    cluster_eps: float = 2.0,
+    cluster_min_samples: int = 20,
+    min_area_m2: float = 15.0,
+    max_roughness: float = 0.20,
+) -> tuple[list[RoofPlane], np.ndarray, list[float]]:
+    """
+    Extract roof planes and track per-point membership.
+
+    Returns
+    -------
+    planes : list[RoofPlane]
+    point_labels : np.ndarray shape (N,)
+        Plane index (0..K-1) per input point, -1 for unassigned.
+    per_plane_residuals : list[float]
+        RMS residual for each accepted plane.
+    """
+    if options is None:
+        options = RoofParseOptions()
+
+    pts = np.asarray(point_cloud, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"Expected Nx3 array, got shape {pts.shape}")
+
+    N = len(pts)
+    point_labels = np.full(N, -1, dtype=int)
+    # Track which original indices are still in the remaining pool
+    remaining_indices = np.arange(N)
+    remaining = pts.copy()
+
+    raw_segments: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []  # (plane_eq, inlier_pts, orig_indices)
+
+    for iter_i in range(options.max_planes):
+        if len(remaining) < min_inliers:
+            logger.info("RANSAC stopping: only %d points remaining (need %d)", len(remaining), min_inliers)
+            break
+
+        plane_eq, inlier_mask = _ransac_plane(
+            remaining, distance_threshold, ransac_n, num_iterations,
+        )
+        if plane_eq is None or inlier_mask.sum() < min_inliers:
+            logger.info("RANSAC iter %d: no plane found (inliers=%d)",
+                        iter_i, 0 if plane_eq is None else int(inlier_mask.sum()))
+            break
+
+        inlier_pts = remaining[inlier_mask]
+        inlier_orig_idx = remaining_indices[inlier_mask]
+        remaining = remaining[~inlier_mask]
+        remaining_indices = remaining_indices[~inlier_mask]
+        raw_segments.append((plane_eq, inlier_pts, inlier_orig_idx))
+        logger.info("RANSAC iter %d: found plane with %d inliers, %d remaining",
+                     iter_i, len(inlier_pts), len(remaining))
+
+    planes: list[RoofPlane] = []
+    per_plane_residuals: list[float] = []
+    plane_idx = 0
+
+    for seg_i, (plane_eq, inlier_pts, orig_idx) in enumerate(raw_segments):
+        clusters = _cluster_inliers(inlier_pts, cluster_eps, cluster_min_samples)
+        # Also cluster the original indices in the same way
+        clusters_idx = _cluster_inlier_indices(inlier_pts, orig_idx, cluster_eps, cluster_min_samples)
+        logger.info("Segment %d: %d inliers -> %d clusters", seg_i, len(inlier_pts), len(clusters))
+
+        for ci, (cluster_pts, cluster_orig) in enumerate(zip(clusters, clusters_idx)):
+            if len(cluster_pts) < min_inliers:
+                logger.info("  Cluster with %d points: SKIP (< %d min_inliers)", len(cluster_pts), min_inliers)
+                continue
+
+            refined_eq = _fit_plane_svd(cluster_pts)
+            if refined_eq is None:
+                refined_eq = plane_eq
+
+            normal = refined_eq[:3]
+            d_val = refined_eq[3]
+            residuals = np.abs(cluster_pts @ normal + d_val)
+            roughness = float(np.sqrt(np.mean(residuals ** 2)))
+
+            if roughness > max_roughness:
+                logger.debug("Rejecting plane: roughness=%.3f > %.3f", roughness, max_roughness)
+                continue
+
+            up_component = abs(normal[1]) / (np.linalg.norm(normal) + 1e-10)
+            if up_component < 0.3:
+                logger.debug("Rejecting plane: near-vertical (up_component=%.3f)", up_component)
+                continue
+
+            plane = _build_roof_plane(refined_eq, cluster_pts)
+            if plane.area_m2 < min_area_m2:
+                logger.info("  Cluster with %d points: SKIP (area=%.1f < %.1f)", len(cluster_pts), plane.area_m2, min_area_m2)
+                continue
+
+            logger.info("  Cluster with %d points: ACCEPTED (roughness=%.3f, up=%.3f, area=%.1f)",
+                        len(cluster_pts), roughness, up_component, plane.area_m2)
+            planes.append(plane)
+            per_plane_residuals.append(roughness)
+            point_labels[cluster_orig] = plane_idx
+            plane_idx += 1
+
+    if options.merge_coplanar and len(planes) > 1:
+        planes = _merge_coplanar(planes)
+
+    logger.info("Extracted %d roof planes with membership", len(planes))
+    return planes, point_labels, per_plane_residuals
+
+
 def extract_planes(
     point_cloud: np.ndarray,
     options: RoofParseOptions | None = None,
@@ -256,6 +368,29 @@ def _cluster_inliers(
 
     # Fallback: return all as one cluster
     return [pts]
+
+
+def _cluster_inlier_indices(
+    pts: np.ndarray,
+    orig_indices: np.ndarray,
+    eps: float,
+    min_samples: int,
+) -> list[np.ndarray]:
+    """Split original indices into clusters matching _cluster_inliers output."""
+    if len(pts) < min_samples:
+        return [orig_indices]
+
+    if HAS_SKLEARN:
+        xz = pts[:, [0, 2]]
+        labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(xz)
+        clusters = []
+        for label in set(labels):
+            if label == -1:
+                continue
+            clusters.append(orig_indices[labels == label])
+        return clusters if clusters else [orig_indices]
+
+    return [orig_indices]
 
 
 # ---------------------------------------------------------------------------
