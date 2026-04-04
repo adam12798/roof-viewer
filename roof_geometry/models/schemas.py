@@ -133,7 +133,7 @@ class RoofParseOptions(BaseModel):
     merge_coplanar: bool = Field(True, description="Merge nearly-coplanar adjacent planes")
     detect_dormers: bool = Field(True, description="Run dormer detection sub-pipeline")
     detect_obstructions: bool = Field(True, description="Run obstruction detection sub-pipeline")
-    pipeline_mode: str = Field("auto", description="Pipeline mode: 'auto', 'image_primary', or 'lidar_primary'")
+    pipeline_mode: str = Field("auto", description="Pipeline mode: 'auto', 'gradient', 'image_primary', 'lidar_primary', or 'image_engine'")
 
 
 class DesignCenter(BaseModel):
@@ -217,6 +217,7 @@ class RoofPlane(BaseModel):
     structure_id: str = Field("", description="Groups faces that share a ridge into one roof structure")
     confidence: float = Field(..., ge=0, le=1, description="Detection confidence score")
     needs_review: bool = Field(False, description="Flagged for human review")
+    source: str = Field("lidar", description="Data source that produced this plane: 'lidar', 'gradient', 'image_engine', 'fusion'")
 
 
 class RoofEdge(BaseModel):
@@ -537,3 +538,4 @@ class RoofParseResponse(BaseModel):
     ridge_line: RidgeLine | None = Field(None, description="Direct ridge line from gradient detector")
     cell_labels_grid: list[list[int]] | None = Field(None, description="Grid of CellLabel int values (rows×cols) for visualization")
     grid_info: dict | None = Field(None, description="Grid metadata: x_origin, z_origin, resolution, rows, cols")
+    image_engine_result: dict | None = Field(None, description="Full ImageEngineResult when image_engine mode is used")

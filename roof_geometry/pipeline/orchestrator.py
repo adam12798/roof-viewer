@@ -36,6 +36,7 @@ from pipeline.lidar_draper import drape_lidar
 from pipeline.gradient_detector import detect_roof_faces
 from pipeline.graph_builder import build_roof_graph
 from pipeline.confidence import score_confidence
+from pipeline.image_engine import run_image_engine
 
 PIPELINE_VERSION = "0.3.0"
 logger = logging.getLogger(__name__)
@@ -90,6 +91,44 @@ class RoofParsingPipeline:
                 request.image,
             )
 
+            # Image engine early exit: bypass all LiDAR-dependent stages
+            requested_mode = request.options.pipeline_mode
+            image_engine_result_dict = None
+
+            if requested_mode == "image_engine":
+                fused, image_engine_result_dict = self._try_image_engine(
+                    request, registration,
+                )
+                pipeline_mode_used = "image_engine"
+                logger.info("Using IMAGE-ENGINE mode (%d planes)", len(fused))
+
+                # Build graph and confidence from image-engine planes (may be empty)
+                roof_graph = self._time_stage("graph_build", build_roof_graph, fused)
+                confidence_report = self._time_stage("confidence", score_confidence, roof_graph)
+                crm_faces = roof_graph.to_crm_faces()
+
+                total_time = time.perf_counter() - t_total_start
+                metadata = RoofParseMetadata(
+                    processing_time_s=round(total_time, 3),
+                    pipeline_version=self.version,
+                    lidar_points_used=0,
+                    image_resolution_used=request.image.resolution_m_per_px,
+                    pipeline_mode_used="image_engine",
+                    sam_masks_found=0,
+                )
+
+                return RoofParseResponse(
+                    registration=registration,
+                    roof_graph=roof_graph,
+                    crm_faces=crm_faces,
+                    confidence_report=confidence_report,
+                    metadata=metadata,
+                    ridge_line=None,
+                    cell_labels_grid=None,
+                    grid_info=None,
+                    image_engine_result=image_engine_result_dict,
+                )
+
             # Stage 3: Convert raw LiDAR to local XYZ
             lidar_xyz = self._time_stage(
                 "lidar_convert",
@@ -129,8 +168,7 @@ class RoofParsingPipeline:
             if len(processed) == 0:
                 raise ValueError("No LiDAR points remaining after preprocessing")
 
-            # Determine pipeline mode
-            requested_mode = request.options.pipeline_mode
+            # Determine pipeline mode (requested_mode set before LiDAR stages)
             fused = None
 
             # Gradient mode: default for auto — pure LiDAR height logic
@@ -364,6 +402,38 @@ class RoofParsingPipeline:
             traceback.print_exc()
             return None
 
+    def _try_image_engine(
+        self,
+        request: RoofParseRequest,
+        registration: RegistrationTransform,
+    ) -> tuple[list, dict]:
+        """
+        Run the image engine pipeline (pure image, no LiDAR dependency).
+
+        Always returns (planes, result_dict) — zero planes is valid.
+        Does not touch LiDAR data, gradient labels, or cell_labels_grid.
+        """
+        try:
+            result = self._time_stage(
+                "image_engine",
+                run_image_engine,
+                request.image,
+                registration,
+            )
+
+            logger.info(
+                "Image engine: %d planes, %d obstructions, %d dormers",
+                len(result.planes), len(result.obstruction_candidates),
+                len(result.dormer_candidates),
+            )
+            return result.planes, result.model_dump()
+
+        except Exception as e:
+            logger.error("Image engine failed: %s", e)
+            traceback.print_exc()
+            # Return empty result — image_engine always succeeds
+            return [], {"source": "image_engine", "error": str(e)}
+
     def _run_lidar_primary(
         self,
         request: RoofParseRequest,
@@ -546,8 +616,9 @@ class RoofParsingPipeline:
     @staticmethod
     def _validate_inputs(request: RoofParseRequest) -> None:
         """Basic sanity checks on the request payload."""
-        if not request.lidar.points and not request.lidar.file_path:
-            raise ValueError("LiDAR input must provide either inline points or a file_path")
+        if request.options.pipeline_mode != "image_engine":
+            if not request.lidar.points and not request.lidar.file_path:
+                raise ValueError("LiDAR input must provide either inline points or a file_path")
         if not request.image.url and not request.image.file_path:
             raise ValueError("Image input must provide either a url or a file_path")
 

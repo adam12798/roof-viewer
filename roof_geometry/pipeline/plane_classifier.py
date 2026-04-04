@@ -50,6 +50,7 @@ except ImportError:
 
 # Import CellLabel from gradient_detector (canonical location)
 from pipeline.gradient_detector import CellLabel
+from pipeline.tree_detector import detect_and_exclude_trees, TreeExclusionResult, compute_roof_veto_score, _ROOF_VETO_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ class PointFeatures:
     curvature: np.ndarray     # (N,)   — ratio of smallest eigenvalue to sum
     local_density: np.ndarray  # (N,)  — neighbor count within adaptive radius
     height_std: np.ndarray    # (N,)   — std of Y coords in KNN neighborhood
+    vertical_compactness: np.ndarray  # (N,) — Y range / XY radius in KNN neighborhood
 
 
 @dataclass
@@ -73,6 +75,7 @@ class AdaptiveThresholds:
     curvature_tree_threshold: float  # curvature above this = tree canopy
     height_ground_threshold: float   # points below this = ground
     nn_median_dist: float          # median nearest-neighbor distance
+    compactness_tree_threshold: float = 2.0  # vertical_compactness above this = tree
 
 
 @dataclass
@@ -91,6 +94,7 @@ class ClassificationResult:
     planes: list[RoofPlane]
     ridge_lines: list[tuple[np.ndarray, np.ndarray]]  # list of (start_3d, end_3d) pairs
     plane_infos: list[PlaneInfo]
+    tree_exclusion: TreeExclusionResult | None = None  # tree diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +143,7 @@ def _compute_features_o3d(pts: np.ndarray, k: int) -> PointFeatures:
     curvature = np.zeros(N)
     local_density = np.zeros(N, dtype=int)
     height_std = np.zeros(N)
+    vertical_compactness = np.zeros(N)
 
     for i in range(N):
         [_, idx, _] = tree.search_knn_vector_3d(pts[i], k)
@@ -148,6 +153,11 @@ def _compute_features_o3d(pts: np.ndarray, k: int) -> PointFeatures:
         local_density[i] = len(idx)
         neighbors = pts[idx]
         height_std[i] = float(np.std(neighbors[:, 1]))
+        # Vertical compactness: Y range / XY radius — high for trees (tall, narrow)
+        y_range = float(neighbors[:, 1].max() - neighbors[:, 1].min())
+        xz = neighbors[:, [0, 2]]
+        xz_radius = float(np.linalg.norm(xz - xz.mean(axis=0), axis=1).max())
+        vertical_compactness[i] = y_range / max(xz_radius, 0.01)
         centered = neighbors - neighbors.mean(axis=0)
         cov = centered.T @ centered / len(neighbors)
         try:
@@ -158,7 +168,7 @@ def _compute_features_o3d(pts: np.ndarray, k: int) -> PointFeatures:
         except np.linalg.LinAlgError:
             pass
 
-    return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std)
+    return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std, vertical_compactness=vertical_compactness)
 
 
 def _compute_features_numpy(pts: np.ndarray, k: int) -> PointFeatures:
@@ -168,11 +178,12 @@ def _compute_features_numpy(pts: np.ndarray, k: int) -> PointFeatures:
     curvature = np.zeros(N)
     local_density = np.zeros(N, dtype=int)
     height_std = np.zeros(N)
+    vertical_compactness = np.zeros(N)
 
     if not HAS_SCIPY_SPATIAL:
         logger.warning("scipy.spatial not available — returning zero features")
         normals[:, 1] = 1.0  # default: pointing up
-        return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std)
+        return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std, vertical_compactness=vertical_compactness)
 
     tree = cKDTree(pts)
     # Query k neighbors for each point
@@ -188,6 +199,11 @@ def _compute_features_numpy(pts: np.ndarray, k: int) -> PointFeatures:
         local_density[i] = len(valid)
         neighbors = pts[valid]
         height_std[i] = float(np.std(neighbors[:, 1]))
+        # Vertical compactness: Y range / XY radius — high for trees (tall, narrow)
+        y_range = float(neighbors[:, 1].max() - neighbors[:, 1].min())
+        xz = neighbors[:, [0, 2]]
+        xz_radius = float(np.linalg.norm(xz - xz.mean(axis=0), axis=1).max())
+        vertical_compactness[i] = y_range / max(xz_radius, 0.01)
         centered = neighbors - neighbors.mean(axis=0)
         cov = centered.T @ centered / len(neighbors)
         try:
@@ -204,7 +220,7 @@ def _compute_features_numpy(pts: np.ndarray, k: int) -> PointFeatures:
         except np.linalg.LinAlgError:
             normals[i] = [0, 1, 0]
 
-    return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std)
+    return PointFeatures(normals=normals, curvature=curvature, local_density=local_density, height_std=height_std, vertical_compactness=vertical_compactness)
 
 
 # ---------------------------------------------------------------------------
@@ -252,10 +268,24 @@ def compute_adaptive_thresholds(
     h_range = float(np.percentile(heights, 90) - h_10) if len(heights) > 10 else 3.0
     height_ground_threshold = max(0.3, h_10 + 0.15 * h_range)
 
+    # Vertical compactness: roof slopes are gradual (low ratio), trees are tall
+    # and narrow (high ratio). Use the 90th percentile of roof-like points as
+    # baseline and set threshold above it.
+    vc = features.vertical_compactness
+    vc_valid = vc[vc > 0]
+    if len(vc_valid) > 10:
+        # The lower 80% are likely roof/ground — use their 90th pctl as baseline
+        sorted_vc = np.sort(vc_valid)
+        n_roof = max(1, int(len(sorted_vc) * 0.8))
+        vc_roof_p90 = float(sorted_vc[min(n_roof, len(sorted_vc) - 1)])
+        compactness_tree_threshold = max(2.0, vc_roof_p90 * 2.0)
+    else:
+        compactness_tree_threshold = 2.0
+
     logger.info(
-        "Adaptive thresholds — dist=%.3f rough=%.3f curv_tree=%.3f height_gnd=%.2f nn_med=%.3f",
+        "Adaptive thresholds — dist=%.3f rough=%.3f curv_tree=%.3f height_gnd=%.2f nn_med=%.3f compact_tree=%.2f",
         distance_threshold, roughness_threshold, curvature_tree_threshold,
-        height_ground_threshold, nn_median,
+        height_ground_threshold, nn_median, compactness_tree_threshold,
     )
 
     return AdaptiveThresholds(
@@ -264,6 +294,7 @@ def compute_adaptive_thresholds(
         curvature_tree_threshold=curvature_tree_threshold,
         height_ground_threshold=height_ground_threshold,
         nn_median_dist=nn_median,
+        compactness_tree_threshold=compactness_tree_threshold,
     )
 
 
@@ -350,6 +381,7 @@ def classify_from_planes(
     anchor_dots: list[tuple[float, float]] | None = None,
     adjacency: dict[str, list[str]] | None = None,
     edges: list[RoofEdge] | None = None,
+    components: list[list[str]] | None = None,
 ) -> ClassificationResult:
     """
     Classify every point based on plane membership and inter-plane geometry.
@@ -364,6 +396,43 @@ def classify_from_planes(
 
     plane_infos = _build_plane_infos(planes, per_plane_residuals, anchor_dots)
 
+    # ---- HARD TREE EXCLUSION (runs BEFORE all other classification) ----
+    # Compute per-point tree scores using multiple signals, cluster
+    # candidates, and produce a definitive exclusion mask. Points in
+    # the tree mask are permanently removed from roof candidate generation,
+    # LOWER_ROOF logic, ridge/eave detection, and connected components.
+    plane_res_dict = {i: per_plane_residuals[i] for i in range(len(per_plane_residuals))}
+    plane_area_dict = {i: planes[i].area_m2 for i in range(len(planes))}
+
+    tree_result = detect_and_exclude_trees(
+        pts, features.normals, features.curvature, features.height_std,
+        features.vertical_compactness, features.local_density,
+        point_labels, plane_res_dict, plane_area_dict,
+    )
+    tree_mask = tree_result.tree_mask
+
+    # Apply hard exclusion: label tree points immediately
+    labels[tree_mask] = CellLabel.TREE
+
+    # Identify which planes are predominantly tree
+    # Require a strong majority (>70%) to avoid false-flagging roof planes
+    # where a few boundary points near a tree scored high
+    tree_plane_indices: set[int] = set()
+    for pi in plane_infos:
+        mask = point_labels == pi.index
+        if mask.sum() < 5:
+            continue
+        tree_fraction = tree_mask[mask].sum() / mask.sum()
+        if tree_fraction > 0.7:
+            tree_plane_indices.add(pi.index)
+            # Mark ALL points on this plane as TREE (even the ones that
+            # individually didn't score high enough)
+            labels[mask] = CellLabel.TREE
+            logger.info(
+                "Plane %d → TREE (%.0f%% of points excluded by tree detector, %d pts)",
+                pi.index, tree_fraction * 100, int(mask.sum()),
+            )
+
     # ---- Step 0: Learn roof pattern, then reject outlier planes ----
     #
     # A real residential roof has structural constraints:
@@ -376,8 +445,6 @@ def classify_from_planes(
     # curvature alone, we learn the roof's pattern from primary (anchor-
     # containing) planes, then score every other plane against it.
     # Planes that don't fit the pattern are rejected as TREE/noise.
-
-    tree_plane_indices: set[int] = set()
 
     # --- Pre-screen: compute per-plane median height_std ---
     # This is our best signal for roof vs tree.  Roof planes have very low
@@ -403,9 +470,12 @@ def classify_from_planes(
     smooth_threshold = max(hstd_baseline * 3.0, 0.2)
 
     # --- Learn the roof pattern from primary planes ---
+    # Exclude planes already marked as tree by the hard detector
     primary = [
         pi for pi in plane_infos
-        if pi.is_primary and plane_median_hstd.get(pi.index, 999) < smooth_threshold
+        if pi.is_primary
+        and plane_median_hstd.get(pi.index, 999) < smooth_threshold
+        and pi.index not in tree_plane_indices
     ]
     if not primary:
         # No clean primary — use the 2 largest smooth planes as proxy
@@ -481,6 +551,8 @@ def classify_from_planes(
         for pi in plane_infos:
             if pi in primary:
                 continue
+            if pi.index in tree_plane_indices:
+                continue  # already excluded by hard tree detector
             mask = point_labels == pi.index
             n_pts = mask.sum()
             if n_pts < 5:
@@ -488,15 +560,28 @@ def classify_from_planes(
 
             # Fast-path: if this plane's surface is very rough compared to
             # the smooth baseline, it's almost certainly tree canopy.
+            # BUT: roof veto can override — smooth rectangular regions stay ROOF.
             pi_hstd = plane_median_hstd.get(pi.index, 999)
             if pi_hstd > smooth_threshold * 2.0:
-                tree_plane_indices.add(pi.index)
-                labels[mask] = CellLabel.TREE
-                logger.info(
-                    "Plane %d → TREE (fast-path hstd=%.3f >> threshold=%.3f, %d pts)",
-                    pi.index, pi_hstd, smooth_threshold, n_pts,
+                # Check roof veto before committing
+                member_pts_fp = pts[mask]
+                veto_fp, _ = compute_roof_veto_score(
+                    member_pts_fp, features.normals[mask], features.curvature[mask],
+                    pi.residual, 1.0,  # plane_membership = 100% (it IS a RANSAC plane)
                 )
-                continue
+                if veto_fp >= _ROOF_VETO_THRESHOLD:
+                    logger.info(
+                        "Plane %d fast-path VETOED by roof score=%.0f (hstd=%.3f, %d pts)",
+                        pi.index, veto_fp, pi_hstd, n_pts,
+                    )
+                else:
+                    tree_plane_indices.add(pi.index)
+                    labels[mask] = CellLabel.TREE
+                    logger.info(
+                        "Plane %d → TREE (fast-path hstd=%.3f >> threshold=%.3f, %d pts)",
+                        pi.index, pi_hstd, smooth_threshold, n_pts,
+                    )
+                    continue
 
             member_pts = pts[mask]
             plane = pi.plane
@@ -564,14 +649,32 @@ def classify_from_planes(
                 score += 2
                 reasons.append(f"hstd={median_hstd:.3f} > pattern_p90={pattern_hstd_p90:.3f}")
 
+            # (h) Vertical compactness — tree canopy is tall relative to XY footprint
+            member_vc = features.vertical_compactness[mask]
+            median_vc = float(np.median(member_vc))
+            if median_vc > thresholds.compactness_tree_threshold:
+                score += 2
+                reasons.append(f"vert_compact={median_vc:.2f}")
+
             # Threshold: score >= 3 means the plane is an outlier
+            # BUT: roof veto can override if the plane has strong roof shape
             if score >= 3:
-                tree_plane_indices.add(pi.index)
-                labels[mask] = CellLabel.TREE
-                logger.info(
-                    "Plane %d → TREE (score=%d, %d pts, %s)",
-                    pi.index, score, n_pts, ", ".join(reasons),
+                veto_s, _ = compute_roof_veto_score(
+                    member_pts, features.normals[mask], features.curvature[mask],
+                    pi.residual, 1.0,
                 )
+                if veto_s >= _ROOF_VETO_THRESHOLD:
+                    logger.info(
+                        "Plane %d score=%d VETOED by roof score=%.0f (%d pts, %s)",
+                        pi.index, score, veto_s, n_pts, ", ".join(reasons),
+                    )
+                else:
+                    tree_plane_indices.add(pi.index)
+                    labels[mask] = CellLabel.TREE
+                    logger.info(
+                        "Plane %d → TREE (score=%d, veto=%.0f, %d pts, %s)",
+                        pi.index, score, veto_s, n_pts, ", ".join(reasons),
+                    )
 
     # ---- Step 1: Classify plane-assigned points ----
     for pi in plane_infos:
@@ -629,6 +732,7 @@ def classify_from_planes(
         _classify_lower_roofs(
             labels, point_labels, planes, plane_infos, adjacency,
             edges=edges, tree_plane_indices=tree_plane_indices,
+            components=components,
         )
 
     # ---- Step 3: Ridge and Valley from plane intersections ----
@@ -636,6 +740,7 @@ def classify_from_planes(
     if edges:
         ridge_lines = _classify_ridge_valley(
             labels, pts, planes, edges, thresholds.distance_threshold,
+            point_labels=point_labels,
         )
 
     # ---- Step 4: Eave — plane boundary adjacent to ground ----
@@ -648,7 +753,10 @@ def classify_from_planes(
     # ---- Step 6: Ground — unassigned low points ----
     _classify_ground(labels, pts, point_labels, thresholds)
 
-    # ---- Step 7: Trees — unassigned high-curvature points ----
+    # ---- Step 7: Trees — catch remaining unassigned tree points ----
+    # The hard tree exclusion already ran above. This pass catches any
+    # stragglers that weren't in a promoted cluster but still have tree
+    # features (unassigned, elevated, unstable + chaotic normals).
     _classify_trees(labels, pts, point_labels, features, thresholds)
 
     # ---- Step 7b: Recover attached structures (porches, garages) ----
@@ -664,6 +772,7 @@ def classify_from_planes(
         planes=planes,
         ridge_lines=ridge_lines,
         plane_infos=plane_infos,
+        tree_exclusion=tree_result,
     )
 
 
@@ -701,14 +810,21 @@ def _classify_lower_roofs(
     adjacency: dict[str, list[str]],
     edges: list[RoofEdge] | None = None,
     tree_plane_indices: set[int] | None = None,
+    components: list[list[str]] | None = None,
 ) -> None:
-    """Mark ROOF points on planes significantly below their neighbors as LOWER_ROOF."""
+    """
+    Mark ROOF points on planes significantly below their neighbors as LOWER_ROOF.
+
+    Uses per-connected-component logic:
+      - Median height is computed per component, not globally
+      - The largest valid plane in each component is protected from demotion
+      - Only structurally valid planes (non-tree, low residual) set height baselines
+    """
     plane_map = {p.id: p for p in planes}
     tree_planes = tree_plane_indices or set()
+    info_by_id: dict[str, PlaneInfo] = {pi.plane.id: pi for pi in plane_infos}
 
-    # Build set of plane IDs connected by a RIDGE edge — these are
-    # opposite faces of the same gable/hip structure and should never
-    # be marked LOWER_ROOF relative to each other.
+    # Ridge partners: opposite faces of the same gable/hip — never demote relative to each other
     ridge_partners: set[tuple[str, str]] = set()
     if edges:
         for e in edges:
@@ -717,81 +833,118 @@ def _classify_lower_roofs(
                 ridge_partners.add((a, b))
                 ridge_partners.add((b, a))
 
-    # Find the dominant roof elevation from non-tree planes only.
-    # Use MEDIAN height (not max) so one tall plane doesn't demote everything.
-    valid_infos = [pi for pi in plane_infos if pi.index not in tree_planes]
-    valid_heights = sorted([pi.plane.height_m for pi in valid_infos])
-    if valid_heights:
-        median_height = valid_heights[len(valid_heights) // 2]
-    else:
-        median_height = 0.0
-
-    # Collect all non-tree pitches for the similarity guard
-    all_roof_pitches = [pi.plane.pitch_deg for pi in valid_infos]
-
-    for pi in plane_infos:
-        plane = pi.plane
-        # Never demote primary (anchor-containing) planes or tree planes
-        if pi.is_primary or pi.index in tree_planes:
-            continue
-
-        neighbors = adjacency.get(plane.id, [])
-        if not neighbors:
-            continue
-
-        # Only compare against roof-like neighbors that are NOT ridge partners
-        # and NOT trees.  Pitch > 2° filters out flat canopy-like planes.
-        neighbor_heights = []
-        for nid in neighbors:
-            if nid not in plane_map:
+    # Compute connected components if not provided (inline BFS fallback)
+    # Tree planes are excluded from the walk — they must not bridge components
+    tree_plane_ids = {
+        pi.plane.id for pi in plane_infos if pi.index in tree_planes
+    }
+    if components is None:
+        visited: set[str] = set()
+        components = []
+        for p in planes:
+            if p.id in visited or p.id in tree_plane_ids:
                 continue
-            np_ = plane_map[nid]
-            # Skip tree-canopy planes
-            nidx = next((pi2.index for pi2 in plane_infos if pi2.plane.id == nid), -1)
-            if nidx in tree_planes:
-                continue
-            # Skip ridge partners — same gable structure
-            if (plane.id, nid) in ridge_partners:
-                continue
-            if np_.pitch_deg > 2.0:
-                neighbor_heights.append(np_.height_m)
+            comp: list[str] = []
+            queue = [p.id]
+            while queue:
+                pid = queue.pop(0)
+                if pid in visited or pid in tree_plane_ids:
+                    continue
+                visited.add(pid)
+                comp.append(pid)
+                for nb in adjacency.get(pid, []):
+                    if nb not in visited and nb not in tree_plane_ids:
+                        queue.append(nb)
+            components.append(comp)
 
-        if not neighbor_heights:
-            continue
+    # Determine valid reference planes: non-tree, low residual, has ROOF points
+    non_tree_infos = [pi for pi in plane_infos if pi.index not in tree_planes]
+    residuals = sorted([pi.residual for pi in non_tree_infos]) if non_tree_infos else [1.0]
+    median_residual = residuals[len(residuals) // 2]
+    max_valid_residual = median_residual * 2.0
 
-        max_neighbor_elev = max(neighbor_heights)
-
-        # Similarity guard: if this plane's height is within 2.5m of the
-        # median roof height, it's part of the main structure — don't demote.
-        # This prevents normal height variation (different wings, hip vs gable)
-        # from being misclassified as step-downs.
-        if abs(plane.height_m - median_height) < 2.5:
-            continue
-
-        # Also guard on pitch: if this plane's pitch matches any primary
-        # plane pitch within 12°, it's likely the same structure level.
-        ref_pitches = [pi2.plane.pitch_deg for pi2 in plane_infos if pi2.is_primary]
-        if not ref_pitches:
-            by_area = sorted(valid_infos, key=lambda x: x.plane.area_m2, reverse=True)
-            ref_pitches = [x.plane.pitch_deg for x in by_area[:2]]
-        if ref_pitches:
-            pitch_similar = any(abs(plane.pitch_deg - pp) < 12.0 for pp in ref_pitches)
-            if pitch_similar and plane.height_m > median_height - 4.0:
-                continue  # similar pitch and not drastically lower
-
-        # Must be significantly below the tallest non-partner neighbor.
-        # Use 2.5m threshold — real step-downs (porches, additions) are
-        # typically 2.5-5m below the main roof.
-        height_below_neighbor = max_neighbor_elev - plane.height_m
-
-        if height_below_neighbor > 2.5:
+    valid_plane_ids: set[str] = set()
+    for pi in non_tree_infos:
+        if pi.residual <= max_valid_residual:
             mask = point_labels == pi.index
-            downgrade = mask & ((labels == CellLabel.ROOF) | (labels == CellLabel.FLAT_ROOF))
-            labels[downgrade] = CellLabel.LOWER_ROOF
-            logger.debug(
-                "Plane %s → LOWER_ROOF (below neighbor by %.1fm, median=%.1f)",
-                plane.id, height_below_neighbor, median_height,
-            )
+            if mask.any():
+                pt_labels = labels[mask]
+                if np.any((pt_labels == CellLabel.ROOF) | (pt_labels == CellLabel.FLAT_ROOF)):
+                    valid_plane_ids.add(pi.plane.id)
+
+    # Process each connected component independently
+    for comp_ids in components:
+        # Valid planes in this component
+        comp_valid = [
+            info_by_id[pid] for pid in comp_ids
+            if pid in valid_plane_ids and pid in info_by_id
+        ]
+        if not comp_valid:
+            continue
+
+        # Per-component median height
+        comp_heights = sorted([pi.plane.height_m for pi in comp_valid])
+        comp_median_height = comp_heights[len(comp_heights) // 2]
+
+        # Per-component dominant plane = largest area → protected from demotion
+        dominant = max(comp_valid, key=lambda pi: pi.plane.area_m2)
+        dominant_id = dominant.plane.id
+
+        # Reference pitches: from primary planes in this component, or dominant
+        comp_primary = [
+            info_by_id[cid] for cid in comp_ids
+            if cid in info_by_id and info_by_id[cid].is_primary
+        ]
+        ref_pitches = [p.plane.pitch_deg for p in comp_primary] if comp_primary else [dominant.plane.pitch_deg]
+
+        for pid in comp_ids:
+            if pid not in info_by_id:
+                continue
+            pi = info_by_id[pid]
+            plane = pi.plane
+
+            # Never demote: dominant plane, primary planes, tree planes, invalid planes
+            if pid == dominant_id or pi.is_primary or pi.index in tree_planes:
+                continue
+            if pid not in valid_plane_ids:
+                continue
+
+            # Neighbor heights from valid planes only
+            neighbors = adjacency.get(pid, [])
+            neighbor_heights = []
+            for nid in neighbors:
+                if nid not in plane_map or nid not in valid_plane_ids:
+                    continue
+                if (pid, nid) in ridge_partners:
+                    continue
+                np_ = plane_map[nid]
+                if np_.pitch_deg > 2.0:
+                    neighbor_heights.append(np_.height_m)
+
+            if not neighbor_heights:
+                continue
+            max_neighbor_elev = max(neighbor_heights)
+
+            # Similarity guard: within 2.5m of component median → main structure
+            if abs(plane.height_m - comp_median_height) < 2.5:
+                continue
+
+            # Pitch guard: similar pitch to primary/dominant + not drastically lower
+            pitch_similar = any(abs(plane.pitch_deg - pp) < 12.0 for pp in ref_pitches)
+            if pitch_similar and plane.height_m > comp_median_height - 4.0:
+                continue
+
+            # Must be significantly below tallest valid neighbor
+            height_below_neighbor = max_neighbor_elev - plane.height_m
+            if height_below_neighbor > 2.5:
+                mask = point_labels == pi.index
+                downgrade = mask & ((labels == CellLabel.ROOF) | (labels == CellLabel.FLAT_ROOF))
+                labels[downgrade] = CellLabel.LOWER_ROOF
+                logger.debug(
+                    "Plane %s → LOWER_ROOF (comp dominant=%s, below neighbor by %.1fm, "
+                    "comp_median=%.1f)",
+                    plane.id, dominant_id, height_below_neighbor, comp_median_height,
+                )
 
 
 def _classify_ridge_valley(
@@ -800,18 +953,33 @@ def _classify_ridge_valley(
     planes: list[RoofPlane],
     edges: list[RoofEdge],
     distance_threshold: float,
+    point_labels: np.ndarray | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """
-    Assign RIDGE_DOT and VALLEY_DOT from plane-plane intersections.
+    Assign RIDGE_DOT, NEAR_RIDGE, and VALLEY_DOT from plane-plane intersections.
 
-    For each ridge/valley edge, project nearby ROOF points onto the
-    intersection line and label those within distance_threshold.
+    Ridge classification rules:
+      1. RIDGE_DOT requires a valid plane-plane intersection (two distinct planes,
+         normal angle > 10°, convex edge). These checks are enforced upstream in
+         graph_builder._classify_single_edge().
+      2. A point can only be RIDGE_DOT if within 0.15m of the intersection line.
+      3. NEAR_RIDGE: points 0.15m-0.30m from a valid ridge line.
+      4. Single-plane guard: ridge candidates must have points from ≥2 planes nearby.
+      5. Linearity enforcement: outliers > 0.20m from a fitted ridge line are demoted.
     """
     ridge_lines: list[tuple[np.ndarray, np.ndarray]] = []
-    # Ridge band should be tight: ~1 grid cell width.  The RANSAC
-    # distance_threshold is for plane inliers (much wider).  Use a fixed
-    # narrow band so ridge dots form a clean line, not a broad smear.
-    ridge_dist = 0.35  # ~35cm — roughly 1 cell at 0.25m or 0.5m resolution
+    ridge_dist = 0.15       # tight band — only points right on the intersection
+    near_ridge_dist = 0.30  # outer limit for NEAR_RIDGE
+
+    # Build XZ KDTree once for single-plane guard
+    xz_tree = None
+    if HAS_SCIPY_SPATIAL and point_labels is not None:
+        xz_tree = cKDTree(pts[:, [0, 2]])
+
+    # Map plane IDs to indices for the single-plane guard
+    plane_id_to_idx: dict[str, int] = {}
+    for i, p in enumerate(planes):
+        plane_id_to_idx[p.id] = i
 
     for edge in edges:
         if edge.edge_type not in (EdgeType.ridge, EdgeType.valley, EdgeType.hip):
@@ -826,41 +994,116 @@ def _classify_ridge_valley(
 
         edge_dir = edge_vec / edge_len
 
-        # Find points near this edge line
-        # Vector from start to each point
+        # Project all points onto the edge line segment
         to_pts = pts - start
-        # Project onto edge direction
         proj_along = to_pts @ edge_dir
-        # Clamp to edge segment
         proj_along_clamped = np.clip(proj_along, 0, edge_len)
-        # Closest point on edge segment
         closest = start + proj_along_clamped[:, np.newaxis] * edge_dir
-        # Distance from each point to closest point on edge
         dist_to_edge = np.linalg.norm(pts - closest, axis=1)
 
-        near_mask = dist_to_edge < ridge_dist
         # Only relabel ROOF / FLAT_ROOF / LOWER_ROOF points
         roof_mask = (
             (labels == CellLabel.ROOF)
             | (labels == CellLabel.FLAT_ROOF)
             | (labels == CellLabel.LOWER_ROOF)
         )
-        candidates = near_mask & roof_mask
 
-        if edge.edge_type == EdgeType.ridge:
-            labels[candidates] = CellLabel.RIDGE_DOT
-            ridge_lines.append((start, end))
-        elif edge.edge_type == EdgeType.valley:
-            labels[candidates] = CellLabel.VALLEY_DOT
-        elif edge.edge_type == EdgeType.hip:
-            # Hip edges are diagonal ridges — label as RIDGE_DOT
-            labels[candidates] = CellLabel.RIDGE_DOT
-            ridge_lines.append((start, end))
+        if edge.edge_type == EdgeType.valley:
+            valley_candidates = (dist_to_edge < ridge_dist) & roof_mask
+            labels[valley_candidates] = CellLabel.VALLEY_DOT
+            continue
+
+        # Ridge or hip — apply strict rules
+        ridge_candidates = (dist_to_edge < ridge_dist) & roof_mask
+        near_ridge_candidates = (
+            (dist_to_edge >= ridge_dist)
+            & (dist_to_edge < near_ridge_dist)
+            & roof_mask
+        )
+
+        # Single-plane guard: require points from ≥2 distinct planes nearby
+        if xz_tree is not None and point_labels is not None and len(edge.plane_ids) == 2:
+            for candidates_mask in [ridge_candidates, near_ridge_candidates]:
+                candidate_indices = np.where(candidates_mask)[0]
+                for idx in candidate_indices:
+                    nearby = xz_tree.query_ball_point(pts[idx, [0, 2]], r=0.5)
+                    nearby_planes = set(point_labels[nearby]) - {-1}
+                    if len(nearby_planes) < 2:
+                        candidates_mask[idx] = False
+
+        labels[ridge_candidates] = CellLabel.RIDGE_DOT
+        labels[near_ridge_candidates] = CellLabel.NEAR_RIDGE
+        ridge_lines.append((start, end))
+
+    # Linearity enforcement: fit line per ridge segment, reject outliers
+    ridge_lines = _enforce_ridge_linearity(labels, pts, ridge_lines)
 
     # Promote ridge endpoints near ground to RIDGE_EDGE_DOT (gable ends)
     _promote_ridge_edge_dots(labels, pts, ridge_lines, distance_threshold)
 
     return ridge_lines
+
+
+def _enforce_ridge_linearity(
+    labels: np.ndarray,
+    pts: np.ndarray,
+    ridge_lines: list[tuple[np.ndarray, np.ndarray]],
+    max_deviation_m: float = 0.20,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    For each ridge line, fit a line to its RIDGE_DOT points, reject outliers
+    further than max_deviation_m from the fitted line, and recompute endpoints.
+    """
+    refined_lines: list[tuple[np.ndarray, np.ndarray]] = []
+    ridge_mask = labels == CellLabel.RIDGE_DOT
+
+    for start, end in ridge_lines:
+        edge_vec = end - start
+        edge_len = np.linalg.norm(edge_vec)
+        if edge_len < 0.1:
+            continue
+        edge_dir = edge_vec / edge_len
+
+        # Find RIDGE_DOT points near this edge
+        to_pts = pts - start
+        proj = to_pts @ edge_dir
+        closest = start + np.clip(proj, 0, edge_len)[:, np.newaxis] * edge_dir
+        dist = np.linalg.norm(pts - closest, axis=1)
+        on_this_edge = ridge_mask & (dist < 0.30)
+
+        edge_pt_indices = np.where(on_this_edge)[0]
+        if len(edge_pt_indices) < 3:
+            refined_lines.append((start, end))
+            continue
+
+        edge_pts = pts[edge_pt_indices]
+
+        # PCA fit
+        centroid = edge_pts.mean(axis=0)
+        centered = edge_pts - centroid
+        _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+        line_dir = Vt[0]
+
+        # Perpendicular distance from fitted line
+        perp = centered - (centered @ line_dir)[:, np.newaxis] * line_dir
+        perp_dist = np.linalg.norm(perp, axis=1)
+
+        # Reject outliers — demote back to ROOF
+        outlier_local = perp_dist > max_deviation_m
+        outlier_indices = edge_pt_indices[outlier_local]
+        labels[outlier_indices] = CellLabel.ROOF
+
+        # Recompute endpoints from inliers
+        inlier_pts = edge_pts[~outlier_local]
+        if len(inlier_pts) >= 2:
+            projs = (inlier_pts - centroid) @ line_dir
+            new_start = centroid + line_dir * projs.min()
+            new_end = centroid + line_dir * projs.max()
+            refined_lines.append((new_start, new_end))
+        else:
+            refined_lines.append((start, end))
+
+    return refined_lines
 
 
 def _promote_ridge_edge_dots(
@@ -1008,6 +1251,44 @@ def _classify_ground(
     labels[ground_mask] = CellLabel.GROUND
 
 
+def _compute_normal_variance_mask(
+    pts: np.ndarray,
+    features: PointFeatures,
+    thresholds: AdaptiveThresholds,
+) -> np.ndarray:
+    """
+    Return boolean mask where True = high normal variance in the local
+    neighborhood (angular std of normals > 30°). Points with chaotic
+    normals cannot be explained by a single plane orientation.
+    """
+    N = len(pts)
+    high_variance = np.ones(N, dtype=bool)  # default True if scipy unavailable
+
+    if not HAS_SCIPY_SPATIAL:
+        return high_variance
+
+    kd = cKDTree(pts)
+    radius = max(0.5, thresholds.nn_median_dist * 5)
+    angle_threshold_rad = math.radians(30)
+
+    for i in range(N):
+        nearby = kd.query_ball_point(pts[i], r=radius)
+        if len(nearby) < 3:
+            # Too few neighbors to judge — assume high variance
+            continue
+        normals_nearby = features.normals[nearby]
+        mean_normal = normals_nearby.mean(axis=0)
+        mn_len = np.linalg.norm(mean_normal)
+        if mn_len < 1e-6:
+            continue  # degenerate — keep True
+        mean_normal /= mn_len
+        cos_angles = np.clip(normals_nearby @ mean_normal, -1, 1)
+        angular_std = float(np.std(np.arccos(cos_angles)))
+        high_variance[i] = angular_std > angle_threshold_rad
+
+    return high_variance
+
+
 def _classify_trees(
     labels: np.ndarray,
     pts: np.ndarray,
@@ -1016,70 +1297,36 @@ def _classify_trees(
     thresholds: AdaptiveThresholds,
 ) -> None:
     """
-    Classify unassigned elevated points with high curvature and
-    inconsistent normals as TREE.
+    Classify unassigned elevated points as TREE using three properties:
+      1. Cannot be explained by a stable plane (high curvature or height_std)
+      2. Exhibits high normal variance (angular std > 30° in neighborhood)
+      3. Significant vertical spread within a small XY region (high compactness)
+    All three must be present — this is an AND rule.
     """
     unassigned = point_labels == -1
     elevated = pts[:, 1] > max(1.0, thresholds.height_ground_threshold)
-    high_curvature = features.curvature > thresholds.curvature_tree_threshold
-    high_hstd = features.height_std > 0.3  # bumpy surface = tree
     still_unsure = labels == CellLabel.UNSURE
 
-    # Tree condition: unassigned + elevated + (high curvature OR high height_std)
-    tree_mask = unassigned & elevated & (high_curvature | high_hstd) & still_unsure
+    # (1) Cannot be explained by a stable plane
+    unstable_plane = (
+        (features.curvature > thresholds.curvature_tree_threshold)
+        | (features.height_std > 0.3)
+    )
 
-    # Also check normal consistency for borderline cases:
-    # compute angular deviation of normals in local neighborhood
-    if HAS_SCIPY_SPATIAL and tree_mask.any():
-        _refine_tree_by_normal_consistency(
-            labels, pts, features, tree_mask, thresholds,
-        )
-    else:
-        labels[tree_mask] = CellLabel.TREE
+    # (3) Significant vertical spread in small XY region
+    high_compactness = features.vertical_compactness > thresholds.compactness_tree_threshold
 
+    # Pre-filter before the expensive normal variance computation
+    candidate_mask = unassigned & elevated & unstable_plane & high_compactness & still_unsure
 
-def _refine_tree_by_normal_consistency(
-    labels: np.ndarray,
-    pts: np.ndarray,
-    features: PointFeatures,
-    candidate_mask: np.ndarray,
-    thresholds: AdaptiveThresholds,
-) -> None:
-    """
-    Among tree candidates, confirm using normal consistency.
-    Points with highly inconsistent neighbor normals (angular std > 30 deg)
-    are trees. Others might be undetected roof edges.
-    """
-    candidate_indices = np.where(candidate_mask)[0]
-    if len(candidate_indices) == 0:
+    if not candidate_mask.any():
         return
 
-    tree = cKDTree(pts)
-    radius = max(0.5, thresholds.nn_median_dist * 5)
-    angle_threshold_rad = math.radians(30)
+    # (2) High normal variance — only compute for candidates
+    normal_var = _compute_normal_variance_mask(pts, features, thresholds)
 
-    for idx in candidate_indices:
-        nearby = tree.query_ball_point(pts[idx], r=radius)
-        if len(nearby) < 3:
-            labels[idx] = CellLabel.TREE
-            continue
-
-        # Angular deviation of normals
-        normals_nearby = features.normals[nearby]
-        mean_normal = normals_nearby.mean(axis=0)
-        mn_len = np.linalg.norm(mean_normal)
-        if mn_len < 1e-6:
-            labels[idx] = CellLabel.TREE
-            continue
-
-        mean_normal /= mn_len
-        cos_angles = np.clip(normals_nearby @ mean_normal, -1, 1)
-        angles = np.arccos(cos_angles)
-        angular_std = float(np.std(angles))
-
-        if angular_std > angle_threshold_rad:
-            labels[idx] = CellLabel.TREE
-        # else: leave as UNSURE — might be a roof edge or other feature
+    tree_mask = candidate_mask & normal_var
+    labels[tree_mask] = CellLabel.TREE
 
 
 def _recover_attached_structures(

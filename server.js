@@ -698,6 +698,10 @@ app.get("/", (req, res) => {
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
         Partners
       </a>
+      <a class="nav-drawer-link" href="/image-analysis">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        Image Analysis
+      </a>
     </div>
     <div class="nav-drawer-footer">
       <div class="nav-drawer-user">
@@ -7504,6 +7508,7 @@ app.get("/design", (req, res) => {
     var dormerDraggingDormerIdx = -1;
     var DORMER_DEFAULT_WIDTH = 2.4;  // meters (~8ft)
     var DORMER_DEFAULT_DEPTH = 2.4;  // meters (~8ft)
+    var DORMER_WALL_HEIGHT = 1.2;    // meters (~4ft) — height of dormer cheek walls above roof
     var dormerDragStartVerts = null; // saved verts at drag start for edge-based resize
 
     /* ── Unified undo stack — captures all interactable actions ── */
@@ -8791,22 +8796,60 @@ app.get("/design", (req, res) => {
     var autoAlignDone = false;
     var onAutoAlignDone = null; // callback after auto-align finishes
 
-    // Classification label → RGB color (matches CellLabel enum in gradient_detector.py)
-    var LABEL_COLORS = [
-      [0.40, 0.40, 0.40],  // 0 UNSURE          — gray
-      [0.25, 0.25, 0.25],  // 1 GROUND          — dark gray
-      [0.20, 0.85, 0.20],  // 2 ROOF            — green
-      [0.20, 0.40, 0.95],  // 3 LOWER_ROOF      — blue
-      [0.75, 0.20, 0.90],  // 4 FLAT_ROOF       — purple
-      [1.00, 0.10, 0.10],  // 5 RIDGE_DOT       — bright red
-      [1.00, 0.90, 0.00],  // 6 NEAR_RIDGE      — yellow
-      [0.85, 0.45, 0.10],  // 7 TREE            — orange-brown
-      [0.00, 0.90, 0.90],  // 8 EAVE_DOT        — cyan
-      [1.00, 0.55, 0.00],  // 9 RIDGE_EDGE_DOT  — bright orange
-      [0.10, 0.10, 0.90],  // 10 VALLEY_DOT     — deep blue
-      [0.90, 0.90, 0.20],  // 11 STEP_EDGE      — gold
-      [1.00, 0.40, 0.70],  // 12 OBSTRUCTION_DOT — pink
-    ];
+    // ── Two-layer classification color system ──────────────────────────
+    //
+    // Layer 1: Surface classification (base color for every point)
+    //   ROOF surfaces are green regardless of geometry role.
+    //
+    // Layer 2: Geometry overlay (accent blended onto ROOF base only)
+    //   Ridge, eave, valley, step_edge are rendered as tinted ROOF,
+    //   NOT as full replacement colors.  This keeps ROOF dominant.
+    //
+    // CellLabel enum (gradient_detector.py):
+    //   0=UNSURE, 1=GROUND, 2=ROOF, 3=LOWER_ROOF, 4=FLAT_ROOF,
+    //   5=RIDGE_DOT, 6=NEAR_RIDGE, 7=TREE, 8=EAVE_DOT,
+    //   9=RIDGE_EDGE_DOT, 10=VALLEY_DOT, 11=STEP_EDGE, 12=OBSTRUCTION_DOT
+
+    // Surface base colors (Layer 1)
+    var SURFACE_COLORS = {
+      0:  [0.55, 0.55, 0.55],  // UNSURE         — light gray
+      1:  [0.35, 0.35, 0.35],  // GROUND         — gray
+      2:  [0.20, 0.85, 0.20],  // ROOF           — green
+      3:  [0.15, 0.55, 0.85],  // LOWER_ROOF     — blue (distinct roof surface)
+      4:  [0.55, 0.20, 0.80],  // FLAT_ROOF      — purple (distinct roof surface)
+      7:  [0.60, 0.35, 0.10],  // TREE           — brown
+      12: [1.00, 0.40, 0.70],  // OBSTRUCTION    — pink
+    };
+
+    // Geometry overlay accent colors (Layer 2) — blended onto ROOF green
+    // These labels are geometry roles ON a roof surface, not surface types.
+    var GEOMETRY_ACCENTS = {
+      5:  [1.00, 0.10, 0.10],  // RIDGE_DOT      — red accent
+      6:  [1.00, 0.70, 0.00],  // NEAR_RIDGE     — amber accent
+      8:  [0.00, 0.85, 0.85],  // EAVE_DOT       — cyan accent
+      9:  [1.00, 0.45, 0.00],  // RIDGE_EDGE_DOT — orange accent
+      10: [0.15, 0.15, 0.90],  // VALLEY_DOT     — blue accent
+      11: [0.90, 0.85, 0.15],  // STEP_EDGE      — gold accent
+    };
+
+    // Blend ratio: how much geometry accent shows over the ROOF base
+    var GEOMETRY_BLEND = 0.55;  // 0 = pure ROOF green, 1 = pure accent
+
+    function _classifyColor(label) {
+      // If label has a geometry accent, blend it onto ROOF green
+      var accent = GEOMETRY_ACCENTS[label];
+      if (accent) {
+        var base = SURFACE_COLORS[2]; // ROOF green
+        var t = GEOMETRY_BLEND;
+        return [
+          base[0] * (1 - t) + accent[0] * t,
+          base[1] * (1 - t) + accent[1] * t,
+          base[2] * (1 - t) + accent[2] * t,
+        ];
+      }
+      // Otherwise use surface color directly
+      return SURFACE_COLORS[label] || SURFACE_COLORS[0];
+    }
 
     function recolorLidarByClassification(cellLabelsGrid, gridInfo) {
       if (!lidarPoints || !cellLabelsGrid || !gridInfo) return;
@@ -8819,17 +8862,17 @@ app.get("/design", (req, res) => {
       var ox = lidarPoints.position.x;
       var oz = lidarPoints.position.z;
       for (var i = 0; i < n; i++) {
-        // Use RAW buffer positions (without Three.js offset) to match Python grid,
-        // which was built from the raw point cloud coordinates.
-        var wx = positions[i * 3];
-        var wz = positions[i * 3 + 2];
+        // Buffer positions are raw; Python grid was built with calibration offset applied.
+        // Add the Three.js mesh offset to align buffer coords with grid coords.
+        var wx = positions[i * 3] + ox;
+        var wz = positions[i * 3 + 2] + oz;
         var col = Math.floor((wx - gridInfo.x_origin) / gridInfo.resolution);
         var row = Math.floor((wz - gridInfo.z_origin) / gridInfo.resolution);
         var label = 0;
         if (row >= 0 && row < gridInfo.rows && col >= 0 && col < gridInfo.cols) {
           label = cellLabelsGrid[row][col];
         }
-        var c = LABEL_COLORS[label] || LABEL_COLORS[0];
+        var c = _classifyColor(label);
         colors[i * 3]     = c[0];
         colors[i * 3 + 1] = c[1];
         colors[i * 3 + 2] = c[2];
@@ -9272,6 +9315,19 @@ app.get("/design", (req, res) => {
           radius = Math.max(0.5, Math.min(radius, 15));
           updateTreePreviewCircle(treeCenterPoint, radius);
           updateTreePreviewMesh(treeCenterPoint, radius);
+        }
+      });
+
+      // Clear tree hover when pointer leaves canvas (e.g. moves onto viewcube)
+      canvas.addEventListener('pointerleave', function() {
+        if (hoveredTreeIdx >= 0) {
+          if (hoveredTreeIdx === selectedTreeIdx || multiSelectedTrees.indexOf(hoveredTreeIdx) >= 0) {
+            setTreeHighlight(hoveredTreeIdx, 'selected');
+          } else if (!allTreesSelected) {
+            setTreeHighlight(hoveredTreeIdx, false);
+          }
+          hoveredTreeIdx = -1;
+          canvas.style.cursor = '';
         }
       });
 
@@ -10271,18 +10327,27 @@ app.get("/design", (req, res) => {
       var wH = getRoofWallHeight(face);
 
       // World Y of each contact point — where the dormer footprint meets the main roof surface.
-      // Walls run from Y=0 (ground) up to these heights; roof panels start here.
       var contactY = [];
       for (var i = 0; i < 5; i++) {
         contactY.push(wH + getRoofSurfaceY(face, v[i].x, v[i].z));
       }
+
+      // Dormer wall height — raises the dormer structure above the roof surface.
+      // Front vertices get full wallH; back vertices stay on the roof surface.
+      var dormerWH = dormer.wallHeight || DORMER_WALL_HEIGHT;
+      var eaveY = [];
+      eaveY[0] = contactY[0] + dormerWH;  // front-left: full height
+      eaveY[1] = contactY[1] + dormerWH;  // front-right: full height
+      eaveY[2] = contactY[2];              // back-right: flush with roof
+      eaveY[3] = contactY[3];              // peak: flush with roof
+      eaveY[4] = contactY[4];              // back-left: flush with roof
 
       // Dormer dimensions
       var frontW = Math.sqrt(Math.pow(v[1].x - v[0].x, 2) + Math.pow(v[1].z - v[0].z, 2));
       var fmx = (v[0].x + v[1].x) / 2, fmz = (v[0].z + v[1].z) / 2;
       var sideL = Math.sqrt(Math.pow(v[3].x - fmx, 2) + Math.pow(v[3].z - fmz, 2));
 
-      // Ridge height above the front contact — the dormer roof rises from the main roof surface
+      // Ridge height above the front eave — the dormer roof rises from the raised wall top
       var pitch = dormer.pitch || 15;
       var ridgeH;
       if (dormer.type === 'shed') {
@@ -10291,9 +10356,9 @@ app.get("/design", (req, res) => {
         ridgeH = (frontW / 2) * Math.tan(pitch * Math.PI / 180);
       }
 
-      // Front contact mid-height and ridge top (no wallH gap — flush with main roof)
-      var frontContactY = (contactY[0] + contactY[1]) / 2;
-      var ridgeTopY = frontContactY + ridgeH;
+      // Front eave mid-height and ridge top
+      var frontEaveY = (eaveY[0] + eaveY[1]) / 2;
+      var ridgeTopY = frontEaveY + ridgeH;
 
       // Build geometry based on type
       var wallMat = new THREE.MeshBasicMaterial({
@@ -10364,16 +10429,16 @@ app.get("/design", (req, res) => {
       if (dormer.type === 'gable') {
         ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = ridgeTopY;
         // Ridge back is flush with main roof at the peak contact point
-        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = contactY[3];
+        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = eaveY[3];
 
         // Front gable pediment (triangle above the front wall)
-        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z,
+        addTri(v[0].x, eaveY[0], v[0].z, v[1].x, eaveY[1], v[1].z,
                ridgeFrontX, ridgeFrontY, ridgeFrontZ, wallMat);
         // Left roof slope: front-left → ridge-front → ridge-back(peak) → back-left
-        addQuad(v[0].x, contactY[0], v[0].z, ridgeFrontX, ridgeFrontY, ridgeFrontZ,
-                ridgeBackX, ridgeBackY, ridgeBackZ, v[4].x, contactY[4], v[4].z, roofMat);
+        addQuad(v[0].x, eaveY[0], v[0].z, ridgeFrontX, ridgeFrontY, ridgeFrontZ,
+                ridgeBackX, ridgeBackY, ridgeBackZ, v[4].x, eaveY[4], v[4].z, roofMat);
         // Right roof slope: front-right → back-right → ridge-back(peak) → ridge-front
-        addQuad(v[1].x, contactY[1], v[1].z, v[2].x, contactY[2], v[2].z,
+        addQuad(v[1].x, eaveY[1], v[1].z, v[2].x, eaveY[2], v[2].z,
                 ridgeBackX, ridgeBackY, ridgeBackZ, ridgeFrontX, ridgeFrontY, ridgeFrontZ, roofMat);
 
       } else if (dormer.type === 'hip') {
@@ -10385,31 +10450,31 @@ app.get("/design", (req, res) => {
         ridgeBackX  = v[3].x   - dirX * hipInset; ridgeBackZ  = v[3].z   - dirZ * hipInset;
 
         var pitchFront = dormer.pitchFront || pitch;
-        var hipRidgeY = frontContactY + (frontW / 2) * Math.tan(pitchFront * Math.PI / 180);
+        var hipRidgeY = frontEaveY + (frontW / 2) * Math.tan(pitchFront * Math.PI / 180);
         ridgeFrontY = hipRidgeY; ridgeBackY = hipRidgeY;
 
         // Back hip: two triangles to the peak contact
-        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[2].x, contactY[2], v[2].z,
-               v[3].x, contactY[3], v[3].z, roofMat);
-        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[3].x, contactY[3], v[3].z,
-               v[4].x, contactY[4], v[4].z, roofMat);
+        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[2].x, eaveY[2], v[2].z,
+               v[3].x, eaveY[3], v[3].z, roofMat);
+        addTri(ridgeBackX, hipRidgeY, ridgeBackZ, v[3].x, eaveY[3], v[3].z,
+               v[4].x, eaveY[4], v[4].z, roofMat);
         // Front triangle
-        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z,
+        addTri(v[0].x, eaveY[0], v[0].z, v[1].x, eaveY[1], v[1].z,
                ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
         // Left trapezoid
-        addQuad(v[0].x, contactY[0], v[0].z, ridgeFrontX, hipRidgeY, ridgeFrontZ,
-                ridgeBackX, hipRidgeY, ridgeBackZ, v[4].x, contactY[4], v[4].z, roofMat);
+        addQuad(v[0].x, eaveY[0], v[0].z, ridgeFrontX, hipRidgeY, ridgeFrontZ,
+                ridgeBackX, hipRidgeY, ridgeBackZ, v[4].x, eaveY[4], v[4].z, roofMat);
         // Right trapezoid
-        addQuad(v[1].x, contactY[1], v[1].z, v[2].x, contactY[2], v[2].z,
+        addQuad(v[1].x, eaveY[1], v[1].z, v[2].x, eaveY[2], v[2].z,
                 ridgeBackX, hipRidgeY, ridgeBackZ, ridgeFrontX, hipRidgeY, ridgeFrontZ, roofMat);
 
       } else if (dormer.type === 'shed') {
-        // Shed rises from front contact heights to back contact + ridgeH
-        var sc2 = contactY[2] + ridgeH, sc3 = contactY[3] + ridgeH, sc4 = contactY[4] + ridgeH;
-        addTri(v[0].x, contactY[0], v[0].z, v[1].x, contactY[1], v[1].z, v[2].x, sc2, v[2].z, roofMat);
-        addTri(v[0].x, contactY[0], v[0].z, v[2].x, sc2, v[2].z, v[3].x, sc3, v[3].z, roofMat);
-        addTri(v[0].x, contactY[0], v[0].z, v[3].x, sc3, v[3].z, v[4].x, sc4, v[4].z, roofMat);
-        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = frontContactY;
+        // Shed rises from front eave heights to back contact + ridgeH
+        var sc2 = eaveY[2] + ridgeH, sc3 = eaveY[3] + ridgeH, sc4 = eaveY[4] + ridgeH;
+        addTri(v[0].x, eaveY[0], v[0].z, v[1].x, eaveY[1], v[1].z, v[2].x, sc2, v[2].z, roofMat);
+        addTri(v[0].x, eaveY[0], v[0].z, v[2].x, sc2, v[2].z, v[3].x, sc3, v[3].z, roofMat);
+        addTri(v[0].x, eaveY[0], v[0].z, v[3].x, sc3, v[3].z, v[4].x, sc4, v[4].z, roofMat);
+        ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = frontEaveY;
         ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = sc3;
       }
 
@@ -10421,6 +10486,25 @@ app.get("/design", (req, res) => {
                 v[wb].x, contactY[wb], v[wb].z,
                 v[wb].x, 0, v[wb].z,
                 v[wa].x, 0, v[wa].z, wallMat);
+      }
+
+      // Dormer cheek walls — vertical surfaces from roof contact up to dormer eave.
+      // Front wall (full wallH rectangle)
+      if (dormerWH > 0.01) {
+        addQuad(v[0].x, eaveY[0], v[0].z,
+                v[1].x, eaveY[1], v[1].z,
+                v[1].x, contactY[1], v[1].z,
+                v[0].x, contactY[0], v[0].z, wallMat);
+        // Left cheek wall (tapers from front wallH to zero at back-left)
+        addQuad(v[4].x, eaveY[4], v[4].z,
+                v[0].x, eaveY[0], v[0].z,
+                v[0].x, contactY[0], v[0].z,
+                v[4].x, contactY[4], v[4].z, wallMat);
+        // Right cheek wall (tapers from front wallH to zero at back-right)
+        addQuad(v[1].x, eaveY[1], v[1].z,
+                v[2].x, eaveY[2], v[2].z,
+                v[2].x, contactY[2], v[2].z,
+                v[1].x, contactY[1], v[1].z, wallMat);
       }
 
       // White ridge line
@@ -10443,13 +10527,13 @@ app.get("/design", (req, res) => {
         }
       }
 
-      // Outline (cyan edges at contact heights)
+      // Outline (cyan edges at eave heights)
       if (!isGhost) {
         var outlineGroup = new THREE.Group();
         var EDGE_R = 0.04;
         for (var ei = 0; ei < 5; ei++) {
           var a = v[ei], b = v[(ei + 1) % 5];
-          var ay2 = contactY[ei], by2 = contactY[(ei + 1) % 5];
+          var ay2 = eaveY[ei], by2 = eaveY[(ei + 1) % 5];
           var edx = b.x - a.x, edz = b.z - a.z;
           var elen = Math.sqrt(edx * edx + edz * edz);
           if (elen < 0.01) continue;
@@ -10474,17 +10558,39 @@ app.get("/design", (req, res) => {
     function buildDormerHandles(dormer, face) {
       var handles = [];
       var wH = getRoofWallHeight(face);
-      dormer.vertices.forEach(function(v) {
+      var dormerWH = dormer.wallHeight || DORMER_WALL_HEIGHT;
+      var verts = dormer.vertices;
+      // Vertex handles (indices 0–4)
+      verts.forEach(function(v, i) {
         var y = getRoofSurfaceY(face, v.x, v.z);
+        var wallAdd = (i <= 1) ? dormerWH : 0;
         var sphere = new THREE.Mesh(
           new THREE.SphereGeometry(0.25, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xffffff })
         );
-        sphere.position.set(v.x, wH + y + 0.1, v.z);
+        sphere.position.set(v.x, wH + y + wallAdd + 0.1, v.z);
         sphere.userData.isDormerHandle = true;
         scene3d.add(sphere);
         handles.push(sphere);
       });
+      // Edge midpoint handles (indices 5–9): edge i connects vertex i to (i+1)%5
+      for (var ei = 0; ei < 5; ei++) {
+        var a = verts[ei], b = verts[(ei + 1) % 5];
+        var mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
+        var ya = getRoofSurfaceY(face, a.x, a.z);
+        var yb = getRoofSurfaceY(face, b.x, b.z);
+        var wallAddA = (ei <= 1) ? dormerWH : 0;
+        var wallAddB = (((ei + 1) % 5) <= 1) ? dormerWH : 0;
+        var my = wH + (ya + yb) / 2 + (wallAddA + wallAddB) / 2 + 0.1;
+        var edgeSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.18, 8, 8),
+          new THREE.MeshBasicMaterial({ color: 0x00e5ff })
+        );
+        edgeSphere.position.set(mx, my, mz);
+        edgeSphere.userData.isDormerHandle = true;
+        scene3d.add(edgeSphere);
+        handles.push(edgeSphere);
+      }
       return handles;
     }
 
@@ -13083,28 +13189,47 @@ app.get("/design", (req, res) => {
           var dLen = Math.sqrt(ddx * ddx + ddz * ddz) || 1;
           var dux = ddx / dLen, duz = ddz / dLen;
 
-          var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
-          var projW = deltaX * wux + deltaZ * wuz;
-          var projD = deltaX * dux + deltaZ * duz;
-
           // Start from original positions
           for (var ci = 0; ci < 5; ci++) {
             dv[ci] = { x: sv[ci].x, z: sv[ci].z };
           }
 
-          if (dhi === 0 || dhi === 1) {
-            // Front pair: mirror width, shift both in depth; back untouched
-            var wDeltaF = (dhi === 0) ? -projW : projW;
-            dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
-            dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
-          } else if (dhi === 2 || dhi === 4) {
-            // Back pair: mirror width, shift both in depth; front and peak untouched
-            var wDeltaB = (dhi === 2) ? projW : -projW;
-            dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
-            dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
+          if (dhi >= 5) {
+            // Edge handle (indices 5–9): edge i connects vertex i to (i+1)%5
+            // Move both edge vertices perpendicular to the edge direction
+            var edgeI = dhi - 5;
+            var edgeJ = (edgeI + 1) % 5;
+            var edgeMidX = (sv[edgeI].x + sv[edgeJ].x) / 2;
+            var edgeMidZ = (sv[edgeI].z + sv[edgeJ].z) / 2;
+            // Edge direction
+            var eEdx = sv[edgeJ].x - sv[edgeI].x, eEdz = sv[edgeJ].z - sv[edgeI].z;
+            var eLen = Math.sqrt(eEdx * eEdx + eEdz * eEdz) || 1;
+            // Normal to edge (perpendicular, pointing outward)
+            var enx = -eEdz / eLen, enz = eEdx / eLen;
+            // Project mouse delta onto edge normal
+            var eDeltaX = dhit.x - edgeMidX, eDeltaZ = dhit.z - edgeMidZ;
+            var eProj = eDeltaX * enx + eDeltaZ * enz;
+            dv[edgeI] = { x: sv[edgeI].x + enx * eProj, z: sv[edgeI].z + enz * eProj };
+            dv[edgeJ] = { x: sv[edgeJ].x + enx * eProj, z: sv[edgeJ].z + enz * eProj };
           } else {
-            // Peak (3): free movement, front untouched
-            dv[3] = { x: dhit.x, z: dhit.z };
+            var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
+            var projW = deltaX * wux + deltaZ * wuz;
+            var projD = deltaX * dux + deltaZ * duz;
+
+            if (dhi === 0 || dhi === 1) {
+              // Front pair: mirror width, shift both in depth; back untouched
+              var wDeltaF = (dhi === 0) ? -projW : projW;
+              dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
+              dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
+            } else if (dhi === 2 || dhi === 4) {
+              // Back pair: mirror width, shift both in depth; front and peak untouched
+              var wDeltaB = (dhi === 2) ? projW : -projW;
+              dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
+              dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
+            } else {
+              // Peak (3): free movement, front untouched
+              dv[3] = { x: dhit.x, z: dhit.z };
+            }
           }
 
           rebuildDormer(dface, dormerDraggingDormerIdx);
@@ -16023,6 +16148,556 @@ app.post("/api/roof/auto-detect", async (req, res) => {
   } catch (e) {
     res.status(503).json({ error: "Roof detection service unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
   }
+});
+
+// ── Image Analysis (standalone image_engine testing page) ────────────────
+app.get("/image-analysis", requireAuth, (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Image Analysis — Aurora</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;display:flex;height:100vh;overflow:hidden}
+  .rail{width:48px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:10px 0;flex-shrink:0}
+  .rail-logo{width:32px;height:32px;display:flex;align-items:center;justify-content:center;margin-bottom:16px;cursor:pointer;border-radius:8px}
+  .rail-logo:hover{background:rgba(255,255,255,0.1)}
+  .rail-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:8px;color:rgba(255,255,255,0.5);text-decoration:none;margin-bottom:4px;transition:background 0.15s,color 0.15s}
+  .rail-btn:hover{background:rgba(255,255,255,0.08);color:#fff}
+  .rail-btn.active{background:#5a1060;color:#fff}
+  .ia-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  .ia-header{padding:16px 24px;background:#fff;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:12px}
+  .ia-header h1{font-size:1.1rem;font-weight:700;color:#111}
+  .ia-header .badge{font-size:0.65rem;background:#7c3aed;color:#fff;padding:2px 8px;border-radius:10px;font-weight:600}
+  .ia-body{flex:1;overflow-y:auto;padding:24px;display:flex;gap:24px}
+  .ia-input-panel{width:380px;flex-shrink:0;display:flex;flex-direction:column;gap:16px}
+  .ia-results-panel{flex:1;min-width:0}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px}
+  .card h3{font-size:0.82rem;font-weight:700;color:#374151;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px}
+  label{display:block;font-size:0.78rem;font-weight:600;color:#4b5563;margin-bottom:4px}
+  input[type=text],input[type=number],input[type=file]{width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:0.82rem;background:#fafafa}
+  input[type=file]{padding:5px}
+  .field-row{display:flex;gap:8px}
+  .field-row>div{flex:1}
+  .btn-run{width:100%;padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:0.85rem;font-weight:700;cursor:pointer;transition:background 0.15s}
+  .btn-run:hover{background:#6d28d9}
+  .btn-run:disabled{background:#c4b5fd;cursor:not-allowed}
+  .status-bar{padding:8px 12px;border-radius:6px;font-size:0.78rem;display:none}
+  .status-bar.info{display:block;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+  .status-bar.error{display:block;background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+  .status-bar.success{display:block;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
+  .results-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .result-section{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px}
+  .result-section h4{font-size:0.75rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
+  .result-section.full-width{grid-column:1/-1}
+  .debug-img{max-width:100%;border-radius:6px;border:1px solid #e5e7eb;margin-bottom:8px;cursor:pointer}
+  .debug-img:hover{border-color:#7c3aed}
+  .debug-label{font-size:0.72rem;color:#6b7280;margin-bottom:12px}
+  table.data-table{width:100%;font-size:0.75rem;border-collapse:collapse}
+  table.data-table th{text-align:left;padding:4px 6px;color:#9ca3af;font-weight:600;border-bottom:1px solid #f3f4f6}
+  table.data-table td{padding:4px 6px;color:#374151;border-bottom:1px solid #f9fafb}
+  .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .metric{padding:8px;background:#f9fafb;border-radius:6px}
+  .metric-val{font-size:1rem;font-weight:700;color:#111}
+  .metric-label{font-size:0.68rem;color:#9ca3af}
+  .conf-bar{height:6px;border-radius:3px;background:#e5e7eb;margin-top:4px}
+  .conf-fill{height:100%;border-radius:3px;transition:width 0.3s}
+  .empty-state{text-align:center;padding:60px 20px;color:#9ca3af;font-size:0.85rem}
+  .preview-img{max-width:100%;max-height:200px;border-radius:6px;border:1px solid #e5e7eb;margin-top:8px;object-fit:contain;background:#f9fafb}
+  .lightbox{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+  .lightbox img{max-width:95vw;max-height:95vh;border-radius:8px}
+</style>
+</head><body>
+  <nav class="rail">
+    <div class="rail-logo"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="rail-btn" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+    <a class="rail-btn active" href="/image-analysis" title="Image Analysis"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></a>
+  </nav>
+
+  <div class="ia-wrap">
+    <div class="ia-header">
+      <h1>Image Analysis</h1>
+      <span class="badge">image_engine</span>
+    </div>
+    <div class="ia-body">
+      <!-- Left: Input panel -->
+      <div class="ia-input-panel">
+        <div class="card">
+          <h3>Image Source</h3>
+          <label>Upload image file</label>
+          <input type="file" id="iaFile" accept="image/*" onchange="iaPreviewFile()"/>
+          <div style="text-align:center;color:#9ca3af;font-size:0.72rem;margin:8px 0">— or —</div>
+          <label>Image URL</label>
+          <input type="text" id="iaUrl" placeholder="https://... or /api/satellite?lat=...&lng=...&zoom=20&size=640"/>
+          <img id="iaPreview" class="preview-img" style="display:none"/>
+        </div>
+
+        <div class="card">
+          <h3>Image Metadata</h3>
+          <div class="field-row">
+            <div><label>Width (px)</label><input type="number" id="iaWidth" value="640"/></div>
+            <div><label>Height (px)</label><input type="number" id="iaHeight" value="640"/></div>
+          </div>
+          <div style="margin-top:8px">
+            <label>Resolution (m/px)</label>
+            <input type="number" id="iaRes" value="0.109375" step="0.001"/>
+          </div>
+          <div style="margin-top:8px">
+            <label>Geo bounds (S, W, N, E)</label>
+            <div class="field-row">
+              <div><input type="number" id="iaBoundS" placeholder="South" step="0.0001"/></div>
+              <div><input type="number" id="iaBoundW" placeholder="West" step="0.0001"/></div>
+            </div>
+            <div class="field-row" style="margin-top:4px">
+              <div><input type="number" id="iaBoundN" placeholder="North" step="0.0001"/></div>
+              <div><input type="number" id="iaBoundE" placeholder="East" step="0.0001"/></div>
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label>Design center (lat, lng) — optional</label>
+            <div class="field-row">
+              <div><input type="number" id="iaCenterLat" placeholder="Latitude" step="0.0001"/></div>
+              <div><input type="number" id="iaCenterLng" placeholder="Longitude" step="0.0001"/></div>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-run" id="iaBtnRun" onclick="iaRunAnalysis()">Run Image Engine</button>
+        <div class="status-bar" id="iaStatus"></div>
+      </div>
+
+      <!-- Right: Results panel -->
+      <div class="ia-results-panel" id="iaResultsPanel">
+        <div class="empty-state" id="iaEmpty">Upload an image and click <strong>Run Image Engine</strong> to see results.</div>
+        <div class="results-grid" id="iaResults" style="display:none"></div>
+        <div id="iaDebugPanel" style="display:none;margin-top:20px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <h3 style="font-size:0.92rem;font-weight:700;color:#111;margin:0">Debug Output</h3>
+            <button onclick="iaCopyDebugReport()" style="padding:4px 12px;font-size:0.75rem;border:1px solid #d1d5db;border-radius:5px;background:#fff;cursor:pointer;font-weight:600">Copy Debug Report</button>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+            <div id="iaDbgOriginal" style="flex:1;min-width:280px"></div>
+            <div id="iaDbgOverlay" style="flex:1;min-width:280px"></div>
+          </div>
+          <div style="margin-bottom:16px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <h4 style="font-size:0.78rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0">Diagnostics JSON</h4>
+              <button onclick="iaCopyDiagnostics()" style="padding:2px 10px;font-size:0.7rem;border:1px solid #d1d5db;border-radius:4px;background:#fff;cursor:pointer">Copy JSON</button>
+            </div>
+            <pre id="iaDbgDiagnostics" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px;font-size:0.72rem;overflow-x:auto;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word"></pre>
+          </div>
+          <div>
+            <h4 style="font-size:0.78rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Planes Summary (max 5)</h4>
+            <table class="data-table" id="iaDbgPlanesTable"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="iaLightbox" style="display:none" onclick="this.style.display='none'">
+    <img id="iaLightboxImg"/>
+  </div>
+
+<script>
+  // File upload → base64
+  var iaFileBase64 = null;
+  function iaPreviewFile() {
+    var file = document.getElementById('iaFile').files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      iaFileBase64 = e.target.result; // data:image/...;base64,...
+      document.getElementById('iaPreview').src = iaFileBase64;
+      document.getElementById('iaPreview').style.display = 'block';
+      // Try to read dimensions
+      var img = new Image();
+      img.onload = function() {
+        document.getElementById('iaWidth').value = img.width;
+        document.getElementById('iaHeight').value = img.height;
+      };
+      img.src = iaFileBase64;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function iaSetStatus(cls, msg) {
+    var el = document.getElementById('iaStatus');
+    el.className = 'status-bar ' + cls;
+    el.textContent = msg;
+  }
+
+  function iaShowLightbox(src) {
+    document.getElementById('iaLightboxImg').src = src;
+    document.getElementById('iaLightbox').style.display = 'flex';
+  }
+
+  function iaRunAnalysis() {
+    var btn = document.getElementById('iaBtnRun');
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+    iaSetStatus('info', 'Sending to image_engine pipeline...');
+
+    var imageUrl = document.getElementById('iaUrl').value.trim();
+    var widthPx = parseInt(document.getElementById('iaWidth').value) || 640;
+    var heightPx = parseInt(document.getElementById('iaHeight').value) || 640;
+    var res = parseFloat(document.getElementById('iaRes').value) || 0.109375;
+    var bS = parseFloat(document.getElementById('iaBoundS').value) || 0;
+    var bW = parseFloat(document.getElementById('iaBoundW').value) || 0;
+    var bN = parseFloat(document.getElementById('iaBoundN').value) || 0;
+    var bE = parseFloat(document.getElementById('iaBoundE').value) || 0;
+    var cLat = parseFloat(document.getElementById('iaCenterLat').value) || ((bS + bN) / 2) || 37.4220;
+    var cLng = parseFloat(document.getElementById('iaCenterLng').value) || ((bW + bE) / 2) || -122.0841;
+
+    // If no geo_bounds provided, synthesize from center + resolution
+    if (!bS && !bN) {
+      var halfH = (heightPx * res / 111320) / 2;
+      var halfW = (widthPx * res / (111320 * Math.cos(cLat * Math.PI / 180))) / 2;
+      bS = cLat - halfH; bN = cLat + halfH;
+      bW = cLng - halfW; bE = cLng + halfW;
+    }
+
+    // Determine image source for the payload
+    var imagePayload = {
+      width_px: widthPx,
+      height_px: heightPx,
+      geo_bounds: [bS, bW, bN, bE],
+      resolution_m_per_px: res
+    };
+    if (iaFileBase64) {
+      imagePayload.url = iaFileBase64;
+    } else if (imageUrl) {
+      imagePayload.url = imageUrl;
+    } else {
+      iaSetStatus('error', 'Provide an image file or URL.');
+      btn.disabled = false;
+      btn.textContent = 'Run Image Engine';
+      return;
+    }
+
+    var payload = {
+      project_id: 'image_analysis_test',
+      design_center: { lat: cLat, lng: cLng },
+      anchor_dots: [],
+      calibration_offset: { tx: 0, tz: 0 },
+      lidar: {
+        points: [[0, 0, 0]],
+        bounds: [-35, -35, 35, 35],
+        resolution: 0.25,
+        source: 'none'
+      },
+      image: imagePayload,
+      options: {
+        pipeline_mode: 'image_engine',
+        confidence_threshold: 0.3,
+        max_planes: 30
+      }
+    };
+
+    fetch('/api/roof/auto-detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      btn.disabled = false;
+      btn.textContent = 'Run Image Engine';
+      if (data.error) {
+        iaSetStatus('error', 'Error: ' + data.error);
+        return;
+      }
+      iaSetStatus('success', 'Analysis complete — pipeline_mode: ' + (data.metadata ? data.metadata.pipeline_mode_used : 'image_engine'));
+      iaRenderResults(data);
+    })
+    .catch(function(err) {
+      btn.disabled = false;
+      btn.textContent = 'Run Image Engine';
+      iaSetStatus('error', 'Request failed: ' + err.message);
+    });
+  }
+
+  function iaRenderResults(data) {
+    document.getElementById('iaEmpty').style.display = 'none';
+    var grid = document.getElementById('iaResults');
+    grid.style.display = 'grid';
+    grid.innerHTML = '';
+
+    var ier = data.image_engine_result || {};
+
+    // 1. Summary metrics
+    var metricsHtml = '<div class="result-section"><h4>Summary</h4><div class="metric-grid">';
+    metricsHtml += iaMetric(ier.regions_total || 0, 'Regions detected');
+    metricsHtml += iaMetric(ier.regions_promoted || 0, 'Planes promoted');
+    metricsHtml += iaMetric((ier.edges || []).length, 'Line segments');
+    metricsHtml += iaMetric((ier.ridge_line_candidates || []).length, 'Ridge candidates');
+    metricsHtml += iaMetric((ier.obstruction_candidates || []).length, 'Obstructions');
+    metricsHtml += iaMetric((ier.dormer_candidates || []).length, 'Dormers');
+    metricsHtml += '</div>';
+    if (typeof ier.overall_confidence === 'number') {
+      var pct = Math.round(ier.overall_confidence * 100);
+      var color = pct >= 60 ? '#16a34a' : pct >= 30 ? '#ca8a04' : '#dc2626';
+      metricsHtml += '<div style="margin-top:10px"><label>Overall confidence</label><div class="conf-bar"><div class="conf-fill" style="width:'+pct+'%;background:'+color+'"></div></div><div style="font-size:0.72rem;color:#6b7280;margin-top:2px">'+pct+'%</div></div>';
+    }
+    metricsHtml += '</div>';
+    grid.innerHTML += metricsHtml;
+
+    // 2. Diagnostics
+    var diag = (ier.metadata || {}).diagnostics || {};
+    var diagHtml = '<div class="result-section"><h4>Diagnostics</h4><table class="data-table">';
+    Object.keys(diag).forEach(function(k) {
+      diagHtml += '<tr><td>'+k.replace(/_/g,' ')+'</td><td style="font-weight:600">'+diag[k]+'</td></tr>';
+    });
+    diagHtml += '</table></div>';
+    grid.innerHTML += diagHtml;
+
+    // 3. Debug overlays (full width)
+    var artifacts = ier.debug_artifacts || [];
+    if (artifacts.length > 0) {
+      var artHtml = '<div class="result-section full-width"><h4>Debug Overlays ('+artifacts.length+')</h4>';
+      artifacts.forEach(function(a) {
+        var src = 'data:image/png;base64,' + a.image_base64;
+        artHtml += '<div class="debug-label">' + (a.name || '') + (a.description ? ' — ' + a.description : '') + '</div>';
+        artHtml += '<img class="debug-img" src="'+src+'" onclick="iaShowLightbox(this.src)" title="Click to enlarge"/>';
+      });
+      artHtml += '</div>';
+      grid.innerHTML += artHtml;
+    }
+
+    // 4. Candidate regions table
+    var regions = (ier.metadata || {}).regions || [];
+    if (regions.length > 0) {
+      var regHtml = '<div class="result-section full-width"><h4>Candidate Regions ('+regions.length+')</h4><table class="data-table"><tr><th>ID</th><th>Area m\u00B2</th><th>Compact</th><th>Aspect</th><th>Material</th><th>Promoted</th></tr>';
+      regions.forEach(function(r) {
+        regHtml += '<tr><td>'+r.id+'</td><td>'+r.area_m2+'</td><td>'+r.compactness+'</td><td>'+r.aspect_ratio+'</td><td>'+r.material_hint+'</td><td>'+(r.promoted?'\u2705':'\u274C')+'</td></tr>';
+      });
+      regHtml += '</table></div>';
+      grid.innerHTML += regHtml;
+    }
+
+    // 5. Line segments / edges
+    var edges = ier.edges || [];
+    if (edges.length > 0) {
+      var edgeHtml = '<div class="result-section"><h4>Line Segments ('+edges.length+')</h4><table class="data-table"><tr><th>ID</th><th>Length m</th><th>Angle\u00B0</th><th>Conf</th></tr>';
+      edges.slice(0, 50).forEach(function(e) {
+        edgeHtml += '<tr><td>'+e.id+'</td><td>'+e.length_m+'</td><td>'+e.angle_deg+'</td><td>'+e.confidence+'</td></tr>';
+      });
+      if (edges.length > 50) edgeHtml += '<tr><td colspan="4" style="color:#9ca3af">... and '+(edges.length-50)+' more</td></tr>';
+      edgeHtml += '</table></div>';
+      grid.innerHTML += edgeHtml;
+    }
+
+    // 6. Obstruction candidates
+    var obs = ier.obstruction_candidates || [];
+    if (obs.length > 0) {
+      var obsHtml = '<div class="result-section"><h4>Obstructions ('+obs.length+')</h4><table class="data-table"><tr><th>ID</th><th>Class</th><th>Area m\u00B2</th><th>Conf</th></tr>';
+      obs.forEach(function(o) {
+        obsHtml += '<tr><td>'+o.id+'</td><td>'+o.classification+'</td><td>'+o.area_m2+'</td><td>'+o.confidence+'</td></tr>';
+      });
+      obsHtml += '</table></div>';
+      grid.innerHTML += obsHtml;
+    }
+
+    // 7. Dormer candidates
+    var dorms = ier.dormer_candidates || [];
+    if (dorms.length > 0) {
+      var dormHtml = '<div class="result-section"><h4>Dormers ('+dorms.length+')</h4><table class="data-table"><tr><th>ID</th><th>Type</th><th>W\u00D7D m</th><th>Conf</th></tr>';
+      dorms.forEach(function(d) {
+        dormHtml += '<tr><td>'+d.id+'</td><td>'+d.dormer_type+'</td><td>'+d.width_m+'\u00D7'+d.depth_m+'</td><td>'+d.confidence+'</td></tr>';
+      });
+      dormHtml += '</table></div>';
+      grid.innerHTML += dormHtml;
+    }
+
+    // 8. Ridge line candidates
+    var ridges = ier.ridge_line_candidates || [];
+    if (ridges.length > 0) {
+      var ridgeHtml = '<div class="result-section"><h4>Ridge Candidates ('+ridges.length+')</h4><table class="data-table"><tr><th>Length m</th><th>Angle\u00B0</th><th>Conf</th></tr>';
+      ridges.forEach(function(r) {
+        ridgeHtml += '<tr><td>'+r.length_m+'</td><td>'+r.angle_deg+'</td><td>'+r.confidence+'</td></tr>';
+      });
+      ridgeHtml += '</table></div>';
+      grid.innerHTML += ridgeHtml;
+    }
+
+    // 9. Timings
+    var timings = (ier.metadata || {}).timings || {};
+    if (Object.keys(timings).length > 0) {
+      var timeHtml = '<div class="result-section"><h4>Timings</h4><table class="data-table">';
+      Object.keys(timings).forEach(function(k) {
+        timeHtml += '<tr><td>'+k+'</td><td style="font-weight:600">'+timings[k]+'s</td></tr>';
+      });
+      timeHtml += '</table></div>';
+      grid.innerHTML += timeHtml;
+    }
+
+    // Populate the Debug Output panel
+    iaPopulateDebugPanel(data);
+  }
+
+  function iaMetric(val, label) {
+    return '<div class="metric"><div class="metric-val">'+val+'</div><div class="metric-label">'+label+'</div></div>';
+  }
+
+  // ── Debug Output panel ──────────────────────────────────────────────────
+  var iaLastDebugData = null;
+
+  function iaPopulateDebugPanel(data) {
+    var ier = data.image_engine_result || {};
+    iaLastDebugData = { ier: ier, imageUrl: document.getElementById('iaUrl').value.trim(), fileUsed: !!iaFileBase64 };
+
+    var panel = document.getElementById('iaDebugPanel');
+    panel.style.display = 'block';
+
+    // Original image
+    var origEl = document.getElementById('iaDbgOriginal');
+    var origSrc = iaFileBase64 || iaLastDebugData.imageUrl || '';
+    if (origSrc) {
+      origEl.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-bottom:4px;font-weight:600">Original Image</div>'
+        + '<img src="'+origSrc+'" style="max-width:100%;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer" onclick="iaShowLightbox(this.src)"/>';
+    } else {
+      origEl.innerHTML = '<div style="font-size:0.72rem;color:#9ca3af">No original image available</div>';
+    }
+
+    // Combined overlay — pick first artifact with "combined" or "region" in the name, else first artifact
+    var artifacts = ier.debug_artifacts || [];
+    var overlayEl = document.getElementById('iaDbgOverlay');
+    var overlay = null;
+    for (var i = 0; i < artifacts.length; i++) {
+      var n = (artifacts[i].name || '').toLowerCase();
+      if (n.indexOf('combined') >= 0 || n.indexOf('region') >= 0 || n.indexOf('overlay') >= 0) { overlay = artifacts[i]; break; }
+    }
+    if (!overlay && artifacts.length > 0) overlay = artifacts[0];
+    if (overlay && overlay.image_base64) {
+      var oSrc = 'data:image/png;base64,' + overlay.image_base64;
+      overlayEl.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-bottom:4px;font-weight:600">'+(overlay.name || 'Overlay')+'</div>'
+        + '<img src="'+oSrc+'" style="max-width:100%;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer" onclick="iaShowLightbox(this.src)"/>';
+    } else {
+      overlayEl.innerHTML = '<div style="font-size:0.72rem;color:#9ca3af">No overlay artifact returned</div>';
+    }
+
+    // Diagnostics JSON
+    var diag = (ier.metadata || {}).diagnostics || {};
+    document.getElementById('iaDbgDiagnostics').textContent = JSON.stringify(diag, null, 2);
+
+    // Planes summary table (max 5)
+    var planes = ier.planes || [];
+    var tbl = document.getElementById('iaDbgPlanesTable');
+    if (planes.length === 0) {
+      tbl.innerHTML = '<tr><td style="color:#9ca3af;font-size:0.75rem">No planes promoted</td></tr>';
+    } else {
+      var html = '<tr><th>#</th><th>Area m\\u00B2</th><th>Confidence</th><th>Vertices</th></tr>';
+      planes.slice(0, 5).forEach(function(p, i) {
+        var area = p.area_m2 != null ? p.area_m2 : (p.boundary_local ? '~' : '—');
+        var conf = p.confidence != null ? p.confidence : '—';
+        var verts = '—';
+        if (p.boundary_local) verts = p.boundary_local.length;
+        else if (p.vertices) verts = p.vertices.length;
+        else if (p.boundary_2d) verts = p.boundary_2d.length;
+        html += '<tr><td>'+(i+1)+'</td><td>'+area+'</td><td>'+conf+'</td><td>'+verts+'</td></tr>';
+      });
+      if (planes.length > 5) html += '<tr><td colspan="4" style="color:#9ca3af">... and '+(planes.length-5)+' more planes</td></tr>';
+      tbl.innerHTML = html;
+    }
+  }
+
+  function iaCopyDiagnostics() {
+    var text = document.getElementById('iaDbgDiagnostics').textContent;
+    iaCopyToClipboard(text, 'Diagnostics JSON copied');
+  }
+
+  function iaCopyDebugReport() {
+    if (!iaLastDebugData) return;
+    var ier = iaLastDebugData.ier;
+    var diag = (ier.metadata || {}).diagnostics || {};
+    var planes = ier.planes || [];
+
+    var lines = [];
+    lines.push('=== Image Engine Debug Report ===');
+    lines.push('Timestamp: ' + new Date().toISOString());
+    lines.push('');
+
+    // Image reference
+    lines.push('-- Image --');
+    if (iaLastDebugData.fileUsed) {
+      lines.push('Source: uploaded file');
+    } else {
+      lines.push('Source: ' + (iaLastDebugData.imageUrl || 'none'));
+    }
+    var imgSize = (ier.metadata || {}).image_size;
+    if (imgSize) lines.push('Size: ' + imgSize[0] + 'x' + imgSize[1] + ' px');
+    lines.push('');
+
+    // Overlay reference
+    var artifacts = ier.debug_artifacts || [];
+    lines.push('-- Overlays (' + artifacts.length + ') --');
+    artifacts.forEach(function(a) {
+      lines.push('  ' + (a.name || 'unnamed') + (a.description ? ': ' + a.description : '') + ' [base64 ' + (a.image_base64 || '').length + ' chars]');
+    });
+    lines.push('');
+
+    // Diagnostics
+    lines.push('-- Diagnostics --');
+    lines.push(JSON.stringify(diag, null, 2));
+    lines.push('');
+
+    // Planes summary
+    lines.push('-- Planes (' + planes.length + ', showing max 5) --');
+    planes.slice(0, 5).forEach(function(p, i) {
+      var area = p.area_m2 != null ? p.area_m2 : '?';
+      var conf = p.confidence != null ? p.confidence : '?';
+      var verts = '?';
+      if (p.boundary_local) verts = p.boundary_local.length;
+      else if (p.vertices) verts = p.vertices.length;
+      else if (p.boundary_2d) verts = p.boundary_2d.length;
+      lines.push('  #' + (i+1) + ': area=' + area + ' m2, conf=' + conf + ', verts=' + verts);
+    });
+
+    iaCopyToClipboard(lines.join('\\n'), 'Debug report copied');
+  }
+
+  function iaCopyToClipboard(text, successMsg) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function() {
+        iaCopyFlash(successMsg);
+      }, function() {
+        iaCopyFallback(text, successMsg);
+      });
+    } else {
+      iaCopyFallback(text, successMsg);
+    }
+  }
+
+  function iaCopyFallback(text, successMsg) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      iaCopyFlash(successMsg);
+    } catch (e) {
+      iaCopyFlash('Copy failed — select text manually');
+    }
+    document.body.removeChild(ta);
+  }
+
+  function iaCopyFlash(msg) {
+    var el = document.getElementById('iaStatus');
+    var prev = el.className;
+    var prevText = el.textContent;
+    el.className = 'status-bar success';
+    el.textContent = msg;
+    setTimeout(function() { el.className = prev; el.textContent = prevText; }, 1500);
+  }
+</script>
+</body></html>`);
 });
 
 app.listen(PORT, () => {

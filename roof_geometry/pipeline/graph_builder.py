@@ -298,6 +298,17 @@ def _classify_single_edge(
     if nb[1] < 0:
         nb = -nb
 
+    # ---- Normal angle gate: reject nearly co-planar pairs ----
+    na_len = np.linalg.norm(na)
+    nb_len = np.linalg.norm(nb)
+    if na_len > 1e-8 and nb_len > 1e-8:
+        cos_normals = np.clip(np.dot(na / na_len, nb / nb_len), -1, 1)
+        normal_angle_deg = math.degrees(math.acos(abs(cos_normals)))
+    else:
+        normal_angle_deg = 0.0
+    if normal_angle_deg < 10.0:
+        return EdgeType.step_flash  # nearly co-planar — not a meaningful ridge/valley
+
     # Average height along the shared edge
     edge_avg_y = (start[1] + end[1]) / 2.0
 
@@ -318,23 +329,34 @@ def _classify_single_edge(
     else:
         facing_angle = 0
 
-    # Edge direction relative to plane azimuths
-    edge_dir = end[:2] - start[:2]  # XZ only (using indices 0, 2 mapped to 0, 1)
-    edge_dir_xz = np.array([end[0] - start[0], end[2] - start[2]])
-    edge_len = np.linalg.norm(edge_dir_xz)
+    # ---- Convexity check: both planes must slope away from the edge ----
+    edge_mid_xz = np.array([(start[0] + end[0]) / 2, (start[2] + end[2]) / 2])
+    a_centroid_xz = np.mean([[v.x, v.z] for v in pa.vertices], axis=0)
+    b_centroid_xz = np.mean([[v.x, v.z] for v in pb.vertices], axis=0)
+    to_a = a_centroid_xz - edge_mid_xz
+    to_b = b_centroid_xz - edge_mid_xz
+    # For convex (ridge): XZ normal points toward the centroid (downslope side)
+    convex_a = np.dot(to_a, a_xz) > 0 if a_norm > 1e-6 else True
+    convex_b = np.dot(to_b, b_xz) > 0 if b_norm > 1e-6 else True
+    is_convex = convex_a and convex_b
 
-    if edge_avg_y > avg_centroid_y + 0.3:
-        # Edge is above both plane centres => ridge or hip
+    if is_convex and edge_avg_y > avg_centroid_y + 0.3:
+        # Convex edge above both plane centres → ridge or hip
         if facing_angle > 45:
             return EdgeType.hip
         return EdgeType.ridge
-    elif edge_avg_y < avg_centroid_y - 0.3:
+    elif (not is_convex) and edge_avg_y < avg_centroid_y - 0.3:
         return EdgeType.valley
-    else:
-        # Roughly at same height, check if diagonal
+    elif is_convex:
+        # Convex but not clearly above — check diagonal
         if facing_angle > 30:
             return EdgeType.hip
         return EdgeType.ridge
+    else:
+        # Not convex — default to valley for concave, step_flash for ambiguous
+        if edge_avg_y < avg_centroid_y - 0.1:
+            return EdgeType.valley
+        return EdgeType.step_flash
 
 
 def _find_boundary_edges(

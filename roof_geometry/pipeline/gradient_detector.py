@@ -25,6 +25,8 @@ import uuid
 import numpy as np
 from scipy import ndimage
 
+from pipeline.tree_detector import compute_grid_tree_mask
+
 
 class CellLabel(enum.IntEnum):
     UNSURE      = 0
@@ -192,10 +194,15 @@ def detect_roof_faces(
     logger.info("Max plausible roof height: %.2fm (anchor max %.2fm + 6m margin)",
                 max_roof_height, max(anchor_heights) if anchor_heights else 0.0)
 
+    # HARD TREE EXCLUSION: compute grid-level tree mask BEFORE classification
+    # and face growth. Tree cells are permanently excluded from all downstream logic.
+    tree_grid = compute_grid_tree_mask(height_grid, max_roof_height)
+
     cell_labels = _classify_grid_cells(
         height_grid, roof_mask, dx, dz,
         min_height=min_height, grid_resolution=grid_resolution,
         max_roof_height=max_roof_height,
+        tree_grid=tree_grid,
     )
     cell_grid_info = {
         'grid': cell_labels.tolist(),
@@ -210,98 +217,24 @@ def detect_roof_faces(
         logger.warning("Too few roof-like cells — returning classification grid only")
         return [], None, cell_grid_info
 
-    # Step 7: Collect ridge candidates (RIDGE_DOT first, NEAR_RIDGE as fallback)
-    slope_top_candidates = _find_slope_top_candidates(
-        height_grid, cell_labels,
-        resolution=grid_resolution, x_origin=x_origin, z_origin=z_origin,
-    )
-
-    # Step 8: Fit ridge line via PCA; fall back to old trace method if needed
-    new_ridge_result = None
-    if len(slope_top_candidates) >= 5:
-        new_ridge_result = _fit_ridge_line(
-            slope_top_candidates, height_grid, anchor_cells,
-            resolution=grid_resolution, x_origin=x_origin, z_origin=z_origin,
-            anchor_heights=anchor_heights,
-        )
-
-    if new_ridge_result is not None:
-        ridge_cells, fitted_direction = new_ridge_result
-        # Snap to valid roof geometry: gable (90° from slope) or hip (45°)
-        snapped_direction = _snap_ridge_to_slope(fitted_direction, slope_dir)
-        if not np.allclose(snapped_direction, fitted_direction, atol=0.05):
-            ridge_cells = _reproject_ridge_cells(ridge_cells, snapped_direction, height_grid, rows, cols)
-        ridge_point = ridge_cells[len(ridge_cells) // 2]
-        logger.info("Ridge from PCA fit: %d cells, midpoint=(%d,%d)",
-                    len(ridge_cells), ridge_point[0], ridge_point[1])
-    else:
-        logger.warning(
-            "PCA ridge fit failed or too few candidates (%d) — falling back to trace method",
-            len(slope_top_candidates),
-        )
-        ridge_point = _trace_uphill(height_grid, roof_mask, anchor_cells)
-        if ridge_point is None:
-            logger.warning("Could not find ridge from anchor dots")
-            return [], None, cell_grid_info
-        logger.info("Ridge point found at grid (%d, %d), height=%.2f",
-                    ridge_point[0], ridge_point[1], height_grid[ridge_point])
-        ridge_cells = _trace_ridge(height_grid, roof_mask, ridge_point, dx, dz)
-        logger.info("Ridge traced: %d cells", len(ridge_cells))
-        # Apply same constraints: tilt ≤ 8° and endpoint Δh ≤ 0.5m
-        def _ep(cells):
-            if len(cells) < 2: return 0.0, 0.0
-            q = max(1, len(cells) // 4)
-            sv = sorted([height_grid[r,c] for r,c in cells[:q]  if not math.isnan(height_grid[r,c])])
-            ev = sorted([height_grid[r,c] for r,c in cells[-q:] if not math.isnan(height_grid[r,c])])
-            if not sv or not ev: return 0.0, 0.0
-            dh = abs(ev[len(ev)//2] - sv[len(sv)//2])
-            return math.degrees(math.atan2(dh, len(cells) * grid_resolution)), dh
-        while len(ridge_cells) >= 4:
-            t, dh = _ep(ridge_cells)
-            if t <= 8.0 and dh <= 0.5: break
-            q = max(1, len(ridge_cells) // 4)
-            sv = sorted([height_grid[r,c] for r,c in ridge_cells[:q]  if not math.isnan(height_grid[r,c])])
-            ev = sorted([height_grid[r,c] for r,c in ridge_cells[-q:] if not math.isnan(height_grid[r,c])])
-            if sv and ev and ev[len(ev)//2] > sv[len(sv)//2]:
-                ridge_cells = ridge_cells[:-1]
-            else:
-                ridge_cells = ridge_cells[1:]
-
-    if len(ridge_cells) < 2:
-        logger.warning("Ridge too short")
-        return [], None, cell_grid_info
-
-    # Step 9: Validate ridge density — require ~4/5 cells to be RIDGE_DOT or NEAR_RIDGE
-    ridge_cells = _validate_ridge_density(ridge_cells, cell_labels, grid_resolution=grid_resolution)
-    if len(ridge_cells) < 2:
-        logger.warning("Ridge failed density check")
-        return [], None, cell_grid_info
-
-    # Step 10: Compute azimuth and pitch from ridge geometry
-    ridge_azimuth, ridge_pitch, ridge_info = _ridge_geometry(
-        height_grid, ridge_cells, x_origin, z_origin, grid_resolution,
-        anchor_cells=anchor_cells,
-    )
-    logger.info(
-        "Ridge geometry: azimuth=%.1f°, pitch=%.1f°, length=%.1fm",
-        ridge_azimuth, ridge_pitch, ridge_info['length_m'],
-    )
-
-    # Default ridge_world from traced endpoints
-    _r0, _c0 = ridge_cells[0]
-    _r1, _c1 = ridge_cells[-1]
-    ridge_world = (
-        (x_origin + _c0 * grid_resolution, z_origin + _r0 * grid_resolution),
-        (x_origin + _c1 * grid_resolution, z_origin + _r1 * grid_resolution),
-        ridge_azimuth, ridge_pitch,
-        ridge_info['length_m'], ridge_info['peak_height'],
-    )
+    # Ridge detection is handled exclusively by the plane-first path
+    # (plane-plane intersections in plane_classifier.py). The gradient
+    # fallback path produces faces with SVD-derived orientation only.
+    ridge_cells = []
+    ridge_azimuth = None
+    ridge_pitch = None
+    ridge_world = None
+    logger.info("Gradient fallback: no ridge detection (ridge comes from plane intersections only)")
 
     # Step 11: Grow faces from anchor dots through roof-like cells
     assigned = np.zeros((rows, cols), dtype=bool)
     planes = []
     # Faces sharing the same ridge belong to one roof structure
     main_structure_id = str(uuid.uuid4())[:8]
+
+    # Mark tree cells as pre-assigned so face growth never enters them
+    if tree_grid is not None:
+        assigned |= tree_grid
 
     # Grow face from the anchor side
     for ar, ac in anchor_cells:
@@ -316,17 +249,8 @@ def detect_roof_faces(
             continue
         face_mask, variance_stops = result
 
-        # Save original mask before tree inference
-        original_mask = face_mask.copy()
-
-        # Infer through tree if the face was blocked by variance
-        if variance_stops:
-            face_mask, n_inferred = _infer_through_tree(
-                face_mask, height_grid, variance_stops, assigned, grid_resolution,
-            )
-            tree_inferred = n_inferred > 0
-        else:
-            tree_inferred = False
+        # HARD TREE EXCLUSION: do NOT infer through tree. Tree cells are
+        # permanently excluded. The face boundary ends at the tree edge.
 
         assigned |= face_mask
 
@@ -341,123 +265,20 @@ def detect_roof_faces(
         logger.info("Face from anchor (%d,%d): %d ground edges, %d roof step-downs, %d weak",
                     ar, ac, n_ground, n_roof, n_weak)
 
-        # Fit plane from ORIGINAL cells only (not tree-inferred ones)
-        # but use the full mask for boundary extraction
+        # Fit plane from face cells (tree cells are already excluded from the mask)
         plane = _fit_and_build_plane(
-            original_mask, height_grid, x_origin, z_origin,
+            face_mask, height_grid, x_origin, z_origin,
             grid_resolution, max_roughness, min_up_component,
             override_azimuth=ridge_azimuth,
             override_pitch=ridge_pitch,
         )
         if plane is not None:
             plane.structure_id = main_structure_id
-            if tree_inferred:
-                plane.confidence = 0.6
-                plane.needs_review = True
             planes.append(plane)
 
-    # Step 9b: Correct ridge using eave boundaries
-    # If a face's eave edge drops off at a certain lateral position, the
-    # ridge should end there too — eave and ridge run parallel. This fixes
-    # cases where trees obscure the ridge endpoint.
-    if planes and len(ridge_cells) >= 2:
-        ridge_cells = _correct_ridge_from_eaves(
-            height_grid, ridge_cells, assigned, ridge_point, grid_resolution,
-        )
-        # Recompute geometry with corrected ridge
-        ridge_azimuth, ridge_pitch, ridge_info = _ridge_geometry(
-            height_grid, ridge_cells, x_origin, z_origin, grid_resolution,
-            anchor_cells=anchor_cells,
-        )
-        logger.info(
-            "Corrected ridge: azimuth=%.1f°, pitch=%.1f°, length=%.1fm",
-            ridge_azimuth, ridge_pitch, ridge_info['length_m'],
-        )
-
-    # Update ridge_world from corrected ridge endpoints
-    _r0, _c0 = ridge_cells[0]
-    _r1, _c1 = ridge_cells[-1]
-    ridge_world = (
-        (x_origin + _c0 * grid_resolution, z_origin + _r0 * grid_resolution),
-        (x_origin + _c1 * grid_resolution, z_origin + _r1 * grid_resolution),
-        ridge_azimuth,
-        ridge_pitch,
-        ridge_info['length_m'],
-        ridge_info['peak_height'],
-    )
-
-    # Step 10: Cross the ridge — find the other face
-    # Seeds: roof-like cells just past the ridge on the opposite side
-    ridge_set = set(ridge_cells)
-    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-    opposite_seeds = set()
-    for rr, rc in ridge_cells:
-        for dr, dc in neighbors:
-            nr, nc = rr + dr, rc + dc
-            if 0 <= nr < rows and 0 <= nc < cols:
-                if (nr, nc) not in ridge_set and not assigned[nr, nc] and roof_mask[nr, nc]:
-                    opposite_seeds.add((nr, nc))
-
-    # Detect if the opposite side of the ridge is flat before growing
-    opposite_side_is_flat = _is_flat_region(height_grid, dx, dz, opposite_seeds)
-    if opposite_side_is_flat:
-        logger.info("Opposite side of ridge appears flat — fitting independently (no pitch override)")
-
-    opposite_azimuth = (ridge_azimuth + 180.0) % 360.0
-
-    for sr, sc in opposite_seeds:
-        if assigned[sr, sc]:
-            continue
-        if len(planes) >= max_regions:
-            break
-
-        result = _grow_face(
-            height_grid, dx, dz, roof_mask, assigned,
-            sr, sc, grid_resolution, height_drop_max,
-            allow_flat=opposite_side_is_flat,
-        )
-        if result is None:
-            continue
-        face_mask, _ = result
-
-        assigned |= face_mask
-
-        if opposite_side_is_flat:
-            # Let SVD determine pitch naturally (~0°); still orient azimuth away from ridge
-            plane = _fit_and_build_plane(
-                face_mask, height_grid, x_origin, z_origin,
-                grid_resolution, max_roughness, min_up_component,
-                override_azimuth=opposite_azimuth,
-                override_pitch=None,
-            )
-        else:
-            plane = _fit_and_build_plane(
-                face_mask, height_grid, x_origin, z_origin,
-                grid_resolution, max_roughness, min_up_component,
-                override_azimuth=opposite_azimuth,
-                override_pitch=ridge_pitch,
-            )
-        if plane is not None:
-            plane.structure_id = main_structure_id  # same ridge = same structure
-            planes.append(plane)
-
-    # Step 11: Check ridge ends for hip faces
-    if len(ridge_cells) >= 2:
-        hip_faces = _find_hip_faces(
-            height_grid, dx, dz, roof_mask, assigned,
-            ridge_cells, grid_resolution, height_drop_max,
-        )
-        for hf_mask in hip_faces:
-            if len(planes) >= max_regions:
-                break
-            assigned |= hf_mask
-            plane = _fit_and_build_plane(
-                hf_mask, height_grid, x_origin, z_origin,
-                grid_resolution, max_roughness, min_up_component,
-            )
-            if plane is not None:
-                plane.structure_id = main_structure_id  # hip = same structure
-                planes.append(plane)
+    # Ridge correction, cross-the-ridge, and hip face detection are skipped
+    # in the gradient fallback — no ridge geometry available. Faces are
+    # grown only from anchors with SVD-derived orientation.
 
     # Step 12: Edge drop-off analysis — find lower roofs beyond eaves
     # After a height drop at a face boundary, check what's below:
@@ -573,6 +394,7 @@ def _detect_roof_faces_plane_first(
     from pipeline.graph_builder import (
         _build_adjacency,
         _classify_edges,
+        _find_components,
     )
     from models.schemas import RoofParseOptions
 
@@ -629,6 +451,7 @@ def _detect_roof_faces_plane_first(
     # 6. Build adjacency and classify edges using graph_builder
     adjacency, shared_edges_info = _build_adjacency(planes, 1.0, 0.5)
     edges = _classify_edges(planes, shared_edges_info)
+    components = _find_components(planes, adjacency)
 
     # 7. Classify all points
     result = classify_from_planes(
@@ -641,6 +464,7 @@ def _detect_roof_faces_plane_first(
         anchor_dots=anchor_dots,
         adjacency=adjacency,
         edges=edges,
+        components=components,
     )
 
     # 8. Compute ridge from plane intersections
@@ -876,77 +700,6 @@ def _is_flat_region(
     return (sum(mags) / len(mags)) < flat_grad_thresh
 
 
-def _snap_ridge_to_slope(
-    direction: np.ndarray,
-    slope_dir: tuple[float, float],
-    snap_tolerance_deg: float = 15.0,
-) -> np.ndarray:
-    """
-    Snap the PCA ridge direction to 90° (gable) or 45° (hip) from the slope direction.
-    Returns the (possibly corrected) unit direction vector in (row, col) space.
-    """
-    # slope_dir is (slope_dx, slope_dz) = (col-direction, row-direction)
-    slope_vec = np.array([slope_dir[1], slope_dir[0]], dtype=float)
-    norm = np.linalg.norm(slope_vec)
-    if norm < 1e-6:
-        return direction
-    slope_vec /= norm
-
-    # Gable: ridge perpendicular to slope
-    perp = np.array([-slope_vec[1], slope_vec[0]])
-    # Hip: ridge at 45° to slope
-    diag = slope_vec + perp
-    diag /= np.linalg.norm(diag)
-
-    angle_to_gable = math.degrees(math.acos(min(1.0, abs(float(np.dot(direction, perp))))))
-    angle_to_hip   = math.degrees(math.acos(min(1.0, abs(float(np.dot(direction, diag))))))
-
-    best_angle = min(angle_to_gable, angle_to_hip)
-    if best_angle > snap_tolerance_deg:
-        logger.warning(
-            "Ridge direction matches neither gable (%.1f°) nor hip (%.1f°) — keeping PCA fit",
-            angle_to_gable, angle_to_hip,
-        )
-        return direction
-
-    if angle_to_gable <= angle_to_hip:
-        snapped = perp if np.dot(direction, perp) >= 0 else -perp
-        logger.info("Ridge snapped to GABLE direction (was %.1f° off perpendicular)", angle_to_gable)
-    else:
-        snapped = diag if np.dot(direction, diag) >= 0 else -diag
-        logger.info("Ridge snapped to HIP direction (was %.1f° off 45°)", angle_to_hip)
-
-    return snapped / (np.linalg.norm(snapped) + 1e-9)
-
-
-def _reproject_ridge_cells(
-    ridge_cells: list[tuple[int, int]],
-    direction: np.ndarray,
-    height_grid: np.ndarray,
-    rows: int,
-    cols: int,
-) -> list[tuple[int, int]]:
-    """
-    Re-sample ridge cells along a new direction, keeping the same centroid and extent.
-    """
-    if len(ridge_cells) < 2:
-        return ridge_cells
-    positions = np.array(ridge_cells, dtype=float)
-    centroid = positions.mean(axis=0)
-    projs = (positions - centroid) @ direction
-    proj_min, proj_max = projs.min(), projs.max()
-    n_steps = max(int(math.ceil(proj_max - proj_min)), 1)
-    new_cells = []
-    for i in range(n_steps + 1):
-        t = proj_min + i * (proj_max - proj_min) / n_steps
-        pos = centroid + direction * t
-        ri, ci = int(round(pos[0])), int(round(pos[1]))
-        if 0 <= ri < rows and 0 <= ci < cols:
-            if not new_cells or new_cells[-1] != (ri, ci):
-                new_cells.append((ri, ci))
-    return new_cells if new_cells else ridge_cells
-
-
 # ---------------------------------------------------------------------------
 # Grid Cell Classification
 # ---------------------------------------------------------------------------
@@ -986,6 +739,7 @@ def _classify_grid_cells(
     min_flat_roof_width_m: float = 1.5,   # real flat roof must be at least this wide
     max_ridge_aspect_ratio: float = 6.0,  # above this → ridge, not flat roof
     max_roof_height: float = float('inf'), # anything above this height is a tree
+    tree_grid: np.ndarray | None = None,   # hard tree exclusion mask from tree_detector
 ) -> np.ndarray:
     """
     Classify every grid cell into one of: GROUND, ROOF, LOWER_ROOF, FLAT_ROOF,
@@ -1019,7 +773,13 @@ def _classify_grid_cells(
             if np.isnan(h) or h < min_height:
                 cell_labels[r, c] = CellLabel.GROUND
                 continue
-            # Anything above the max plausible roof height is taller than the roof — tree
+
+            # HARD TREE EXCLUSION — authoritative tree mask from tree_detector
+            if tree_grid is not None and tree_grid[r, c]:
+                cell_labels[r, c] = CellLabel.TREE
+                continue
+
+            # Fallback tree checks when no tree_grid provided
             if h > max_roof_height:
                 cell_labels[r, c] = CellLabel.TREE
                 continue
@@ -1116,7 +876,11 @@ def _classify_grid_cells(
                 cell_labels[r, c] = CellLabel.ROOF
             # else: leave as UNSURE
 
-    # ---- Pass 3: upgrade ROOF cells to RIDGE_DOT or NEAR_RIDGE ----
+    # ---- Pass 3: EAVE_DOT + tree variance reclassification ----
+    # Ridge/NEAR_RIDGE labels are NO LONGER assigned here — they come
+    # exclusively from plane-plane intersections in plane_classifier.py.
+    # This pass only detects eave edges (downhill drop) and reclassifies
+    # high-variance ROOF cells as TREE.
     for r in range(rows):
         for c in range(cols):
             if cell_labels[r, c] != CellLabel.ROOF:
@@ -1125,176 +889,29 @@ def _classify_grid_cells(
             gx, gz = dx[r, c], dz[r, c]
             grad_mag = math.sqrt(gx * gx + gz * gz)
             if grad_mag < 0.01:
-                continue  # flat area — can't determine ridge geometry
+                continue
 
-            # Uphill direction (normalized)
-            ux, uz = gx / grad_mag, gz / grad_mag  # (col-direction, row-direction)
+            # Tree variance reclassification (catch-all for cells the tree_grid
+            # might have missed, e.g., borderline variance cells)
+            if _local_variance_3x3(height_grid, r, c) > _TREE_VARIANCE_THRESH:
+                cell_labels[r, c] = CellLabel.TREE
+                continue
 
-            # Cell one step further uphill
-            nr_up = int(round(r + uz))
-            nc_up = int(round(c + ux))
-            h_up = (height_grid[nr_up, nc_up]
-                    if 0 <= nr_up < rows and 0 <= nc_up < cols
-                    else h - 1.0)  # treat out-of-bounds as drop
-
-            # Cell one step downhill (opposite of uphill)
+            # Downhill neighbor
+            uz, ux = gz / grad_mag, gx / grad_mag
             nr_down = int(round(r - uz))
             nc_down = int(round(c - ux))
             h_down = (height_grid[nr_down, nc_down]
                       if 0 <= nr_down < rows and 0 <= nc_down < cols
                       else h - 1.0)
 
-            # Perpendicular direction (ridge runs this way)
-            px, pz = -gz / grad_mag, gx / grad_mag
-            nr_pp = int(round(r + pz));  nc_pp = int(round(c + px))
-            nr_pm = int(round(r - pz));  nc_pm = int(round(c - px))
-            h_pp = (height_grid[nr_pp, nc_pp]
-                    if 0 <= nr_pp < rows and 0 <= nc_pp < cols else h - 1.0)
-            h_pm = (height_grid[nr_pm, nc_pm]
-                    if 0 <= nr_pm < rows and 0 <= nc_pm < cols else h - 1.0)
-
-            # Reject tree canopy before any ridge assignment
-            if _local_variance_3x3(height_grid, r, c) > _TREE_VARIANCE_THRESH:
-                cell_labels[r, c] = CellLabel.TREE
-                continue
-
-            # Ridge check: a RIDGE_DOT must be a local maximum in the slope
-            # direction.  If the uphill neighbor is higher, this cell is on the
-            # slope — skip ridge assignment but still check for eave below.
-            is_ridge_candidate = np.isnan(h_up) or h_up <= h
-
-            if is_ridge_candidate:
-                # Predict what the next uphill cell's height SHOULD be if slope continues.
-                # grad_mag is height-change per grid cell in the uphill direction.
-                # If actual h_up falls short of prediction, the slope broke — we're at the ridge.
-                h_predicted_up = h + grad_mag  # expected height one step further uphill
-
-                cond_a = (not np.isnan(h_up)) and (h_up < h_predicted_up - 0.05)  # strong: slope broke
-                cond_b = ((not np.isnan(h_pp)) and (not np.isnan(h_pm))
-                          and h_pp < h and h_pm < h)                                # local max perpendicular
-                cond_c = ((not np.isnan(h_up)) and (h_up < h_predicted_up - 0.02)
-                          and (np.isnan(h_pp) or h_pp < h
-                               or np.isnan(h_pm) or h_pm < h))                     # soft — low-pitch roofs
-
-                if cond_a or cond_b:
-                    cell_labels[r, c] = CellLabel.RIDGE_DOT
-                elif cond_c:
-                    cell_labels[r, c] = CellLabel.NEAR_RIDGE
-
-            # EAVE_DOT: bottom edge of slope — height drops sharply going downhill.
-            # The downslope cell drops significantly relative to the current cell,
-            # meaning this cell sits at the roof's lower edge (eave line).
-            # Only assign if not already promoted to ridge.
-            if cell_labels[r, c] == CellLabel.ROOF and not np.isnan(h_down):
-                h_predicted_down = h - grad_mag  # expected height one step downhill
-                eave_cond = h_down < h_predicted_down - 0.15  # drops faster than slope predicts
-                eave_cond_strong = h_down < h - 0.4           # or absolute drop > 40cm
+            # EAVE_DOT: bottom edge of slope — height drops sharply downhill
+            if not np.isnan(h_down):
+                h_predicted_down = h - grad_mag
+                eave_cond = h_down < h_predicted_down - 0.15
+                eave_cond_strong = h_down < h - 0.4
                 if eave_cond or eave_cond_strong:
                     cell_labels[r, c] = CellLabel.EAVE_DOT
-
-    # ---- Pass 2.5: Reclassify narrow FLAT_ROOF regions as RIDGE_DOT ----
-    # Real flat roofs have a reasonable aspect ratio. A very long, narrow flat
-    # region (e.g. 50ft × 2ft) is a ridge cap, not a flat roof.
-    flat_mask = (cell_labels == CellLabel.FLAT_ROOF).astype(np.uint8)
-    if flat_mask.any():
-        labeled_flat, n_components = ndimage.label(flat_mask)
-        min_flat_width_cells = min_flat_roof_width_m / grid_resolution
-        for comp_id in range(1, n_components + 1):
-            comp_cells = np.argwhere(labeled_flat == comp_id)
-            n_cells = len(comp_cells)
-            if n_cells < 3:
-                for r, c in comp_cells:
-                    cell_labels[r, c] = CellLabel.UNSURE
-                continue
-            positions = comp_cells.astype(float)
-            centroid = positions.mean(axis=0)
-            centered = positions - centroid
-            try:
-                _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-                principal = Vt[0]
-                perp = np.array([-principal[1], principal[0]])
-            except np.linalg.LinAlgError:
-                continue
-            projs_len = centered @ principal
-            projs_wid = centered @ perp
-            length_cells = projs_len.max() - projs_len.min()
-            width_cells = max(projs_wid.max() - projs_wid.min(), 0.1)
-            aspect_ratio = length_cells / width_cells
-            length_m = length_cells * grid_resolution
-            width_m = width_cells * grid_resolution
-            too_small = length_m < 1.0 or width_m < 1.0
-            too_narrow = aspect_ratio > max_ridge_aspect_ratio
-            if too_small or too_narrow:
-                for r, c in comp_cells:
-                    cell_labels[r, c] = CellLabel.RIDGE_DOT
-                logger.debug(
-                    "FLAT_ROOF component (n=%d) → RIDGE_DOT "
-                    "(length=%.1fm, width=%.1fm, aspect=%.1f)",
-                    n_cells, length_m, width_m, aspect_ratio,
-                )
-            else:
-                logger.debug(
-                    "FLAT_ROOF component (n=%d) kept — length=%.1fm, width=%.1fm, aspect=%.1f",
-                    n_cells, length_m, width_m, aspect_ratio,
-                )
-
-    # ---- Pass 4: promote RIDGE_DOT cells at gable ends to RIDGE_EDGE_DOT ----
-    # A RIDGE_EDGE_DOT is a ridge dot where, along the ridge direction
-    # (perpendicular to local slope), one side quickly reaches GROUND / a large
-    # height drop, while the other side still has ROOF / RIDGE_DOT cells.
-    _EDGE_LOOK = max(4, int(round(2.0 / grid_resolution)))  # ~2m physical look distance
-    _EDGE_DROP = 0.5      # height drop (m) that counts as "ground side"
-
-    for r in range(rows):
-        for c in range(cols):
-            if cell_labels[r, c] != CellLabel.RIDGE_DOT:
-                continue
-            h = height_grid[r, c]
-            if np.isnan(h):
-                continue
-
-            # Ridge direction is perpendicular to the local gradient
-            gdx = dx[r, c]
-            gdz = dz[r, c]
-            mag = math.sqrt(gdx ** 2 + gdz ** 2)
-            if mag < 0.001:
-                continue
-            # In (row, col) space: gradient≈(gdz, gdx); ridge perp = (-gdx, gdz)
-            rd_r =  gdz / mag
-            rd_c = -gdx / mag
-
-            def _ground_side(dr, dc):
-                """True if stepping in (dr,dc) hits GROUND or LOWER_ROOF within _EDGE_LOOK cells."""
-                for s in range(1, _EDGE_LOOK + 1):
-                    nr = int(round(r + dr * s))
-                    nc = int(round(c + dc * s))
-                    if not (0 <= nr < rows and 0 <= nc < cols):
-                        return True   # off data edge = effectively ground
-                    lbl = cell_labels[nr, nc]
-                    if lbl in (CellLabel.GROUND, CellLabel.LOWER_ROOF):
-                        return True
-                return False
-
-            def _roof_side(dr, dc):
-                """True if stepping in (dr,dc) finds at least one ROOF/RIDGE_DOT cell."""
-                for s in range(1, _EDGE_LOOK + 1):
-                    nr = int(round(r + dr * s))
-                    nc = int(round(c + dc * s))
-                    if not (0 <= nr < rows and 0 <= nc < cols):
-                        return False
-                    if cell_labels[nr, nc] in (CellLabel.ROOF, CellLabel.RIDGE_DOT,
-                                               CellLabel.NEAR_RIDGE, CellLabel.RIDGE_EDGE_DOT):
-                        return True
-                return False
-
-            fwd_ground = _ground_side( rd_r,  rd_c)
-            fwd_roof   = _roof_side  ( rd_r,  rd_c)
-            bwd_ground = _ground_side(-rd_r, -rd_c)
-            bwd_roof   = _roof_side  (-rd_r, -rd_c)
-
-            # Gable end: ground on one side, roof on the other
-            if (fwd_ground and bwd_roof) or (bwd_ground and fwd_roof):
-                cell_labels[r, c] = CellLabel.RIDGE_EDGE_DOT
 
     # Log label distribution
     counts = np.bincount(cell_labels.ravel(), minlength=10)
@@ -1310,860 +927,16 @@ def _classify_grid_cells(
     return cell_labels
 
 
-def _find_slope_top_candidates(
-    height_grid: np.ndarray,
-    cell_labels: np.ndarray,
-    resolution: float,
-    x_origin: float,
-    z_origin: float,
-    use_near_ridge_fallback: bool = True,
-    min_ridge_dot_count: int = 0,   # 0 = auto from resolution (~2.5m worth of cells)
-) -> list[tuple[int, int, float, float, float]]:
-    """
-    Collect ridge-candidate cells from RIDGE_DOT labels, falling back to
-    NEAR_RIDGE cells if fewer than min_ridge_dot_count are found.
-    Returns list of (row, col, world_x, world_y, world_z).
-    """
-    if min_ridge_dot_count == 0:
-        min_ridge_dot_count = max(5, int(round(2.5 / resolution)))
-    ridge_dot_candidates = []
-    near_ridge_candidates = []
-
-    # Collect both RIDGE_DOT and RIDGE_EDGE_DOT as strong candidates
-    for r, c in np.argwhere(
-        (cell_labels == CellLabel.RIDGE_DOT) | (cell_labels == CellLabel.RIDGE_EDGE_DOT)
-    ):
-        r, c = int(r), int(c)
-        world_x = x_origin + c * resolution
-        world_y = float(height_grid[r, c])
-        world_z = z_origin + r * resolution
-        ridge_dot_candidates.append((r, c, world_x, world_y, world_z))
-        logger.debug("%s at grid (%d,%d) world XYZ=(%.2f, %.2f, %.2f)",
-                     CellLabel(cell_labels[r, c]).name, r, c, world_x, world_y, world_z)
-
-    candidates = list(ridge_dot_candidates)
-
-    if use_near_ridge_fallback and len(candidates) < min_ridge_dot_count:
-        logger.info("Only %d RIDGE_DOT cells — expanding to include NEAR_RIDGE cells",
-                    len(candidates))
-        for r, c in np.argwhere(cell_labels == CellLabel.NEAR_RIDGE):
-            r, c = int(r), int(c)
-            world_x = x_origin + c * resolution
-            world_y = float(height_grid[r, c])
-            world_z = z_origin + r * resolution
-            near_ridge_candidates.append((r, c, world_x, world_y, world_z))
-            logger.debug("NEAR_RIDGE at grid (%d,%d) world XYZ=(%.2f, %.2f, %.2f)",
-                         r, c, world_x, world_y, world_z)
-        candidates.extend(near_ridge_candidates)
-
-    logger.info(
-        "Ridge candidates: %d RIDGE_DOT + %d NEAR_RIDGE = %d total",
-        len(ridge_dot_candidates), len(near_ridge_candidates), len(candidates),
-    )
-    return candidates
-
-
-def _fit_ridge_line(
-    candidates: list[tuple[int, int, float, float, float]],
-    height_grid: np.ndarray,
-    anchor_cells: list[tuple[int, int]],
-    resolution: float,
-    x_origin: float,
-    z_origin: float,
-    anchor_search_radius_m: float = 10.0,
-    ransac_inlier_dist_m: float = 1.0,
-    min_inliers: int = 0,   # 0 = auto from resolution (~1.5m worth of cells)
-    anchor_heights: list[float] | None = None,
-) -> tuple[list[tuple[int, int]], np.ndarray] | None:
-    """
-    Fit a ridge line through slope-top candidates using PCA (SVD) with optional
-    RANSAC outlier rejection.
-
-    Returns (ridge_cells, direction) or None if fitting fails.
-    ridge_cells is an ordered list of (row, col) along the fitted line.
-    direction is a (2,) unit vector [dr, dc] in grid space.
-    """
-    if not candidates:
-        return None
-
-    if min_inliers == 0:
-        min_inliers = max(3, int(round(1.5 / resolution)))
-
-    rows, cols = height_grid.shape
-    search_cells = anchor_search_radius_m / resolution
-
-    def _min_anchor_dist(r, c):
-        return min(math.sqrt((r - ar) ** 2 + (c - ac) ** 2)
-                   for ar, ac in anchor_cells)
-
-    # Filter by anchor proximity; relax if too few survive
-    proximate = [cand for cand in candidates
-                 if _min_anchor_dist(cand[0], cand[1]) <= search_cells]
-    if len(proximate) < min_inliers:
-        proximate = [cand for cand in candidates
-                     if _min_anchor_dist(cand[0], cand[1]) <= search_cells * 2]
-    if len(proximate) < min_inliers:
-        logger.warning("_fit_ridge_line: only %d proximate candidates after 2× relaxation",
-                       len(proximate))
-        return None
-
-    # Anchor-height pre-filter: the ridge must be at or above the highest anchor
-    # point (minus a small margin). This prevents low-lying tree clusters or
-    # ground-level features from being selected as the ridge.
-    if anchor_heights:
-        min_ridge_h = max(anchor_heights) - 0.5   # ridge ≥ highest anchor − 0.5m
-        above_anchor = [c for c in proximate if c[3] >= min_ridge_h]
-        if len(above_anchor) >= min_inliers:
-            logger.info(
-                "Anchor-height pre-filter: kept %d / %d candidates at h≥%.2fm",
-                len(above_anchor), len(proximate), min_ridge_h,
-            )
-            proximate = above_anchor
-        else:
-            logger.info(
-                "Anchor-height pre-filter: only %d above %.2fm — keeping all %d",
-                len(above_anchor), min_ridge_h, len(proximate),
-            )
-
-    # Height consistency filter — keep the densest cluster within a 1m window.
-    # This prevents neighboring structures (fences, sheds, trees) at different
-    # heights from polluting the ridge fit.
-    heights = sorted(cand[3] for cand in proximate)
-    best_start = 0
-    best_count_h = 0
-    for i, h_lo in enumerate(heights):
-        count = sum(1 for h in heights if h <= h_lo + 1.0)
-        if count > best_count_h:
-            best_count_h = count
-            best_start = i
-    h_lo_best = heights[best_start]
-    h_hi_best = h_lo_best + 1.0
-    height_filtered = [c for c in proximate if h_lo_best <= c[3] <= h_hi_best]
-    n_dropped = len(proximate) - len(height_filtered)
-    if n_dropped > 0:
-        logger.info(
-            "Height filter: kept %d / %d candidates in [%.2f–%.2fm], dropped %d outliers",
-            len(height_filtered), len(proximate), h_lo_best, h_hi_best, n_dropped,
-        )
-    proximate = height_filtered if len(height_filtered) >= min_inliers else proximate
-
-    positions = np.array([(r, c) for r, c, *_ in proximate], dtype=float)
-
-    # RANSAC (only when enough points to bother)
-    inlier_positions = positions
-    if len(proximate) >= 10:
-        ransac_cells = ransac_inlier_dist_m / resolution
-        best_inlier_mask = None
-        best_count = 0
-        for _ in range(50):
-            idx1, idx2 = random.sample(range(len(proximate)), 2)
-            p1 = positions[idx1]
-            p2 = positions[idx2]
-            d = p2 - p1
-            d_len = np.linalg.norm(d)
-            if d_len < 0.5:
-                continue
-            d_unit = d / d_len
-            perp = np.array([-d_unit[1], d_unit[0]])
-            dists = np.abs((positions - p1) @ perp)
-            mask = dists < ransac_cells
-            n_in = mask.sum()
-            if n_in > best_count:
-                best_count = n_in
-                best_inlier_mask = mask
-        if best_inlier_mask is not None and best_count >= min_inliers:
-            inlier_positions = positions[best_inlier_mask]
-
-    # PCA via SVD
-    try:
-        centroid = inlier_positions.mean(axis=0)
-        centered = inlier_positions - centroid
-        _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-        direction = Vt[0]  # principal axis = ridge direction in (row, col) space
-    except np.linalg.LinAlgError:
-        logger.warning("_fit_ridge_line: SVD failed")
-        return None
-
-    direction = direction / (np.linalg.norm(direction) + 1e-9)
-
-    # Project inliers onto line to find extent
-    projs = (inlier_positions - centroid) @ direction
-    proj_min, proj_max = projs.min(), projs.max()
-    ridge_len_cells = proj_max - proj_min
-
-    if ridge_len_cells < 1.0:
-        logger.warning("_fit_ridge_line: fitted ridge too short (%.2f cells)", ridge_len_cells)
-        return None
-
-    # Walk from start to end along fitted line, sampling one cell at a time
-    n_steps = max(int(math.ceil(ridge_len_cells)), 1)
-    ridge_cells = []
-    for i in range(n_steps + 1):
-        t = proj_min + i * (proj_max - proj_min) / n_steps
-        pos = centroid + direction * t
-        ri = int(round(pos[0]))
-        ci = int(round(pos[1]))
-        if 0 <= ri < rows and 0 <= ci < cols:
-            if not ridge_cells or ridge_cells[-1] != (ri, ci):
-                ridge_cells.append((ri, ci))
-
-    # Validate ridge endpoints — a real ridge should be nearly horizontal.
-    # Two constraints must both hold:
-    #   1. Tilt angle ≤ 8° end-to-end
-    #   2. Absolute height difference between endpoints ≤ 0.5m
-    # Trim from the higher end until both pass, or reject if unfixable.
-    _MAX_TILT_DEG  = 8.0
-    _MAX_H_DELTA_M = 0.5
-
-    def _endpoint_metrics(cells):
-        """Return (tilt_deg, h_delta_m) for the endpoint quarters of cells."""
-        if len(cells) < 2:
-            return 0.0, 0.0
-        q = max(1, len(cells) // 4)
-        s_vals = [height_grid[r, c] for r, c in cells[:q]  if not math.isnan(height_grid[r, c])]
-        e_vals = [height_grid[r, c] for r, c in cells[-q:] if not math.isnan(height_grid[r, c])]
-        if not s_vals or not e_vals:
-            return 0.0, 0.0
-        h_s = sorted(s_vals)[len(s_vals) // 2]
-        h_e = sorted(e_vals)[len(e_vals) // 2]
-        h_delta = abs(h_e - h_s)
-        horiz = len(cells) * resolution
-        tilt = math.degrees(math.atan2(h_delta, horiz))
-        return tilt, h_delta
-
-    tilt, h_delta = _endpoint_metrics(ridge_cells)
-    needs_trim = tilt > _MAX_TILT_DEG or h_delta > _MAX_H_DELTA_M
-    if needs_trim:
-        logger.info(
-            "Ridge endpoints: tilt=%.1f°, Δh=%.2fm — trimming the higher end",
-            tilt, h_delta,
-        )
-        while len(ridge_cells) >= 4:
-            tilt, h_delta = _endpoint_metrics(ridge_cells)
-            if tilt <= _MAX_TILT_DEG and h_delta <= _MAX_H_DELTA_M:
-                break
-            # Trim from whichever end is higher
-            q = max(1, len(ridge_cells) // 4)
-            s_h = sorted([height_grid[r, c] for r, c in ridge_cells[:q]
-                          if not math.isnan(height_grid[r, c])])[max(0, q // 2 - 1)]
-            e_h = sorted([height_grid[r, c] for r, c in ridge_cells[-q:]
-                          if not math.isnan(height_grid[r, c])])[max(0, q // 2 - 1)]
-            if e_h > s_h:
-                ridge_cells = ridge_cells[:-1]
-            else:
-                ridge_cells = ridge_cells[1:]
-        tilt, h_delta = _endpoint_metrics(ridge_cells)
-        if tilt > _MAX_TILT_DEG or h_delta > _MAX_H_DELTA_M:
-            logger.warning(
-                "_fit_ridge_line: endpoints still out of range after trimming "
-                "(tilt=%.1f°, Δh=%.2fm) — rejecting",
-                tilt, h_delta,
-            )
-            return None
-        logger.info(
-            "Ridge trimmed to %d cells — tilt=%.1f°, Δh=%.2fm",
-            len(ridge_cells), tilt, h_delta,
-        )
-    else:
-        logger.debug("Ridge endpoints ok: tilt=%.1f°, Δh=%.2fm", tilt, h_delta)
-
-    logger.info(
-        "Fitted ridge: %d cells, direction=(%.3f, %.3f), length=%.1f cells (%.1fm)",
-        len(ridge_cells), direction[0], direction[1],
-        ridge_len_cells, ridge_len_cells * resolution,
-    )
-    return ridge_cells, direction
-
-
-# ---------------------------------------------------------------------------
-# Ridge Density Validation
-# ---------------------------------------------------------------------------
-
-def _validate_ridge_density(
-    ridge_cells: list[tuple[int, int]],
-    cell_labels: np.ndarray,
-    grid_resolution: float = 0.5,
-    window_size: int = 0,       # 0 = auto (~2.5m physical window)
-    min_hits: int = 4,
-    min_final_length: int = 3,
-    max_endpoint_gap: int = 0,  # 0 = auto (~1m physical gap)
-) -> list[tuple[int, int]]:
-    """
-    Trim the ridge to the longest continuous stretch where at least min_hits
-    out of every window_size cells are labeled RIDGE_DOT or NEAR_RIDGE.
-
-    Also trims stray tails: if more than max_endpoint_gap empty cells separate
-    the last valid dot from either endpoint, those tail cells are cut — they
-    are likely a neighboring object's dot, not part of this ridge.
-
-    For the main ridge there should be ~4 matching dots in every 5-cell window.
-    Returns the trimmed ridge_cells, or the original if no valid stretch found.
-    """
-    if window_size == 0:
-        window_size = max(5, int(round(2.5 / grid_resolution)))
-    if max_endpoint_gap == 0:
-        max_endpoint_gap = max(2, int(round(1.0 / grid_resolution)))
-
-    if len(ridge_cells) < window_size:
-        return ridge_cells
-
-    valid_labels = {CellLabel.RIDGE_DOT, CellLabel.NEAR_RIDGE, CellLabel.RIDGE_EDGE_DOT}
-    n = len(ridge_cells)
-
-    # Score each cell: 1 if it matches a ridge label, 0 otherwise
-    scores = [1 if cell_labels[r, c] in valid_labels else 0
-              for r, c in ridge_cells]
-
-    # For each position, check if its window passes the density threshold
-    passes = []
-    for i in range(n):
-        half = window_size // 2
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
-        window_hits = sum(scores[lo:hi])
-        window_len = hi - lo
-        required = min(min_hits, window_len)  # relax at edges
-        passes.append(window_hits >= required)
-
-    # Find the longest contiguous run of True
-    best_start, best_len = 0, 0
-    cur_start, cur_len = 0, 0
-    for i, ok in enumerate(passes):
-        if ok:
-            if cur_len == 0:
-                cur_start = i
-            cur_len += 1
-            if cur_len > best_len:
-                best_len = cur_len
-                best_start = cur_start
-        else:
-            cur_len = 0
-
-    if best_len < min_final_length:
-        logger.warning(
-            "Ridge density check: no stretch of %d+ cells with %d/%d density — "
-            "keeping full ridge (%d cells)",
-            min_final_length, min_hits, window_size, len(ridge_cells),
-        )
-        return ridge_cells
-
-    trimmed_scores = scores[best_start: best_start + best_len]
-    trimmed = ridge_cells[best_start: best_start + best_len]
-
-    # Trim stray tails: cut from each end until the outermost valid dot is
-    # within max_endpoint_gap cells of the endpoint.
-    # More than max_endpoint_gap empty cells at the end = stray dot, not the ridge.
-    def _trim_tail(cells, sc):
-        """Trim empty cells from one end until last dot is within max_endpoint_gap."""
-        gap = 0
-        cut = 0
-        for s in reversed(sc):
-            if s == 1:
-                break
-            gap += 1
-            if gap > max_endpoint_gap:
-                cut = gap
-        return cells[:len(cells) - cut] if cut else cells, sc[:len(sc) - cut] if cut else sc
-
-    trimmed, trimmed_scores = _trim_tail(trimmed, trimmed_scores)
-    trimmed_rev = list(reversed(trimmed))
-    scores_rev = list(reversed(trimmed_scores))
-    trimmed_rev, scores_rev = _trim_tail(trimmed_rev, scores_rev)
-    trimmed = list(reversed(trimmed_rev))
-
-    n_trimmed = n - len(trimmed)
-    if n_trimmed > 0:
-        logger.info(
-            "Ridge density: trimmed %d cells → kept %d-cell stretch "
-            "(density %.0f%% in %d-cell windows)",
-            n_trimmed, len(trimmed),
-            sum(scores_rev) / max(len(scores_rev), 1) * 100,
-            window_size,
-        )
-    return trimmed if len(trimmed) >= min_final_length else ridge_cells
-
-
-# ---------------------------------------------------------------------------
-# Ridge Tracing
-# ---------------------------------------------------------------------------
-
-def _trace_uphill(
-    height_grid: np.ndarray,
-    roof_mask: np.ndarray,
-    anchor_cells: list[tuple[int, int]],
-    min_height: float = 0.5,
-) -> tuple[int, int] | None:
-    """
-    From anchor dots, trace uphill to find a point on the ridge.
-    Only steps into cells that pass the roof_mask (smooth, planar surface).
-    This prevents the walk from climbing onto trees or neighboring structures.
-    """
-    rows, cols = height_grid.shape
-    best_r, best_c = None, None
-    best_height = -float('inf')
-
-    for start_r, start_c in anchor_cells:
-        cr, cc = start_r, start_c
-        for _ in range(200):
-            current_h = height_grid[cr, cc]
-            best_nr, best_nc, best_nh = cr, cc, current_h
-
-            for dr in [-1, 0, 1]:
-                for dc in [-1, 0, 1]:
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = cr + dr, cc + dc
-                    if not (0 <= nr < rows and 0 <= nc < cols):
-                        continue
-                    # Only step into roof-like cells — rejects trees and noise
-                    if not roof_mask[nr, nc]:
-                        continue
-                    nh = height_grid[nr, nc]
-                    if nh > best_nh and nh >= min_height:
-                        best_nr, best_nc, best_nh = nr, nc, nh
-
-            if best_nh <= current_h:
-                break  # At local maximum on the roof surface — this is the ridge
-            cr, cc = best_nr, best_nc
-
-        if height_grid[cr, cc] > best_height:
-            best_height = height_grid[cr, cc]
-            best_r, best_c = cr, cc
-
-    if best_r is None:
-        return None
-    return (best_r, best_c)
-
-
-def _trace_ridge(
-    height_grid: np.ndarray,
-    roof_mask: np.ndarray,
-    ridge_point: tuple[int, int],
-    dx: np.ndarray,
-    dz: np.ndarray,
-) -> list[tuple[int, int]]:
-    """
-    Trace along the ridge from a known ridge point in both directions.
-
-    The ridge direction is perpendicular to the slope direction.
-    We trace until height drops significantly or we leave roof-like cells.
-    """
-    rows, cols = height_grid.shape
-    rr, rc = ridge_point
-    ridge_height = height_grid[rr, rc]
-
-    # Determine ridge direction: perpendicular to the local slope
-    # Slope is (dx, dz), ridge is perpendicular: (-dz, dx) and (dz, -dx)
-    slope_dx = float(dx[rr, rc])
-    slope_dz = float(dz[rr, rc])
-
-    # If slope is near-zero at the ridge (expected for central differences),
-    # sample from cells 2-3 steps away where the gradient is one-sided.
-    # Use the anchor-side slope (not averaged abs which kills sign info).
-    if abs(slope_dx) < 0.01 and abs(slope_dz) < 0.01:
-        best_mag = 0.0
-        for offset in range(2, 6):
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nr, nc = rr + dr * offset, rc + dc * offset
-                if 0 <= nr < rows and 0 <= nc < cols:
-                    sdx = float(dx[nr, nc])
-                    sdz = float(dz[nr, nc])
-                    mag = math.sqrt(sdx**2 + sdz**2)
-                    if mag > best_mag:
-                        slope_dx, slope_dz = sdx, sdz
-                        best_mag = mag
-
-    # Ridge direction is perpendicular to slope in (row, col) grid space.
-    # Slope in grid space is (dz, dx) [row=z, col=x].
-    # Perpendicular of (dz, dx) = (-dx, dz) in (row, col).
-    ridge_dir = (-slope_dx, slope_dz)
-    mag = math.sqrt(ridge_dir[0]**2 + ridge_dir[1]**2)
-    if mag < 0.001:
-        # Fallback: try both axes
-        ridge_dir = (1.0, 0.0)
-        mag = 1.0
-    ridge_dir = (ridge_dir[0] / mag, ridge_dir[1] / mag)
-
-    # Trace in both directions along the ridge
-    all_cells = [ridge_point]
-    visited = {ridge_point}
-
-    for sign in [1, -1]:
-        cr, cc = rr, rc
-        dr_float = sign * ridge_dir[0]
-        dc_float = sign * ridge_dir[1]
-        # Track the running peak so we can detect when we're falling off
-        local_peak = ridge_height
-
-        for step in range(200):
-            # Step in the ridge direction. Stay on the ridge by requiring:
-            # 1. Cell is near ridge elevation (not wandered onto a lower roof)
-            # 2. Step aligns with ridge direction (don't wander sideways)
-            # 3. Cell has low neighbor variance (roof, not tree)
-            candidates = []
-            for test_dr in [-1, 0, 1]:
-                for test_dc in [-1, 0, 1]:
-                    if test_dr == 0 and test_dc == 0:
-                        continue
-                    nr, nc = cr + test_dr, cc + test_dc
-                    if (nr, nc) in visited:
-                        continue
-                    if not (0 <= nr < rows and 0 <= nc < cols):
-                        continue
-                    h = height_grid[nr, nc]
-                    if np.isnan(h) or h < local_peak - 0.8:
-                        continue
-                    # Must align with ridge direction (dot > 0)
-                    dot = test_dr * dr_float + test_dc * dc_float
-                    if dot < 0.1:
-                        continue
-                    # Check local 3x3 variance — reject tree canopy
-                    n_count = 0
-                    h_sum = 0.0
-                    h_sq_sum = 0.0
-                    for dr2 in [-1, 0, 1]:
-                        for dc2 in [-1, 0, 1]:
-                            nr2, nc2 = nr + dr2, nc + dc2
-                            if 0 <= nr2 < rows and 0 <= nc2 < cols:
-                                h2 = height_grid[nr2, nc2]
-                                if not np.isnan(h2):
-                                    h_sum += h2
-                                    h_sq_sum += h2 * h2
-                                    n_count += 1
-                    if n_count >= 3:
-                        h_var = h_sq_sum / n_count - (h_sum / n_count) ** 2
-                        if h_var > 0.15:
-                            continue
-                    score = dot * 2.0 + h / ridge_height
-                    candidates.append((score, h, nr, nc))
-
-            if not candidates:
-                break
-
-            candidates.sort(reverse=True)
-            _, best_h, best_nr, best_nc = candidates[0]
-
-            # Stop if we're significantly below the ridge
-            if best_h < ridge_height - 0.8:
-                break
-
-            local_peak = max(local_peak * 0.95, best_h)  # gentle decay
-
-            cr, cc = best_nr, best_nc
-            visited.add((cr, cc))
-            if sign == 1:
-                all_cells.append((cr, cc))
-            else:
-                all_cells.insert(0, (cr, cc))
-
-    return all_cells
-
-
-def _correct_ridge_from_eaves(
-    height_grid: np.ndarray,
-    ridge_cells: list[tuple[int, int]],
-    assigned: np.ndarray,
-    ridge_point: tuple[int, int],
-    resolution: float,
-    overhang_m: float = 1.524,  # extend 5 feet beyond each face edge
-) -> list[tuple[int, int]]:
-    """
-    Correct the ridge length using the grown face's lateral extent.
-
-    The eave and ridge run parallel on a normal roof — they start and end
-    at the same lateral position (the rake/gable end). If trees obscured
-    the ridge, the face boundary tells us where it should actually end.
-
-    If the ridge is shorter than the face, extend it.
-    If the ridge went past the face (into trees), clip it.
-    """
-    rows, cols = height_grid.shape
-    if len(ridge_cells) < 2:
-        return ridge_cells
-
-    # Get ridge direction vector (start → end)
-    r0, c0 = ridge_cells[0]
-    r1, c1 = ridge_cells[-1]
-    rd = r1 - r0
-    cd = c1 - c0
-    ridge_len = math.sqrt(rd**2 + cd**2)
-    if ridge_len < 1:
-        return ridge_cells
-
-    # Normalize ridge direction
-    rd_n = rd / ridge_len
-    cd_n = cd / ridge_len
-
-    # Find the lateral extent of the assigned face projected onto the ridge axis
-    face_rows, face_cols = np.where(assigned)
-    if len(face_rows) == 0:
-        return ridge_cells
-
-    # Project each face cell onto the ridge direction
-    # (distance along the ridge from the ridge start)
-    projections = (face_rows - r0) * rd_n + (face_cols - c0) * cd_n
-    face_min_proj = float(projections.min())
-    face_max_proj = float(projections.max())
-
-    # Also project ridge endpoints
-    ridge_min_proj = 0.0  # by definition (start)
-    ridge_max_proj = ridge_len
-
-    # Compare: clip or extend
-    new_min = max(face_min_proj - 2, ridge_min_proj)  # allow 2 cells of slack
-    new_max = min(face_max_proj + 2, ridge_max_proj)
-
-    # If the face is wider than the ridge, extend the ridge to face edges + overhang
-    overhang_cells = overhang_m / resolution
-    if face_min_proj < ridge_min_proj - 1:
-        new_min = face_min_proj - overhang_cells
-    if face_max_proj > ridge_max_proj + 1:
-        new_max = face_max_proj + overhang_cells
-
-    # Filter ridge cells to those within the corrected range
-    corrected = []
-    for r, c in ridge_cells:
-        proj = (r - r0) * rd_n + (c - c0) * cd_n
-        if new_min - 1 <= proj <= new_max + 1:
-            corrected.append((r, c))
-
-    # If we need to extend the ridge, add cells at ridge height
-    rr_p, rc_p = ridge_point
-    ridge_height = height_grid[rr_p, rc_p]
-
-    if face_max_proj > ridge_max_proj + 2:
-        # Extend to face edge + 5ft overhang
-        last_r, last_c = ridge_cells[-1]
-        extend_steps = int(face_max_proj - ridge_max_proj + overhang_cells) + 2
-        for step in range(1, extend_steps):
-            nr = int(round(last_r + rd_n * step))
-            nc = int(round(last_c + cd_n * step))
-            if 0 <= nr < rows and 0 <= nc < cols:
-                h = height_grid[nr, nc]
-                if not np.isnan(h) and h > ridge_height - 1.5:
-                    corrected.append((nr, nc))
-
-    if face_min_proj < ridge_min_proj - 2:
-        first_r, first_c = ridge_cells[0]
-        extend_steps = int(ridge_min_proj - face_min_proj + overhang_cells) + 2
-        for step in range(1, extend_steps):
-            nr = int(round(first_r - rd_n * step))
-            nc = int(round(first_c - cd_n * step))
-            if 0 <= nr < rows and 0 <= nc < cols:
-                h = height_grid[nr, nc]
-                if not np.isnan(h) and h > ridge_height - 1.5:
-                    corrected.insert(0, (nr, nc))
-
-    if len(corrected) < 2:
-        return ridge_cells
-
-    logger.info("Ridge corrected: %d→%d cells (face proj: %.1f to %.1f, ridge was 0 to %.1f)",
-                len(ridge_cells), len(corrected), face_min_proj, face_max_proj, ridge_len)
-    return corrected
-
-
-def _ridge_geometry(
-    height_grid: np.ndarray,
-    ridge_cells: list[tuple[int, int]],
-    x_origin: float,
-    z_origin: float,
-    resolution: float,
-    anchor_cells: list[tuple[int, int]] | None = None,
-) -> tuple[float, float, dict]:
-    """
-    Compute azimuth and pitch from the traced ridge line.
-
-    Returns (azimuth_deg, pitch_deg, info_dict).
-    - azimuth: direction the anchor-side face faces, perpendicular to ridge
-    - pitch: computed from ridge peak to eave height drop
-    """
-    # Ridge endpoints: cells[0] and cells[-1] are the true furthest-apart points
-    # because the trace inserts cells at index 0 for the -direction and appends for +direction.
-    start_r, start_c = ridge_cells[0]
-    end_r, end_c = ridge_cells[-1]
-
-    # Ridge direction in grid space
-    dr = end_r - start_r
-    dc = end_c - start_c
-    ridge_len_cells = math.sqrt(dr**2 + dc**2)
-
-    if ridge_len_cells < 1:
-        return 0.0, 0.0, {'length_m': 0.0}
-
-    # Collinearity check: verify middle points fall on the start→end line.
-    # For each intermediate cell, compute perpendicular distance from the axis.
-    # Cells more than 1.5 grid cells off-axis indicate the trace wandered.
-    if len(ridge_cells) > 4:
-        inv_len = 1.0 / ridge_len_cells
-        # Unit perpendicular to the line (in row, col space)
-        perp_dr = -dc * inv_len
-        perp_dc =  dr * inv_len
-        max_perp = 0.0
-        off_axis = 0
-        for mid_r, mid_c in ridge_cells[1:-1]:
-            vr = mid_r - start_r
-            vc = mid_c - start_c
-            perp_dist = abs(vr * perp_dr + vc * perp_dc)
-            if perp_dist > max_perp:
-                max_perp = perp_dist
-            if perp_dist > 1.5:
-                off_axis += 1
-        consistency_pct = 100.0 * (1.0 - off_axis / max(1, len(ridge_cells) - 2))
-        logger.info(
-            "Ridge collinearity: %.0f%% on-axis (max_perp=%.2f cells, %d/%d off-axis)",
-            consistency_pct, max_perp, off_axis, len(ridge_cells) - 2,
-        )
-        # If more than 30% of middle cells are off-axis, re-anchor direction to
-        # only the inner half of cells where the trace is most reliable.
-        if consistency_pct < 70.0 and len(ridge_cells) >= 6:
-            q1 = len(ridge_cells) // 4
-            q3 = len(ridge_cells) * 3 // 4
-            inner_start_r, inner_start_c = ridge_cells[q1]
-            inner_end_r,   inner_end_c   = ridge_cells[q3]
-            inner_dr = inner_end_r - inner_start_r
-            inner_dc = inner_end_c - inner_start_c
-            if math.sqrt(inner_dr**2 + inner_dc**2) > 0.5:
-                dr, dc = inner_dr, inner_dc
-                logger.info("Ridge direction re-anchored to inner quartiles due to low collinearity")
-
-    # Ridge direction in metres (x=col, z=row)
-    ridge_dx = dc * resolution  # x direction
-    ridge_dz = dr * resolution  # z direction
-
-    # Azimuth: perpendicular to ridge direction
-    # Two perpendicular candidates — pick the one pointing toward the anchors
-    perp1_az = math.degrees(math.atan2(-ridge_dz, ridge_dx)) % 360.0
-    perp2_az = (perp1_az + 180.0) % 360.0
-
-    face_azimuth = perp1_az  # default
-
-    if anchor_cells:
-        # Compute which perpendicular direction points from ridge toward anchors
-        mid_r, mid_c = ridge_cells[len(ridge_cells) // 2]
-        avg_ar = np.mean([a[0] for a in anchor_cells])
-        avg_ac = np.mean([a[1] for a in anchor_cells])
-        # Vector from ridge midpoint to anchor centroid in (x, z) = (col, row)
-        to_anchor_x = (avg_ac - mid_c) * resolution
-        to_anchor_z = (avg_ar - mid_r) * resolution
-        # Pick the perpendicular that aligns with the anchor direction
-        # Convert azimuth to vector: az=0°→north(−z), az=90°→east(+x)
-        for candidate_az in [perp1_az, perp2_az]:
-            az_rad = math.radians(candidate_az)
-            az_x = math.sin(az_rad)
-            az_z = -math.cos(az_rad)
-            dot = az_x * to_anchor_x + az_z * to_anchor_z
-            if dot > 0:
-                face_azimuth = candidate_az
-                break
-
-    # Ridge length
-    ridge_length_m = math.sqrt(ridge_dx**2 + ridge_dz**2)
-
-    # Pitch: from ridge peak height to the eave below
-    # Find the peak (highest point on ridge)
-    peak_height = max(height_grid[r, c] for r, c in ridge_cells)
-
-    # Find eave height: trace perpendicular from ridge midpoint downhill
-    mid_idx = len(ridge_cells) // 2
-    mid_r, mid_c = ridge_cells[mid_idx]
-    rows, cols = height_grid.shape
-
-    # Perpendicular to ridge = the slope direction
-    perp_dr = -dc / ridge_len_cells  # perpendicular row step
-    perp_dc = dr / ridge_len_cells   # perpendicular col step
-
-    # Trace downhill to find eave — stop at substantial drop-offs
-    eave_height = peak_height
-    eave_dist = 0.0
-    prev_h = peak_height
-    cr, cc = float(mid_r), float(mid_c)
-    for step in range(1, 100):
-        nr = int(round(cr + perp_dr * step))
-        nc = int(round(cc + perp_dc * step))
-        if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
-            break
-        h = height_grid[nr, nc]
-        # Stop at sudden drop (>0.5m between consecutive cells) = eave/edge
-        if prev_h - h > 0.5:
-            break
-        # Stop if height starts rising again (crossed into another structure)
-        if h > prev_h + 0.1:
-            break
-        if h < eave_height:
-            eave_height = h
-            eave_dist = step * resolution
-        prev_h = h
-
-    # Pitch from height drop over horizontal distance
-    height_drop = peak_height - eave_height
-    if eave_dist > 0 and height_drop > 0:
-        pitch_deg = math.degrees(math.atan2(height_drop, eave_dist))
-    else:
-        pitch_deg = 0.0
-
-    # Also compute pitch from ridge endpoints (for hip roofs)
-    end_heights = [height_grid[r, c] for r, c in [ridge_cells[0], ridge_cells[-1]]]
-    endpoint_drop = peak_height - min(end_heights)
-
-    info = {
-        'length_m': ridge_length_m,
-        'peak_height': peak_height,
-        'eave_height': eave_height,
-        'eave_dist_m': eave_dist,
-        'height_drop': height_drop,
-        'endpoint_drop': endpoint_drop,
-        'ridge_cells': len(ridge_cells),
-    }
-
-    logger.info(
-        "Ridge: peak=%.2fm, eave=%.2fm, drop=%.2fm over %.1fm, pitch=%.1f°",
-        peak_height, eave_height, height_drop, eave_dist, pitch_deg,
-    )
-
-    return face_azimuth, pitch_deg, info
-
-
-def _find_hip_faces(
-    height_grid: np.ndarray,
-    dx: np.ndarray,
-    dz: np.ndarray,
-    roof_mask: np.ndarray,
-    assigned: np.ndarray,
-    ridge_cells: list[tuple[int, int]],
-    resolution: float,
-    height_drop_max: float,
-) -> list[np.ndarray]:
-    """
-    Find hip faces at the ends of the ridge.
-    Check cells beyond each ridge endpoint for unassigned roof-like regions.
-    """
-    rows, cols = height_grid.shape
-    hip_faces = []
-    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    # Check both ends of the ridge
-    for endpoint in [ridge_cells[0], ridge_cells[-1]]:
-        er, ec = endpoint
-        # Look at cells around the endpoint that aren't assigned
-        for dr, dc in neighbors:
-            nr, nc = er + dr, ec + dc
-            if 0 <= nr < rows and 0 <= nc < cols:
-                if not assigned[nr, nc] and roof_mask[nr, nc]:
-                    result = _grow_face(
-                        height_grid, dx, dz, roof_mask, assigned,
-                        nr, nc, resolution, height_drop_max,
-                    )
-                    if result is not None and result[0].sum() >= 3:
-                        assigned |= result[0]
-                        hip_faces.append(result[0])
-                        break  # One face per endpoint
-
-    return hip_faces
-
-
 # ---------------------------------------------------------------------------
 # Face Growing (through roof-like cells with consistency)
 # ---------------------------------------------------------------------------
+# NOTE: Gradient-based ridge functions (_find_slope_top_candidates,
+# _fit_ridge_line, _validate_ridge_density, _trace_uphill, _trace_ridge,
+# _correct_ridge_from_eaves, _ridge_geometry, _find_hip_faces) have been
+# removed. Ridge detection now comes exclusively from plane-plane
+# intersections in plane_classifier.py.
+
+
 
 def _grow_face(
     height_grid: np.ndarray,
