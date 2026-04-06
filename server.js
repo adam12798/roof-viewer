@@ -8545,7 +8545,6 @@ app.get("/design", (req, res) => {
       if (northTick) {
         northTick.addEventListener('click', function(e) {
           e.stopPropagation();
-          if (vcDidDrag3d) { vcDidDrag3d = false; return; }
           if (!camera3d || !controls3d) return;
           var s = getCameraSpherical();
           setCameraFromSpherical(s.r, s.polar, 0);
@@ -8812,7 +8811,7 @@ app.get("/design", (req, res) => {
 
     // All labels use direct, high-contrast colors — no blending
     var LABEL_COLORS = {
-      0:  [1.00, 0.60, 0.80],  // UNSURE         — pink
+      0:  [0.78, 0.78, 0.78],  // UNSURE         — light grey
       1:  [0.60, 0.20, 0.90],  // GROUND         — purple
       2:  [0.20, 0.85, 0.20],  // ROOF           — green
       3:  [1.00, 0.10, 0.10],  // LOWER_ROOF     — red
@@ -15334,12 +15333,81 @@ app.get("/settings/teams", (req, res) => {
 
 // ── Database page ─────────────────────────────────────────────────────────────
 app.get("/database", (req, res) => {
+  const tab = req.query.tab || 'modules';
+  const componentDefs = [
+    { key: 'modules', label: 'Modules', dataKey: 'modules', powerCol: 'Wattage', powerField: 'wattage', powerUnit: 'W' },
+    { key: 'inverters', label: 'Inverters', dataKey: 'inverters', powerCol: 'AC Power', powerField: 'acPower', powerUnit: 'W' },
+    { key: 'dc-optimizers', label: 'DC optimizers', dataKey: 'dcOptimizers', powerCol: 'Input Power', powerField: 'inputPower', powerUnit: 'W' },
+    { key: 'combiner-boxes', label: 'Combiner boxes', dataKey: 'combinerBoxes' },
+    { key: 'load-centers', label: 'Load centers', dataKey: 'loadCenters' },
+    { key: 'disconnects', label: 'Disconnects', dataKey: 'disconnects' },
+    { key: 'service-panels', label: 'Service panels', dataKey: 'servicePanels' },
+    { key: 'meters', label: 'Meters', dataKey: 'meters' },
+    { key: 'batteries', label: 'Batteries', dataKey: 'batteries', powerCol: 'Capacity', powerField: 'capacity', powerUnit: 'kWh' },
+    { key: 'energy-optimizations', label: 'Energy optimizations', dataKey: 'energyOptimizations' },
+  ];
+  const current = componentDefs.find(d => d.key === tab) || componentDefs[0];
+
+  let eqData = {};
+  try { eqData = JSON.parse(require('fs').readFileSync(__dirname + '/data/equipment.json', 'utf8')); } catch(e) {}
+  const items = eqData[current.dataKey] || [];
+  const perPage = 50;
+  const page = parseInt(req.query.page) || 1;
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const startIdx = (page - 1) * perPage;
+  const pageItems = items.slice(startIdx, startIdx + perPage);
+
+  const sidebarItemsHTML = componentDefs.map(d =>
+    '<a class="db-sidebar-item' + (d.key === tab ? ' active' : '') + '" href="/database?tab=' + d.key + '">' + d.label + '</a>'
+  ).join('\n          ');
+
+  let tableHTML = '';
+  if (pageItems.length === 0) {
+    tableHTML = '<div class="db-empty"><svg width="48" height="48" fill="none" stroke="#d1d5db" stroke-width="1.5" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg><div class="db-empty-title">No ' + current.label.toLowerCase() + ' yet</div><div class="db-empty-sub">Components will appear here once added.</div></div>';
+  } else {
+    let hCols = '<th style="width:80px">Enabled <span title="Toggle component availability" style="cursor:help;color:#9ca3af;font-weight:400">&#9432;</span></th><th>Name</th><th>Manufacturer</th><th>Partners</th><th>Regions</th>';
+    if (current.powerCol) hCols += '<th style="text-align:right">' + current.powerCol + '</th>';
+    const rows = pageItems.map(function(item) {
+      const on = item.enabled !== false;
+      let r = '<tr><td><button class="db-row-toggle' + (on ? ' on' : '') + '" data-id="' + (item.id||'') + '"></button></td>';
+      r += '<td class="db-name-cell">' + (item.name || '');
+      if (item.tags) item.tags.forEach(function(t) { r += ' <span class="db-tag">' + t + '</span>'; });
+      r += '</td>';
+      r += '<td>' + (item.manufacturer || '') + '</td>';
+      r += '<td>' + (item.partners || 'All') + '</td>';
+      r += '<td>' + (item.regions || 'All regions') + '</td>';
+      if (current.powerCol) {
+        const v = item[current.powerField];
+        r += '<td style="text-align:right">' + (v != null ? Number(v).toLocaleString('en-US') + ' ' + current.powerUnit : '') + '</td>';
+      }
+      r += '</tr>';
+      return r;
+    }).join('');
+    tableHTML = '<table class="db-table"><thead><tr>' + hCols + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  let paginationHTML = '';
+  if (total > 0) {
+    const showStart = startIdx + 1;
+    const showEnd = Math.min(startIdx + perPage, total);
+    let pLinks = '';
+    if (page > 1) pLinks += '<a class="db-page-btn" href="/database?tab=' + tab + '&page=' + (page-1) + '">&larr; Prev</a>';
+    else pLinks += '<span class="db-page-btn disabled">&larr; Prev</span>';
+    for (let p = 1; p <= totalPages; p++) {
+      pLinks += '<a class="db-page-btn' + (p === page ? ' active' : '') + '" href="/database?tab=' + tab + '&page=' + p + '">' + p + '</a>';
+    }
+    if (page < totalPages) pLinks += '<a class="db-page-btn" href="/database?tab=' + tab + '&page=' + (page+1) + '">Next &rarr;</a>';
+    else pLinks += '<span class="db-page-btn disabled">Next &rarr;</span>';
+    paginationHTML = '<div class="db-pagination">' + pLinks + '<span class="db-page-info">Showing ' + showStart + '-' + showEnd + ' of ' + total + ' results</span></div>';
+  }
+
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Database — Solar CRM</title>
+  <title>${current.label} — Solar CRM</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -15450,6 +15518,52 @@ app.get("/database", (req, res) => {
     .db-empty svg { margin-bottom: 12px; }
     .db-empty-title { font-size: 1rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
     .db-empty-sub { font-size: 0.85rem; }
+
+    .db-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .db-table thead th {
+      text-align: left; padding: 10px 14px; font-size: 0.78rem; font-weight: 600;
+      color: #6b7280; border-bottom: 1px solid #e5e7eb; background: #fff;
+      white-space: nowrap;
+    }
+    .db-table tbody td {
+      padding: 14px; border-bottom: 1px solid #f3f4f6; color: #111;
+      vertical-align: middle;
+    }
+    .db-table tbody tr:hover { background: #fafafa; }
+    .db-name-cell { font-weight: 500; }
+    .db-tag {
+      display: inline-block; padding: 2px 8px; font-size: 0.7rem; font-weight: 600;
+      background: #f5e6b8; color: #8b6914; border-radius: 4px; margin-left: 6px;
+      vertical-align: middle;
+    }
+    .db-row-toggle {
+      width: 38px; height: 20px; border-radius: 10px; border: none;
+      background: #d1d5db; position: relative; cursor: pointer; transition: background 0.15s;
+    }
+    .db-row-toggle::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 16px; height: 16px; border-radius: 50%; background: #fff;
+      transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+    }
+    .db-row-toggle.on { background: #1a2332; }
+    .db-row-toggle.on::after { left: 20px; }
+
+    .db-pagination {
+      display: flex; align-items: center; justify-content: center;
+      gap: 4px; padding: 20px 0; margin-top: 8px;
+    }
+    .db-page-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 32px; height: 32px; padding: 0 8px;
+      font-size: 0.82rem; color: #4b5563; text-decoration: none;
+      border-radius: 6px; cursor: pointer; transition: background 0.1s;
+    }
+    .db-page-btn:hover { background: #f3f4f6; }
+    .db-page-btn.active {
+      background: #1a2332; color: #fff; font-weight: 700;
+    }
+    .db-page-btn.disabled { color: #d1d5db; cursor: default; pointer-events: none; }
+    .db-page-info { font-size: 0.8rem; color: #9ca3af; margin-left: 12px; }
   </style>
 </head>
 <body>
@@ -15479,16 +15593,7 @@ app.get("/database", (req, res) => {
         </div>
         <div class="db-sidebar-group">
           <div class="db-sidebar-section">Components</div>
-          <a class="db-sidebar-item active">Modules</a>
-          <a class="db-sidebar-item">Inverters</a>
-          <a class="db-sidebar-item">DC optimizers</a>
-          <a class="db-sidebar-item">Combiner boxes</a>
-          <a class="db-sidebar-item">Load centers</a>
-          <a class="db-sidebar-item">Disconnects</a>
-          <a class="db-sidebar-item">Service panels</a>
-          <a class="db-sidebar-item">Meters</a>
-          <a class="db-sidebar-item">Batteries</a>
-          <a class="db-sidebar-item">Energy optimizations</a>
+          ${sidebarItemsHTML}
         </div>
         <div class="db-sidebar-group">
           <div class="db-sidebar-section">Quoting</div>
@@ -15512,7 +15617,7 @@ app.get("/database", (req, res) => {
 
       <main class="db-main">
         <div class="db-main-header">
-          <h1>Modules</h1>
+          <h1>${current.label}</h1>
           <button class="btn-request">Request custom component</button>
         </div>
         <div class="db-search-wrap">
@@ -15520,14 +15625,11 @@ app.get("/database", (req, res) => {
           <input class="db-search" type="text" placeholder="Search"/>
         </div>
         <div class="db-tabs">
-          <button class="db-tab active">All Modules</button>
-          <button class="db-tab">Enabled Modules</button>
+          <button class="db-tab active">All ${current.label}</button>
+          <button class="db-tab">Enabled ${current.label}</button>
         </div>
-        <div class="db-empty">
-          <svg width="48" height="48" fill="none" stroke="#d1d5db" stroke-width="1.5" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
-          <div class="db-empty-title">No modules yet</div>
-          <div class="db-empty-sub">Components will appear here once added.</div>
-        </div>
+        ${tableHTML}
+        ${paginationHTML}
       </main>
     </div>
   </div>

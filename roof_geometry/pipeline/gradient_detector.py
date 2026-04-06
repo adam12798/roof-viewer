@@ -368,6 +368,234 @@ def detect_roof_faces(
 
 
 # ---------------------------------------------------------------------------
+# Post-RANSAC plane validation — reject ground & tree false positives
+# ---------------------------------------------------------------------------
+
+def _validate_roof_planes(
+    planes: list[RoofPlane],
+    point_labels: np.ndarray,
+    residuals: list[float],
+    pts: np.ndarray,
+    anchor_dots: list[tuple[float, float]] | None,
+    height_ground_threshold: float,
+    anchor_height_margin: float = 3.0,
+    strict_roughness: float = 0.12,
+    tree_roughness: float = 0.10,
+    tree_aspect_ratio: float = 1.5,
+) -> tuple[list[RoofPlane], np.ndarray, list[float]]:
+    """
+    Filter RANSAC planes to keep only real roof surfaces.
+
+    Rules applied:
+      1. Height floor — plane elevation must be above ground threshold
+      2. Anchor height reference — plane must not be far below the roof
+      3. Stricter roughness for non-anchor planes
+      4. Tree shape detection (rough + round = likely tree canopy)
+    """
+    if not planes:
+        return planes, point_labels, residuals
+
+    # Build KDTree on XZ for spatial queries
+    try:
+        from scipy.spatial import cKDTree
+        xz = pts[:, [0, 2]]
+        kd = cKDTree(xz)
+        has_kd = True
+    except ImportError:
+        kd = None
+        has_kd = False
+
+    # Identify ground-level points for edge consistency checks
+    ground_mask = pts[:, 1] < height_ground_threshold
+    ground_indices = np.where(ground_mask)[0]
+    if has_kd and len(ground_indices) > 0:
+        ground_xz = pts[ground_indices][:, [0, 2]]
+        ground_kd = cKDTree(ground_xz)
+    else:
+        ground_kd = None
+
+    # Compute anchor heights
+    anchor_heights: list[float] = []
+    if anchor_dots and has_kd:
+        for ax, az in anchor_dots:
+            _, idx = kd.query([ax, az])
+            anchor_heights.append(float(pts[idx, 1]))
+
+    min_anchor_h = min(anchor_heights) if anchor_heights else None
+
+    # Determine which planes are near an anchor dot
+    anchor_adjacent: set[int] = set()
+    if anchor_dots:
+        for pi, plane in enumerate(planes):
+            for ax, az in anchor_dots:
+                # Check if anchor is inside or near the plane boundary
+                for v in plane.vertices:
+                    dx = v.x - ax
+                    dz = v.z - az
+                    if math.sqrt(dx * dx + dz * dz) < 3.0:
+                        anchor_adjacent.add(pi)
+                        break
+                if pi in anchor_adjacent:
+                    break
+
+    accepted: list[int] = []
+    reject_reasons: dict[str, int] = {"ground": 0, "below_roof": 0, "rough": 0, "tree_shape": 0, "inconsistent_edge": 0}
+
+    for pi, plane in enumerate(planes):
+        is_anchor_adj = pi in anchor_adjacent
+        roughness = residuals[pi] if pi < len(residuals) else 0.0
+
+        # Rule 1: Height floor — reject ground-level planes
+        if plane.elevation_m < height_ground_threshold and not is_anchor_adj:
+            # Extra check: if the plane's highest point is also below threshold,
+            # it's definitely ground. If highest point is above, it might be a
+            # sloped roof that dips near ground at the eave.
+            if plane.height_m < height_ground_threshold + 0.5:
+                reject_reasons["ground"] += 1
+                logger.info(
+                    "Plane %s REJECTED (ground): elev=%.1fm, height=%.1fm, threshold=%.1fm",
+                    plane.id, plane.elevation_m, plane.height_m, height_ground_threshold,
+                )
+                continue
+
+        # Rule 2: Anchor height reference — reject planes far below the roof
+        if min_anchor_h is not None and not is_anchor_adj:
+            if plane.height_m < min_anchor_h - anchor_height_margin:
+                reject_reasons["below_roof"] += 1
+                logger.info(
+                    "Plane %s REJECTED (below roof): height=%.1fm, min_anchor=%.1fm, margin=%.1fm",
+                    plane.id, plane.height_m, min_anchor_h, anchor_height_margin,
+                )
+                continue
+
+        # Rule 3: Stricter roughness for non-anchor planes
+        if not is_anchor_adj and roughness > strict_roughness:
+            reject_reasons["rough"] += 1
+            logger.info(
+                "Plane %s REJECTED (rough): residual=%.3f > %.3f (non-anchor)",
+                plane.id, roughness, strict_roughness,
+            )
+            continue
+
+        # Rule 4: Tree shape — rough + round = tree canopy
+        if not is_anchor_adj and roughness > tree_roughness:
+            # Compute aspect ratio from bounding box of vertices
+            if len(plane.vertices) >= 3:
+                xs = [v.x for v in plane.vertices]
+                zs = [v.z for v in plane.vertices]
+                dx = max(xs) - min(xs)
+                dz = max(zs) - min(zs)
+                short_side = min(dx, dz) if min(dx, dz) > 0.1 else 0.1
+                long_side = max(dx, dz)
+                aspect = long_side / short_side
+                if aspect < tree_aspect_ratio:
+                    reject_reasons["tree_shape"] += 1
+                    logger.info(
+                        "Plane %s REJECTED (tree shape): residual=%.3f, aspect=%.1f (< %.1f)",
+                        plane.id, roughness, aspect, tree_aspect_ratio,
+                    )
+                    continue
+
+        # Rule 5: Consistent edge — boundary points jumping from ground must
+        # reach similar heights (real roof has a consistent wall/edge)
+        if not is_anchor_adj and ground_kd is not None and has_kd:
+            plane_mask = point_labels == pi
+            plane_indices = np.where(plane_mask)[0]
+            if len(plane_indices) >= 5:
+                plane_pts_xz = pts[plane_indices][:, [0, 2]]
+                # Find plane points with a ground neighbor within 1.5m
+                boundary_jumps: list[tuple[int, float]] = []
+                for local_i, global_i in enumerate(plane_indices):
+                    nearby_ground = ground_kd.query_ball_point(plane_pts_xz[local_i], r=1.5)
+                    if nearby_ground:
+                        # Height jump = plane point height - nearest ground neighbor height
+                        nearest_ground_h = min(pts[ground_indices[gi], 1] for gi in nearby_ground)
+                        jump = pts[global_i, 1] - nearest_ground_h
+                        if jump > 0.3:  # must be a real upward jump
+                            boundary_jumps.append((global_i, jump))
+
+                if len(boundary_jumps) >= 5:
+                    jump_heights = np.array([j for _, j in boundary_jumps])
+                    median_jump = float(np.median(jump_heights))
+                    consistent = np.abs(jump_heights - median_jump) < 0.5
+                    n_consistent = int(consistent.sum())
+                    ratio = n_consistent / len(boundary_jumps)
+
+                    if ratio < 0.5:
+                        reject_reasons["inconsistent_edge"] += 1
+                        logger.info(
+                            "Plane %s REJECTED (inconsistent edge): %d/%d boundary pts consistent (%.0f%% < 50%%), median_jump=%.1fm",
+                            plane.id, n_consistent, len(boundary_jumps), ratio * 100, median_jump,
+                        )
+                        continue
+
+                    # Adjacency check: at least 5 consistent points must be near each other
+                    consistent_indices = [boundary_jumps[i][0] for i in range(len(boundary_jumps)) if consistent[i]]
+                    if len(consistent_indices) >= 5:
+                        cons_xz = pts[consistent_indices][:, [0, 2]]
+                        cons_kd = cKDTree(cons_xz)
+                        # Find largest connected cluster via flood fill
+                        visited_cons = set()
+                        max_cluster = 0
+                        for start in range(len(consistent_indices)):
+                            if start in visited_cons:
+                                continue
+                            cluster = set()
+                            frontier = [start]
+                            while frontier:
+                                cur = frontier.pop()
+                                if cur in visited_cons:
+                                    continue
+                                visited_cons.add(cur)
+                                cluster.add(cur)
+                                nearby = cons_kd.query_ball_point(cons_xz[cur], r=1.5)
+                                for ni in nearby:
+                                    if ni not in visited_cons:
+                                        frontier.append(ni)
+                            max_cluster = max(max_cluster, len(cluster))
+
+                        if max_cluster < 5:
+                            reject_reasons["inconsistent_edge"] += 1
+                            logger.info(
+                                "Plane %s REJECTED (scattered edge): largest cluster=%d (< 5 adjacent)",
+                                plane.id, max_cluster,
+                            )
+                            continue
+
+        accepted.append(pi)
+
+    if len(accepted) == len(planes):
+        logger.info("Plane validation: all %d planes accepted", len(planes))
+        return planes, point_labels, residuals
+
+    # Rebuild with only accepted planes, renumber point_labels
+    new_planes = []
+    new_residuals = []
+    label_map = {}  # old index → new index
+    for new_idx, old_idx in enumerate(accepted):
+        new_planes.append(planes[old_idx])
+        new_residuals.append(residuals[old_idx])
+        label_map[old_idx] = new_idx
+
+    # Update point_labels: remap accepted, set rejected to -1
+    new_labels = np.full_like(point_labels, -1)
+    for old_idx, new_idx in label_map.items():
+        mask = point_labels == old_idx
+        new_labels[mask] = new_idx
+
+    n_rejected = len(planes) - len(accepted)
+    logger.info(
+        "Plane validation: rejected %d of %d planes (ground=%d, below_roof=%d, rough=%d, tree=%d, edge=%d)",
+        n_rejected, len(planes),
+        reject_reasons["ground"], reject_reasons["below_roof"],
+        reject_reasons["rough"], reject_reasons["tree_shape"],
+        reject_reasons["inconsistent_edge"],
+    )
+
+    return new_planes, new_labels, new_residuals
+
+
+# ---------------------------------------------------------------------------
 # Plane-first detection path
 # ---------------------------------------------------------------------------
 
@@ -452,6 +680,17 @@ def _detect_roof_faces_plane_first(
 
     # Also map features back (use original features since they were computed on full cloud)
     # features was computed on lidar_pts (the full cloud), so it's already aligned.
+
+    # 5b. Validate planes — reject ground and tree false positives
+    planes, point_labels, per_plane_residuals = _validate_roof_planes(
+        planes, point_labels, per_plane_residuals,
+        lidar_pts, anchor_dots,
+        height_ground_threshold=thresholds.height_ground_threshold,
+    )
+
+    if len(planes) < 1:
+        logger.info("Plane validation rejected all planes — returning None for fallback")
+        return None
 
     # 6. Build adjacency and classify edges using graph_builder
     adjacency, shared_edges_info = _build_adjacency(planes, 1.0, 0.5)

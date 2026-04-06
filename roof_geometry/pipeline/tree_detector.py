@@ -1314,7 +1314,7 @@ def _trace_single_anchor(
             if sl > 0.01:
                 ss = (pts[best_idx, 1] - current_h) / sl
                 slope_ratio = ss / running_slope
-                if slope_ratio > 2.0 or slope_ratio < 0.15:
+                if slope_ratio > 1.6 or slope_ratio < 0.15:
                     is_outlier = True
 
         if is_outlier:
@@ -1637,7 +1637,7 @@ def _trace_strip(
             if sl > 0.01:
                 ss = (pts[best_idx, 1] - current_h) / sl
                 slope_ratio = ss / running_slope
-                if slope_ratio > 2.0 or slope_ratio < 0.15:
+                if slope_ratio > 1.6 or slope_ratio < 0.15:
                     is_outlier = True
 
         if is_outlier:
@@ -1674,7 +1674,36 @@ def _trace_strip(
 
     # --- Ridge detection ---
     ridge_idx = current_idx
-    if len(upslope_path) >= 5 and known_slope > 0.01:
+
+    # Method 1: Slope reversal — if the trace was going up/flat and then
+    # starts going down, the highest point before the descent is the ridge.
+    # This works for flat roofs where the slope is too small for the flat-threshold method.
+    if len(upslope_path) >= 3:
+        # Compute per-step slopes
+        step_slopes = []
+        for i in range(1, len(upslope_path)):
+            p0, p1 = upslope_path[i - 1], upslope_path[i]
+            d = float(np.linalg.norm(pts[p1, [0, 2]] - pts[p0, [0, 2]]))
+            if d > 0.01:
+                step_slopes.append((i, (pts[p1, 1] - pts[p0, 1]) / d))
+            else:
+                step_slopes.append((i, 0.0))
+
+        # Find where slope goes negative after being positive/flat
+        consecutive_down = 0
+        for j, (path_i, s) in enumerate(step_slopes):
+            if s < -0.02:  # going downhill
+                consecutive_down += 1
+                if consecutive_down >= 2:
+                    # Ridge is the point just before the descent started
+                    descent_start = step_slopes[j - consecutive_down + 1][0] if j >= consecutive_down else 1
+                    ridge_idx = upslope_path[max(0, descent_start - 1)]
+                    break
+            else:
+                consecutive_down = 0
+
+    # Method 2: Flat-threshold — 3+ consecutive near-flat steps (original method)
+    if ridge_idx == current_idx and len(upslope_path) >= 5 and known_slope > 0.01:
         flat_threshold = known_slope * 0.2
         flat_count = 0
         flat_start = None
@@ -1694,7 +1723,7 @@ def _trace_strip(
                     ridge_idx = upslope_path[flat_start]
                     break
 
-    # Also check if we're near the known ridge height
+    # Method 3: Near known ridge height
     if abs(pts[current_idx, 1] - ridge_height) < 0.3:
         ridge_idx = current_idx
 
@@ -1992,6 +2021,48 @@ def _expand_ridge_seeds(
         frontier = next_frontier
         if not frontier:
             break
+
+    # --- Thin ridge to max 2 dots perpendicular to ridge axis ---
+    # Slice the ridge along its principal axis into bins. In each bin,
+    # keep only the 2 points closest to the ridge axis (best ridge properties).
+    if len(ridge_indices) > 2:
+        ridge_list = list(ridge_indices)
+        ridge_xz = pts[ridge_list][:, [0, 2]]
+        ridge_h = pts[ridge_list, 1]
+
+        # Project each point onto the ridge axis
+        rel = ridge_xz - centroid
+        along_proj = rel @ ridge_axis  # distance along ridge
+        perp_vec = np.array([-ridge_axis[1], ridge_axis[0]])
+        perp_proj = np.abs(rel @ perp_vec)  # distance from ridge axis
+
+        # Bin along the ridge direction (bin width = search_radius)
+        bin_width = search_radius
+        min_along = float(along_proj.min())
+        bin_ids = ((along_proj - min_along) / bin_width).astype(int)
+
+        # For each bin, keep the 2 points with smallest perpendicular distance
+        # (ties broken by closest height to median = best ridge property)
+        from collections import defaultdict
+        bins: dict[int, list[tuple[float, float, int]]] = defaultdict(list)
+        for i, bi in enumerate(bin_ids):
+            # Score: primary = perp distance, secondary = height deviation
+            score = perp_proj[i] + abs(ridge_h[i] - median_h) * 0.5
+            bins[bi].append((score, ridge_list[i]))
+
+        thinned: set[int] = set()
+        for bi, entries in bins.items():
+            entries.sort(key=lambda x: x[0])  # best score first
+            for _, idx in entries[:2]:
+                thinned.add(idx)
+
+        demoted = len(ridge_indices) - len(thinned)
+        if demoted > 0:
+            # Demoted ridge points become near_ridge
+            for idx in ridge_indices - thinned:
+                near_ridge_indices.add(idx)
+            ridge_indices = thinned
+            logger.info("Ridge thinning: kept %d, demoted %d to near_ridge", len(thinned), demoted)
 
     logger.info(
         "Ridge expansion: %d seeds → %d ridge + %d near_ridge (median_h=%.2fm, axis=(%.2f,%.2f))",

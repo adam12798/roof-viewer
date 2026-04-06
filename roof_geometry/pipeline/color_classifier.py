@@ -60,6 +60,24 @@ def classify_points_for_color(
         n_swept = int(has_sweep.sum())
         logger.info("Color classifier: using sweep labels for %d / %d points", n_swept, N)
 
+        # Fill UNSURE gaps using RANSAC plane membership — points the sweep
+        # tracer skipped but RANSAC knows belong to a roof plane.
+        still_unsure = labels == CellLabel.UNSURE
+        has_plane = point_labels >= 0
+        fill_mask = still_unsure & has_plane
+        n_filled = 0
+        for pi, plane in enumerate(planes):
+            plane_fill = fill_mask & (point_labels == pi)
+            if not plane_fill.any():
+                continue
+            if plane.is_flat:
+                labels[plane_fill] = CellLabel.FLAT_ROOF
+            else:
+                labels[plane_fill] = CellLabel.ROOF
+            n_filled += int(plane_fill.sum())
+        if n_filled > 0:
+            logger.info("Color classifier: filled %d UNSURE gaps from RANSAC plane membership", n_filled)
+
         # Ridge/valley still from plane-plane edges (geometrically accurate)
         if edges:
             ridge_lines = _classify_ridge_valley(

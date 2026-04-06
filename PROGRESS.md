@@ -5,6 +5,37 @@ A solar proposal and CRM web app built with Node.js + Express, served locally at
 
 ---
 
+## Completed — 2026-04-06 (Session 38)
+
+### Roof Segment Recognition & Classification Improvements
+
+#### Post-RANSAC Plane Validation (`gradient_detector.py`)
+- [x] **`_validate_roof_planes()` function** — filters false-positive RANSAC planes (ground, trees) using 5 rules:
+  - Rule 1: Height floor — reject ground-level planes below adaptive threshold
+  - Rule 2: Anchor height reference — reject planes far below the lowest anchor dot
+  - Rule 3: Stricter roughness (0.12m) for non-anchor-adjacent planes
+  - Rule 4: Tree shape — rough + round (aspect ratio < 1.5) = tree canopy
+  - Rule 5: Consistent edge — boundary points jumping from ground must have 50%+ at similar heights with ≥5 adjacent consistent dots (real roof edges are uniform, trees scatter)
+
+#### RANSAC Gap Fill (`color_classifier.py`)
+- [x] **Fill UNSURE gaps from plane membership** — after sweep labels are applied, remaining UNSURE points with RANSAC plane membership get filled as ROOF/FLAT_ROOF; eliminates "dead pixel" grey dots on roof surfaces
+
+#### Ridge Detection Improvements (`tree_detector.py`)
+- [x] **Slope reversal ridge detection** — new Method 1 in `_trace_strip`: if uphill trace starts going downhill (2+ consecutive descending steps), the point before descent = ridge; catches ridges on flat/low-slope roofs where the flat-threshold method fails
+- [x] **Ridge thinning to 2 dots wide** — after ridge expansion, slices ridge along its principal axis and keeps only the 2 best points per cross-section (closest to axis + closest to median height); excess demoted to NEAR_RIDGE
+- [x] **Chimney/obstruction detection** — lowered outlier threshold from 2.0× to 1.6× expected slope; height spikes >60% above expected are flagged as potential obstruction; 3+ consecutive = tree, returns to expected = chimney (skip over)
+
+#### Flat Roof vs Ridge Cap (`plane_extractor.py`)
+- [x] **Narrow flat strips = ridge cap, not flat roof** — `is_flat` only set when pitch < 5° AND short side of bounding box ≥ 2m; prevents ridge flattening from being labeled FLAT_ROOF
+
+#### Flat Roof Edge Classification (`graph_builder.py`)
+- [x] **Flat roof guard** — lower end of a flat roof cannot be classified as ridge; if edge is within 0.3m of a flat plane's lowest point, classified as step_flash instead
+
+#### UI Changes (`server.js`)
+- [x] **UNSURE dots → light grey** — changed from pink to [0.78, 0.78, 0.78] for cleaner visualization
+
+---
+
 ## In Progress — 2026-04-03 (Session 37)
 
 ### Plane-First Classification Overhaul

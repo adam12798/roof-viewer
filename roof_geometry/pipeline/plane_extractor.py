@@ -455,7 +455,17 @@ def _build_roof_plane(plane_eq: np.ndarray, pts: np.ndarray) -> RoofPlane:
     height_m = float(pts[:, 1].max())
     elevation_m = float(pts[:, 1].min())
 
-    is_flat = pitch_deg < 2.0
+    # Flat roof check — but narrow flat strips at the top are ridge caps, not flat roofs.
+    # A real flat roof is wide in both directions; a ridge cap is narrow (short side < 2m).
+    is_flat = False
+    if pitch_deg < 5.0:
+        if len(boundary_2d) >= 3:
+            bx = boundary_2d[:, 0]
+            bz = boundary_2d[:, 1]
+            short_side = min(bx.max() - bx.min(), bz.max() - bz.min())
+            is_flat = short_side >= 2.0
+        else:
+            is_flat = True
 
     # Classify plane type by heuristics
     plane_type = _classify_plane(surface_area, height_m, elevation_m, pts)

@@ -340,6 +340,13 @@ def _classify_single_edge(
     convex_b = np.dot(to_b, b_xz) > 0 if b_norm > 1e-6 else True
     is_convex = convex_a and convex_b
 
+    # Flat roof guard: the low end of a flat roof cannot be a ridge.
+    # If either plane is flat and the edge is at its lower end, demote to step_flash.
+    if pa.is_flat and edge_avg_y < pa.elevation_m + 0.3:
+        return EdgeType.step_flash
+    if pb.is_flat and edge_avg_y < pb.elevation_m + 0.3:
+        return EdgeType.step_flash
+
     if is_convex and edge_avg_y > avg_centroid_y + 0.3:
         # Convex edge above both plane centres → ridge or hip
         if facing_angle > 45:
