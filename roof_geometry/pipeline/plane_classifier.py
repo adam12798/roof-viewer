@@ -50,7 +50,7 @@ except ImportError:
 
 # Import CellLabel from gradient_detector (canonical location)
 from pipeline.gradient_detector import CellLabel
-from pipeline.tree_detector import detect_and_exclude_trees, TreeExclusionResult, compute_roof_veto_score, _ROOF_VETO_THRESHOLD
+from pipeline.tree_detector import detect_and_exclude_trees, TreeExclusionResult, compute_roof_veto_score, _ROOF_VETO_THRESHOLD, apply_hard_tree_rules, trace_ridge_from_anchors, RoofTraceResult
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,8 @@ class ClassificationResult:
     ridge_lines: list[tuple[np.ndarray, np.ndarray]]  # list of (start_3d, end_3d) pairs
     plane_infos: list[PlaneInfo]
     tree_exclusion: TreeExclusionResult | None = None  # tree diagnostics
+    tree_plane_ids: set[str] = field(default_factory=set)  # plane IDs classified as TREE
+    sweep_labels: np.ndarray | None = None  # (N,) per-point labels from sweep tracer
 
 
 # ---------------------------------------------------------------------------
@@ -396,383 +398,46 @@ def classify_from_planes(
 
     plane_infos = _build_plane_infos(planes, per_plane_residuals, anchor_dots)
 
-    # ---- HARD TREE EXCLUSION (runs BEFORE all other classification) ----
-    # Compute per-point tree scores using multiple signals, cluster
-    # candidates, and produce a definitive exclusion mask. Points in
-    # the tree mask are permanently removed from roof candidate generation,
-    # LOWER_ROOF logic, ridge/eave detection, and connected components.
-    plane_res_dict = {i: per_plane_residuals[i] for i in range(len(per_plane_residuals))}
-    plane_area_dict = {i: planes[i].area_m2 for i in range(len(planes))}
-
-    tree_result = detect_and_exclude_trees(
-        pts, features.normals, features.curvature, features.height_std,
-        features.vertical_compactness, features.local_density,
-        point_labels, plane_res_dict, plane_area_dict,
+    # ---- TRACE RIDGE FROM CALIBRATION DOTS ----
+    # Walk uphill from each anchor dot to find the ridge, then trace
+    # downslope on the other side. Detects tree intrusions where height
+    # suddenly increases after consistent descent.
+    roof_trace = trace_ridge_from_anchors(
+        pts, anchor_dots or [], point_labels,
     )
-    tree_mask = tree_result.tree_mask
 
-    # Apply hard exclusion: label tree points immediately
-    labels[tree_mask] = CellLabel.TREE
-
-    # Identify which planes are predominantly tree
-    # Require a strong majority (>70%) to avoid false-flagging roof planes
-    # where a few boundary points near a tree scored high
+    # ---- TREE EXCLUSION — ALL DISABLED ----
+    # All tree detection rules disabled. Only the tracer runs for diagnostics.
+    # Pattern learning, hard tree rules, flood fill — all off.
+    tree_mask = np.zeros(len(pts), dtype=bool)
     tree_plane_indices: set[int] = set()
-    for pi in plane_infos:
-        mask = point_labels == pi.index
-        if mask.sum() < 5:
-            continue
-        tree_fraction = tree_mask[mask].sum() / mask.sum()
-        if tree_fraction > 0.7:
-            tree_plane_indices.add(pi.index)
-            # Mark ALL points on this plane as TREE (even the ones that
-            # individually didn't score high enough)
-            labels[mask] = CellLabel.TREE
-            logger.info(
-                "Plane %d → TREE (%.0f%% of points excluded by tree detector, %d pts)",
-                pi.index, tree_fraction * 100, int(mask.sum()),
-            )
-
-    # ---- Step 0: Learn roof pattern, then reject outlier planes ----
-    #
-    # A real residential roof has structural constraints:
-    #   - Pitches cluster around 1-2 values (e.g., 22° and 22°, or 22° and 5°)
-    #   - Elevations are bounded (main roof ± step-downs for porches/garages)
-    #   - Planes are spatially near the anchor dots / house footprint
-    #   - Surface is smooth (low curvature, consistent normals)
-    #
-    # Trees violate ALL of these.  Instead of trying to detect trees by
-    # curvature alone, we learn the roof's pattern from primary (anchor-
-    # containing) planes, then score every other plane against it.
-    # Planes that don't fit the pattern are rejected as TREE/noise.
-
-    # --- Pre-screen: compute per-plane median height_std ---
-    # This is our best signal for roof vs tree.  Roof planes have very low
-    # height_std (smooth surface); tree planes have high height_std (bumpy).
-    # We use this to exclude tree planes from the "primary" set even if
-    # they contain anchor dots.
-    plane_median_hstd: dict[int, float] = {}
-    for pi in plane_infos:
-        mask = point_labels == pi.index
-        if mask.sum() >= 5:
-            plane_median_hstd[pi.index] = float(np.median(features.height_std[mask]))
-        else:
-            plane_median_hstd[pi.index] = 999.0
-
-    # Find the smoothness baseline: median of all plane median_hstds
-    all_hstds = sorted(plane_median_hstd.values())
-    if all_hstds:
-        hstd_baseline = all_hstds[len(all_hstds) // 4]  # 25th percentile = smooth planes
-    else:
-        hstd_baseline = 0.1
-
-    # A plane is "smooth enough" for primary if its median hstd < 3x baseline
-    smooth_threshold = max(hstd_baseline * 3.0, 0.2)
-
-    # --- Learn the roof pattern from primary planes ---
-    # Exclude planes already marked as tree by the hard detector
-    primary = [
-        pi for pi in plane_infos
-        if pi.is_primary
-        and plane_median_hstd.get(pi.index, 999) < smooth_threshold
-        and pi.index not in tree_plane_indices
-    ]
-    if not primary:
-        # No clean primary — use the 2 largest smooth planes as proxy
-        smooth_planes = [
-            pi for pi in plane_infos
-            if plane_median_hstd.get(pi.index, 999) < smooth_threshold
-        ]
-        by_area = sorted(smooth_planes or plane_infos, key=lambda pi: pi.plane.area_m2, reverse=True)
-        primary = by_area[:2] if len(by_area) >= 2 else by_area[:1]
-
     logger.info(
-        "Primary plane selection: %d planes, hstd_baseline=%.3f, smooth_threshold=%.3f, "
-        "plane_hstds=%s",
-        len(primary), hstd_baseline, smooth_threshold,
-        {pi.index: f"{plane_median_hstd.get(pi.index, -1):.3f}" for pi in plane_infos},
+        "All tree exclusion DISABLED — tracer ran for diagnostics: "
+        "ridge=%.1fm, base=%.1fm, slope=%.2f, %d intrusions",
+        roof_trace.ridge_height, roof_trace.base_height,
+        roof_trace.roof_slope, len(roof_trace.tree_intrusion_indices),
     )
 
-    if primary:
-        pattern_pitches = [pi.plane.pitch_deg for pi in primary]
-        pattern_height_max = max(pi.plane.height_m for pi in primary)
-        pattern_height_min = min(pi.plane.elevation_m for pi in primary)
-        # Spatial centroid of primary planes (XZ)
-        primary_centroids = []
-        for pi in primary:
-            mask = point_labels == pi.index
-            if mask.any():
-                primary_centroids.append(pts[mask][:, [0, 2]].mean(axis=0))
-        if primary_centroids:
-            pattern_centroid_xz = np.mean(primary_centroids, axis=0)
-        else:
-            pattern_centroid_xz = pts[:, [0, 2]].mean(axis=0)
-        # Max distance from centroid to any primary plane point
-        pattern_radius = 0.0
-        for pi in primary:
-            mask = point_labels == pi.index
-            if mask.any():
-                dists = np.linalg.norm(pts[mask][:, [0, 2]] - pattern_centroid_xz, axis=1)
-                pattern_radius = max(pattern_radius, float(dists.max()))
-        pattern_radius = max(pattern_radius, 5.0)  # at least 5m
-
-        # Curvature, normal stats, and height_std from primary planes
-        primary_curvatures = []
-        primary_angular_stds = []
-        primary_height_stds = []
-        for pi in primary:
-            mask = point_labels == pi.index
-            if mask.sum() < 10:
-                continue
-            primary_curvatures.extend(features.curvature[mask].tolist())
-            primary_height_stds.extend(features.height_std[mask].tolist())
-            mn = features.normals[mask]
-            mean_n = mn.mean(axis=0)
-            mnl = np.linalg.norm(mean_n)
-            if mnl > 1e-6:
-                mean_n /= mnl
-                cos_a = np.clip(mn @ mean_n, -1, 1)
-                primary_angular_stds.append(float(np.std(np.arccos(cos_a))))
-
-        pattern_curv_p90 = float(np.percentile(primary_curvatures, 90)) if primary_curvatures else 0.05
-        pattern_ang_std_max = max(primary_angular_stds) if primary_angular_stds else math.radians(5)
-        # Height std on a roof plane is very low (smooth surface); trees are bumpy
-        pattern_hstd_p90 = float(np.percentile(primary_height_stds, 90)) if primary_height_stds else 0.15
-
-        logger.info(
-            "Roof pattern — pitches=%s, height=[%.1f, %.1f], radius=%.1f, "
-            "curv_p90=%.4f, ang_std_max=%.1f°, hstd_p90=%.3f",
-            [f"{p:.1f}" for p in pattern_pitches], pattern_height_min,
-            pattern_height_max, pattern_radius,
-            pattern_curv_p90, math.degrees(pattern_ang_std_max), pattern_hstd_p90,
-        )
-
-        # --- Score each non-primary plane against the pattern ---
-        for pi in plane_infos:
-            if pi in primary:
-                continue
-            if pi.index in tree_plane_indices:
-                continue  # already excluded by hard tree detector
-            mask = point_labels == pi.index
-            n_pts = mask.sum()
-            if n_pts < 5:
-                continue
-
-            # Fast-path: if this plane's surface is very rough compared to
-            # the smooth baseline, it's almost certainly tree canopy.
-            # BUT: roof veto can override — smooth rectangular regions stay ROOF.
-            pi_hstd = plane_median_hstd.get(pi.index, 999)
-            if pi_hstd > smooth_threshold * 2.0:
-                # Check roof veto before committing
-                member_pts_fp = pts[mask]
-                veto_fp, _ = compute_roof_veto_score(
-                    member_pts_fp, features.normals[mask], features.curvature[mask],
-                    pi.residual, 1.0,  # plane_membership = 100% (it IS a RANSAC plane)
-                )
-                if veto_fp >= _ROOF_VETO_THRESHOLD:
-                    logger.info(
-                        "Plane %d fast-path VETOED by roof score=%.0f (hstd=%.3f, %d pts)",
-                        pi.index, veto_fp, pi_hstd, n_pts,
-                    )
-                else:
-                    tree_plane_indices.add(pi.index)
-                    labels[mask] = CellLabel.TREE
-                    logger.info(
-                        "Plane %d → TREE (fast-path hstd=%.3f >> threshold=%.3f, %d pts)",
-                        pi.index, pi_hstd, smooth_threshold, n_pts,
-                    )
-                    continue
-
-            member_pts = pts[mask]
-            plane = pi.plane
-            score = 0  # higher = more likely tree
-            reasons = []
-
-            # (a) Pitch outlier: doesn't match any known roof pitch
-            # Attached structures can have different pitch, but within reason.
-            # Porches/garages: 0-15° (flat to shallow).  Main roof: pattern pitch.
-            pitch_ok = (
-                any(abs(plane.pitch_deg - pp) < 15.0 for pp in pattern_pitches)
-                or plane.pitch_deg < 15.0  # allow flat/shallow for attached structures
-            )
-            if not pitch_ok:
-                score += 2
-                reasons.append(f"pitch={plane.pitch_deg:.1f}° (pattern={pattern_pitches})")
-
-            # (b) Height outlier: above the main roof peak = likely tree canopy
-            if plane.height_m > pattern_height_max + 1.0:
-                score += 3
-                reasons.append(f"height={plane.height_m:.1f} > pattern_max={pattern_height_max:.1f}")
-
-            # (c) Spatial outlier: centroid far from house footprint
-            plane_centroid_xz = member_pts[:, [0, 2]].mean(axis=0)
-            dist_from_house = float(np.linalg.norm(plane_centroid_xz - pattern_centroid_xz))
-            if dist_from_house > pattern_radius * 1.5:
-                score += 2
-                reasons.append(f"dist={dist_from_house:.1f}m > radius={pattern_radius:.1f}m")
-
-            # (d) Surface quality: curvature much worse than primary planes
-            member_curv = features.curvature[mask]
-            median_curv = float(np.median(member_curv))
-            if median_curv > pattern_curv_p90 * 3.0:
-                score += 2
-                reasons.append(f"curv={median_curv:.4f} >> pattern_p90={pattern_curv_p90:.4f}")
-
-            # (e) Normal consistency much worse than primary
-            member_normals = features.normals[mask]
-            mean_n = member_normals.mean(axis=0)
-            mn_len = np.linalg.norm(mean_n)
-            if mn_len > 1e-6:
-                mean_n /= mn_len
-                cos_angles = np.clip(member_normals @ mean_n, -1, 1)
-                angular_std = float(np.std(np.arccos(cos_angles)))
-            else:
-                angular_std = 1.0
-            if angular_std > pattern_ang_std_max * 2.5:
-                score += 2
-                reasons.append(f"ang_std={math.degrees(angular_std):.1f}° >> pattern={math.degrees(pattern_ang_std_max):.1f}°")
-
-            # (f) Residual much worse than primary
-            if pi.residual > thresholds.roughness_threshold * 0.7:
-                score += 1
-                reasons.append(f"resid={pi.residual:.3f}")
-
-            # (g) Local height std — THE strongest tree signal.
-            # Roof surfaces are smooth (low height variation in KNN).
-            # Tree canopy is bumpy (high height variation).
-            member_hstd = features.height_std[mask]
-            median_hstd = float(np.median(member_hstd))
-            if median_hstd > pattern_hstd_p90 * 3.0:
-                score += 3  # heavy weight — this is very discriminative
-                reasons.append(f"hstd={median_hstd:.3f} >> pattern_p90={pattern_hstd_p90:.3f}")
-            elif median_hstd > pattern_hstd_p90 * 2.0:
-                score += 2
-                reasons.append(f"hstd={median_hstd:.3f} > pattern_p90={pattern_hstd_p90:.3f}")
-
-            # (h) Vertical compactness — tree canopy is tall relative to XY footprint
-            member_vc = features.vertical_compactness[mask]
-            median_vc = float(np.median(member_vc))
-            if median_vc > thresholds.compactness_tree_threshold:
-                score += 2
-                reasons.append(f"vert_compact={median_vc:.2f}")
-
-            # Threshold: score >= 3 means the plane is an outlier
-            # BUT: roof veto can override if the plane has strong roof shape
-            if score >= 3:
-                veto_s, _ = compute_roof_veto_score(
-                    member_pts, features.normals[mask], features.curvature[mask],
-                    pi.residual, 1.0,
-                )
-                if veto_s >= _ROOF_VETO_THRESHOLD:
-                    logger.info(
-                        "Plane %d score=%d VETOED by roof score=%.0f (%d pts, %s)",
-                        pi.index, score, veto_s, n_pts, ", ".join(reasons),
-                    )
-                else:
-                    tree_plane_indices.add(pi.index)
-                    labels[mask] = CellLabel.TREE
-                    logger.info(
-                        "Plane %d → TREE (score=%d, veto=%.0f, %d pts, %s)",
-                        pi.index, score, veto_s, n_pts, ", ".join(reasons),
-                    )
-
-    # ---- Step 1: Classify plane-assigned points ----
-    for pi in plane_infos:
-        if pi.index in tree_plane_indices:
-            continue  # already labeled TREE
-        mask = point_labels == pi.index
-        if not mask.any():
-            continue
-
-        plane = pi.plane
-        if plane.is_flat:
-            labels[mask] = CellLabel.FLAT_ROOF
-        else:
-            labels[mask] = CellLabel.ROOF
-
-    # ---- Step 1b: Per-point tree scrub on roof planes ----
-    # Even on valid roof planes, individual points near the tree-roof
-    # boundary may have tree-like features (overhanging branches).
-    # Two signals: high curvature and high local height_std.
-    for pi in plane_infos:
-        if pi.index in tree_plane_indices:
-            continue
-        mask = point_labels == pi.index
-        if mask.sum() < 20:
-            continue
-
-        member_curv = features.curvature[mask]
-        member_hstd = features.height_std[mask]
-        plane_median_curv = float(np.median(member_curv))
-        plane_median_hstd = float(np.median(member_hstd))
-        curv_scrub = max(thresholds.curvature_tree_threshold * 0.7, plane_median_curv * 3.0)
-        hstd_scrub = max(0.15, plane_median_hstd * 3.0)
-
-        member_indices = np.where(mask)[0]
-        for idx in member_indices:
-            is_tree = False
-            # High local height variance = bumpy surface = tree
-            if features.height_std[idx] > hstd_scrub:
-                is_tree = True
-            # High curvature + above plane surface
-            elif features.curvature[idx] > curv_scrub:
-                eq = pi.plane.plane_equation
-                px, py, pz = pts[idx]
-                signed_dist = eq.a * px + eq.b * py + eq.c * pz + eq.d
-                normal_len = math.sqrt(eq.a**2 + eq.b**2 + eq.c**2)
-                if normal_len > 1e-10:
-                    signed_dist /= normal_len
-                if signed_dist > 0.1 or features.curvature[idx] > curv_scrub * 1.5:
-                    is_tree = True
-            if is_tree:
-                labels[idx] = CellLabel.TREE
-
-    # ---- Step 2: LOWER_ROOF — planes significantly below adjacent planes ----
-    if adjacency and len(planes) > 1:
-        _classify_lower_roofs(
-            labels, point_labels, planes, plane_infos, adjacency,
-            edges=edges, tree_plane_indices=tree_plane_indices,
-            components=components,
-        )
-
-    # ---- Step 3: Ridge and Valley from plane intersections ----
+    # ---- ALL CLASSIFICATION STEPS DISABLED ----
+    # Steps 1-8 all disabled. Too many interacting rules breaking colors.
+    # Only the calibration tracer (above) runs for diagnostics.
+    # All points stay as UNSURE — no color assignments from classifier.
     ridge_lines: list[tuple[np.ndarray, np.ndarray]] = []
-    if edges:
-        ridge_lines = _classify_ridge_valley(
-            labels, pts, planes, edges, thresholds.distance_threshold,
-            point_labels=point_labels,
-        )
+    logger.info("All classification steps DISABLED — only tracer active, labels unchanged")
 
-    # ---- Step 4: Eave — plane boundary adjacent to ground ----
-    _classify_eaves(labels, pts, point_labels, planes, thresholds)
-
-    # ---- Step 5: Step edges — ROOF → LOWER_ROOF transitions ----
-    if edges:
-        _classify_step_edges(labels, pts, planes, edges, thresholds.distance_threshold)
-
-    # ---- Step 6: Ground — unassigned low points ----
-    _classify_ground(labels, pts, point_labels, thresholds)
-
-    # ---- Step 7: Trees — catch remaining unassigned tree points ----
-    # The hard tree exclusion already ran above. This pass catches any
-    # stragglers that weren't in a promoted cluster but still have tree
-    # features (unassigned, elevated, unstable + chaotic normals).
-    _classify_trees(labels, pts, point_labels, features, thresholds)
-
-    # ---- Step 7b: Recover attached structures (porches, garages) ----
-    # Unassigned elevated points near existing roof planes with low curvature
-    # are likely attached structures that RANSAC couldn't extract as independent planes.
-    _recover_attached_structures(labels, pts, point_labels, planes, features, thresholds)
-
-    # ---- Step 8: Obstructions — small elevated clusters above roof ----
-    _classify_obstructions(labels, pts, point_labels, planes, thresholds)
+    # Collect tree plane IDs for downstream use
+    _tree_plane_id_set = {
+        pi.plane.id for pi in plane_infos if pi.index in tree_plane_indices
+    }
 
     return ClassificationResult(
         per_point_class=labels,
         planes=planes,
         ridge_lines=ridge_lines,
         plane_infos=plane_infos,
-        tree_exclusion=tree_result,
+        tree_exclusion=None,
+        tree_plane_ids=_tree_plane_id_set,
+        sweep_labels=roof_trace.sweep_labels if roof_trace.sweep_labels is not None else None,
     )
 
 
@@ -890,6 +555,10 @@ def _classify_lower_roofs(
         dominant = max(comp_valid, key=lambda pi: pi.plane.area_m2)
         dominant_id = dominant.plane.id
 
+        # Guard: cap median at dominant plane height + 3m to prevent tree
+        # canopy planes from inflating the component baseline
+        comp_median_height = min(comp_median_height, dominant.plane.height_m + 3.0)
+
         # Reference pitches: from primary planes in this component, or dominant
         comp_primary = [
             info_by_id[cid] for cid in comp_ids
@@ -918,6 +587,9 @@ def _classify_lower_roofs(
                 if (pid, nid) in ridge_partners:
                     continue
                 np_ = plane_map[nid]
+                # Skip anomalously high planes (likely surviving tree canopy)
+                if np_.height_m > dominant.plane.height_m + 4.0:
+                    continue
                 if np_.pitch_deg > 2.0:
                     neighbor_heights.append(np_.height_m)
 
@@ -954,6 +626,7 @@ def _classify_ridge_valley(
     edges: list[RoofEdge],
     distance_threshold: float,
     point_labels: np.ndarray | None = None,
+    tree_plane_indices: set[int] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """
     Assign RIDGE_DOT, NEAR_RIDGE, and VALLEY_DOT from plane-plane intersections.
@@ -966,10 +639,16 @@ def _classify_ridge_valley(
       3. NEAR_RIDGE: points 0.15m-0.30m from a valid ridge line.
       4. Single-plane guard: ridge candidates must have points from ≥2 planes nearby.
       5. Linearity enforcement: outliers > 0.20m from a fitted ridge line are demoted.
+      6. Tree-edge filter: edges touching tree-classified planes are skipped.
     """
     ridge_lines: list[tuple[np.ndarray, np.ndarray]] = []
     ridge_dist = 0.15       # tight band — only points right on the intersection
     near_ridge_dist = 0.30  # outer limit for NEAR_RIDGE
+
+    # Build set of tree plane IDs to filter edges
+    tree_ids: set[str] = set()
+    if tree_plane_indices:
+        tree_ids = {planes[i].id for i in tree_plane_indices if i < len(planes)}
 
     # Build XZ KDTree once for single-plane guard
     xz_tree = None
@@ -983,6 +662,9 @@ def _classify_ridge_valley(
 
     for edge in edges:
         if edge.edge_type not in (EdgeType.ridge, EdgeType.valley, EdgeType.hip):
+            continue
+        # Skip edges that touch a tree-classified plane
+        if tree_ids and any(pid in tree_ids for pid in edge.plane_ids):
             continue
 
         start = np.array([edge.start_point.x, edge.start_point.y, edge.start_point.z])
@@ -1424,6 +1106,7 @@ def _classify_obstructions(
     point_labels: np.ndarray,
     planes: list[RoofPlane],
     thresholds: AdaptiveThresholds,
+    tree_mask: np.ndarray | None = None,
 ) -> None:
     """
     Small unassigned clusters elevated above a roof plane = obstructions
@@ -1441,14 +1124,20 @@ def _classify_obstructions(
     if not HAS_SCIPY_SPATIAL:
         return
 
+    # Build KDTree of tree points for proximity exclusion
+    tree_kd = None
+    if tree_mask is not None and tree_mask.any():
+        tree_pts_xz = pts[tree_mask][:, [0, 2]]
+        tree_kd = cKDTree(tree_pts_xz)
+
     # Cluster the candidates
     cand_pts = pts[candidate_indices]
     cand_xz = cand_pts[:, [0, 2]]
-    tree_xz = cKDTree(cand_xz)
+    cand_xz_tree = cKDTree(cand_xz)
 
     # Simple connected-component clustering
     radius = max(0.5, thresholds.nn_median_dist * 3)
-    pairs = tree_xz.query_pairs(r=radius)
+    pairs = cand_xz_tree.query_pairs(r=radius)
     parent = np.arange(len(cand_pts))
 
     def _find(x):
@@ -1480,6 +1169,12 @@ def _classify_obstructions(
         centroid_z = cl_pts[:, 2].mean()
         centroid_y = cl_pts[:, 1].mean()
 
+        # Tree proximity guard: skip clusters near tree points
+        if tree_kd is not None:
+            dist_to_tree, _ = tree_kd.query([[centroid_x, centroid_z]])
+            if dist_to_tree[0] < 2.0:
+                continue  # likely scattered canopy debris
+
         above_roof = False
         for plane in planes:
             eq = plane.plane_equation
@@ -1492,6 +1187,9 @@ def _classify_obstructions(
             # Check if XZ centroid is within plane boundary (rough check)
             verts = np.array([[v.x, v.z] for v in plane.vertices])
             if _point_in_polygon_2d(centroid_x, centroid_z, verts):
+                # Height guard: too high above roof = tree, not obstruction
+                if centroid_y > plane_y + 3.0:
+                    continue
                 if centroid_y > plane_y + 0.3:
                     above_roof = True
                     break
@@ -1508,6 +1206,7 @@ def _classify_obstructions(
 def compute_ridge_from_planes(
     planes: list[RoofPlane],
     edges: list[RoofEdge],
+    tree_plane_ids: set[str] | None = None,
 ) -> tuple | None:
     """
     Compute the primary ridge line from plane-plane intersection edges.
@@ -1518,8 +1217,13 @@ def compute_ridge_from_planes(
         ((x0, z0), (x1, z1), azimuth_deg, pitch_deg, length_m, peak_height_m)
         Same format as gradient_detector's ridge_world output.
     """
-    # Collect ridge edges
-    ridge_edges = [e for e in edges if e.edge_type == EdgeType.ridge]
+    # Collect ridge edges, excluding edges that touch tree-classified planes
+    _tree_ids = tree_plane_ids or set()
+    ridge_edges = [
+        e for e in edges
+        if e.edge_type == EdgeType.ridge
+        and not any(pid in _tree_ids for pid in e.plane_ids)
+    ]
     if not ridge_edges:
         return None
 

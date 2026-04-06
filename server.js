@@ -8810,45 +8810,25 @@ app.get("/design", (req, res) => {
     //   5=RIDGE_DOT, 6=NEAR_RIDGE, 7=TREE, 8=EAVE_DOT,
     //   9=RIDGE_EDGE_DOT, 10=VALLEY_DOT, 11=STEP_EDGE, 12=OBSTRUCTION_DOT
 
-    // Surface base colors (Layer 1)
-    var SURFACE_COLORS = {
-      0:  [0.55, 0.55, 0.55],  // UNSURE         — light gray
-      1:  [0.35, 0.35, 0.35],  // GROUND         — gray
+    // All labels use direct, high-contrast colors — no blending
+    var LABEL_COLORS = {
+      0:  [1.00, 0.60, 0.80],  // UNSURE         — pink
+      1:  [0.60, 0.20, 0.90],  // GROUND         — purple
       2:  [0.20, 0.85, 0.20],  // ROOF           — green
-      3:  [0.15, 0.55, 0.85],  // LOWER_ROOF     — blue (distinct roof surface)
-      4:  [0.55, 0.20, 0.80],  // FLAT_ROOF      — purple (distinct roof surface)
+      3:  [1.00, 0.10, 0.10],  // LOWER_ROOF     — red
+      4:  [0.55, 0.20, 0.80],  // FLAT_ROOF      — purple
+      5:  [1.00, 0.10, 0.10],  // RIDGE_DOT      — red
+      6:  [1.00, 1.00, 0.00],  // NEAR_RIDGE     — yellow
       7:  [0.60, 0.35, 0.10],  // TREE           — brown
-      12: [1.00, 0.40, 0.70],  // OBSTRUCTION    — pink
+      8:  [0.30, 0.75, 1.00],  // EAVE_DOT       — sky blue
+      9:  [1.00, 0.45, 0.00],  // RIDGE_EDGE_DOT — orange
+      10: [0.15, 0.15, 0.90],  // VALLEY_DOT     — blue
+      11: [0.90, 0.85, 0.15],  // STEP_EDGE      — gold
+      12: [1.00, 0.40, 0.70],  // OBSTRUCTION    — hot pink
     };
-
-    // Geometry overlay accent colors (Layer 2) — blended onto ROOF green
-    // These labels are geometry roles ON a roof surface, not surface types.
-    var GEOMETRY_ACCENTS = {
-      5:  [1.00, 0.10, 0.10],  // RIDGE_DOT      — red accent
-      6:  [1.00, 0.70, 0.00],  // NEAR_RIDGE     — amber accent
-      8:  [0.00, 0.85, 0.85],  // EAVE_DOT       — cyan accent
-      9:  [1.00, 0.45, 0.00],  // RIDGE_EDGE_DOT — orange accent
-      10: [0.15, 0.15, 0.90],  // VALLEY_DOT     — blue accent
-      11: [0.90, 0.85, 0.15],  // STEP_EDGE      — gold accent
-    };
-
-    // Blend ratio: how much geometry accent shows over the ROOF base
-    var GEOMETRY_BLEND = 0.55;  // 0 = pure ROOF green, 1 = pure accent
 
     function _classifyColor(label) {
-      // If label has a geometry accent, blend it onto ROOF green
-      var accent = GEOMETRY_ACCENTS[label];
-      if (accent) {
-        var base = SURFACE_COLORS[2]; // ROOF green
-        var t = GEOMETRY_BLEND;
-        return [
-          base[0] * (1 - t) + accent[0] * t,
-          base[1] * (1 - t) + accent[1] * t,
-          base[2] * (1 - t) + accent[2] * t,
-        ];
-      }
-      // Otherwise use surface color directly
-      return SURFACE_COLORS[label] || SURFACE_COLORS[0];
+      return LABEL_COLORS[label] || LABEL_COLORS[0];
     }
 
     function recolorLidarByClassification(cellLabelsGrid, gridInfo) {
@@ -12604,7 +12584,8 @@ app.get("/design", (req, res) => {
         design_center: { lat: designLat, lng: designLng },
         options: {
           confidence_threshold: 0.5,
-          max_planes: 20
+          max_planes: 20,
+          image_engine_profile: 'high_recall'
         }
       };
 
@@ -12637,16 +12618,9 @@ app.get("/design", (req, res) => {
           console.warn('No classification grid in response — LiDAR colors unchanged');
         }
 
-        // Prefer direct ridge_line from gradient detector (most accurate)
-        if (data.ridge_line) {
-          ridgeLines3d.forEach(function(l) { scene3d.remove(l); });
-          ridgeLines3d = [];
-          var dr = data.ridge_line;
-          var EXTEND_M = 1.524; // 5 feet
-
-          // Look up scene Y from the LiDAR grid using the same formula as buildLidarPointCloud
-          // Y_scene = (raw_elev - (minElev + 1.0)) * vertExag + lidarPoints.position.y
-          function ridgeSceneY(worldX, worldZ) {
+        // Look up scene Y from the LiDAR grid using the same formula as buildLidarPointCloud
+        // Y_scene = (raw_elev - (minElev + 1.0)) * vertExag + lidarPoints.position.y
+        function ridgeSceneY(worldX, worldZ) {
             if (!lidarRawPoints) return 0.3;
             var grid = buildElevGrid(lidarRawPoints);
             var lidarOffX = lidarPoints ? lidarPoints.position.x : 0;
@@ -12670,7 +12644,14 @@ app.get("/design", (req, res) => {
             var groundThreshold = grid.groundElev + 1.0;
             var lyOff = lidarPoints ? lidarPoints.position.y : -0.75;
             return (bestElev - groundThreshold) * vertExag + lyOff;
-          }
+        }
+
+        // Prefer direct ridge_line from gradient detector (most accurate)
+        if (data.ridge_line) {
+          ridgeLines3d.forEach(function(l) { scene3d.remove(l); });
+          ridgeLines3d = [];
+          var dr = data.ridge_line;
+          var EXTEND_M = 1.524; // 5 feet
 
           var sx = dr.start.x, sz = dr.start.z;
           var ex = dr.end.x,   ez = dr.end.z;
@@ -12697,8 +12678,36 @@ app.get("/design", (req, res) => {
             banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg> Ridge: ' + (dr.length_m * 3.281).toFixed(1) + ' ft, azimuth ' + Math.round(dr.azimuth_deg) + '°, pitch ' + Math.round(dr.pitch_deg) + '°.';
             setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
           }
-          return;
         }
+
+        // Draw sweep ridge line (red) from tracer RIDGE_DOT points
+        if (data.sweep_ridge_line) {
+          var sr = data.sweep_ridge_line;
+          var EXTEND_M2 = 1.524;
+          var sx2 = sr.start.x, sz2 = sr.start.z;
+          var ex2 = sr.end.x, ez2 = sr.end.z;
+          var dx3 = ex2 - sx2, dz3 = ez2 - sz2;
+          var slen = Math.sqrt(dx3*dx3 + dz3*dz3);
+          if (slen > 0.001) {
+            var nx3 = dx3/slen, nz3 = dz3/slen;
+            var sp1x = sx2 - nx3*EXTEND_M2, sp1z = sz2 - nz3*EXTEND_M2;
+            var sp2x = ex2 + nx3*EXTEND_M2, sp2z = ez2 + nz3*EXTEND_M2;
+            var sy1 = ridgeSceneY(sx2, sz2);
+            var sy2 = ridgeSceneY(ex2, ez2);
+            var sGeo = new THREE.BufferGeometry();
+            sGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+              sp1x, sy1, sp1z,
+              sp2x, sy2, sp2z
+            ]), 3));
+            var sMat = new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 3, depthTest: false });
+            var sLine = new THREE.Line(sGeo, sMat);
+            sLine.renderOrder = 999;
+            scene3d.add(sLine);
+            ridgeLines3d.push(sLine);
+          }
+        }
+
+        if (data.ridge_line) return;
 
         // Fallback: draw ridge lines from roof graph edge classification
         var ridgeEdges = ((data.roof_graph && data.roof_graph.edges) || []).filter(function(e) {
@@ -16394,7 +16403,8 @@ app.get("/image-analysis", requireAuth, (req, res) => {
       options: {
         pipeline_mode: 'image_engine',
         confidence_threshold: 0.3,
-        max_planes: 30
+        max_planes: 30,
+        image_engine_profile: 'high_recall'
       }
     };
 

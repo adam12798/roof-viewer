@@ -103,16 +103,24 @@ def run_image_engine(
 
     # Stage 5: Obstruction candidates
     t0 = time.perf_counter()
-    obstructions = detect_obstructions(
-        preprocessed, regions, image_input, registration, config,
-    )
+    if config.enable_obstruction_detection:
+        obstructions = detect_obstructions(
+            preprocessed, regions, image_input, registration, config,
+        )
+    else:
+        obstructions = []
+        logger.info("Image engine: obstruction detection DISABLED by profile")
     timings["obstruction_detection"] = round(time.perf_counter() - t0, 4)
 
     # Stage 6: Dormer candidates
     t0 = time.perf_counter()
-    dormers = detect_dormers(
-        preprocessed, regions, lines, image_input, registration, config,
-    )
+    if config.enable_dormer_detection:
+        dormers = detect_dormers(
+            preprocessed, regions, lines, image_input, registration, config,
+        )
+    else:
+        dormers = []
+        logger.info("Image engine: dormer detection DISABLED by profile")
     timings["dormer_detection"] = round(time.perf_counter() - t0, 4)
 
     # Stage 7: Debug artifacts
@@ -295,6 +303,22 @@ def run_image_engine(
     logger.info("  diag_hash:  %s", diag_hash)
     logger.info("================================")
 
+    # Profile metadata — record exactly what config was active
+    profile_meta = {
+        "active_profile": config.effective_profile_name(),
+        "effective_settings": config.effective_settings(),
+        "profile_summary": {
+            "high_recall": "Broad roof coverage, more false positives allowed. "
+                           "Erosion reduced, vegetation/texture/overlap gates weakened, "
+                           "NMS relaxed, dormer+obstruction detection disabled.",
+            "high_precision": "Tight region boundaries, fewer false positives. "
+                              "Aggressive erosion, strict vegetation/texture/overlap gates, "
+                              "NMS at 15% overlap, dormer+obstruction detection enabled.",
+        },
+    }
+
+    logger.info("=== PROFILE: %s ===", config.effective_profile_name())
+
     return ImageEngineResult(
         planes=planes,
         edges=line_dicts,
@@ -311,6 +335,7 @@ def run_image_engine(
             "scale_validation": scale_validation,
             "coverage": coverage_stats,
             "debug_stamp": debug_stamp,
+            "profile": profile_meta,
         },
         debug_artifacts=debug_dicts,
         regions_total=len(regions),

@@ -149,9 +149,11 @@ def segment_regions(
         )
         region.boundary_px = _clip_to_roof_mask(
             region.boundary_px, preprocessed.roof_mask, w, h,
+            retention=config.roof_mask_clip_retention,
         )
         region.boundary_px = _clip_dark_zones(
             region.boundary_px, preprocessed.gray, w, h,
+            retention=config.dark_zone_clip_retention,
         )
 
         # Build mask from tightened boundary
@@ -160,16 +162,17 @@ def segment_regions(
         cv2.drawContours(new_mask, [pts], -1, 255, -1)
         pre_erode_px = float(np.count_nonzero(new_mask))
 
-        # Aggressive erosion: strip boundary inflation + bleed
-        erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        new_mask = cv2.erode(new_mask, erode_k, iterations=2)
+        # Erosion: strip boundary inflation + bleed (parameterized by config)
+        ek_size = config.erosion_kernel_size
+        erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ek_size, ek_size))
+        new_mask = cv2.erode(new_mask, erode_k, iterations=config.erosion_iterations)
         post_erode_px = float(np.count_nonzero(new_mask))
 
-        # Also AND with edge_map complement — cut at strong internal edges
-        # This splits regions that span multiple roof faces
-        edge_dilated = cv2.dilate(edge_map, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
-        edge_barrier = cv2.bitwise_not(edge_dilated)
-        new_mask = cv2.bitwise_and(new_mask, edge_barrier)
+        # Edge barrier: AND with edge_map complement — cut at strong internal edges
+        if config.enable_edge_barrier:
+            edge_dilated = cv2.dilate(edge_map, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+            edge_barrier = cv2.bitwise_not(edge_dilated)
+            new_mask = cv2.bitwise_and(new_mask, edge_barrier)
         post_barrier_px = float(np.count_nonzero(new_mask))
 
         # Take only the largest connected component (drop fragments)
@@ -203,7 +206,8 @@ def segment_regions(
             new_mask = np.zeros((h, w), dtype=np.uint8)
             pts = np.array(region.boundary_px, dtype=np.int32).reshape(-1, 1, 2)
             cv2.drawContours(new_mask, [pts], -1, 255, -1)
-            erode_k_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            fb_size = max(3, ek_size - 2)
+            erode_k_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fb_size, fb_size))
             new_mask = cv2.erode(new_mask, erode_k_small, iterations=1)
             post_area_px = float(np.count_nonzero(new_mask))
             logger.info(
@@ -221,7 +225,7 @@ def segment_regions(
             new_mask = np.zeros((h, w), dtype=np.uint8)
             pts = np.array(region.boundary_px, dtype=np.int32).reshape(-1, 1, 2)
             cv2.drawContours(new_mask, [pts], -1, 255, -1)
-            new_mask = cv2.erode(new_mask, erode_k, iterations=2)
+            new_mask = cv2.erode(new_mask, erode_k, iterations=config.erosion_iterations)
             post_area_px = float(np.count_nonzero(new_mask))
 
         # If erosion destroyed the region, keep original mask but eroded
@@ -233,7 +237,8 @@ def segment_regions(
             new_mask = np.zeros((h, w), dtype=np.uint8)
             pts = np.array(original_boundary, dtype=np.int32).reshape(-1, 1, 2)
             cv2.drawContours(new_mask, [pts], -1, 255, -1)
-            erode_k_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            fb_size = max(3, ek_size - 2)
+            erode_k_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fb_size, fb_size))
             new_mask = cv2.erode(new_mask, erode_k_small, iterations=1)
             post_area_px = float(np.count_nonzero(new_mask))
             logger.info(
@@ -279,13 +284,17 @@ def segment_regions(
 
     # --- Pass 4: Non-max suppression ---
     promoted = [r for r in all_regions if r.promoted_to_plane]
-    survivors, suppressed = _non_max_suppress(promoted, overlap_threshold=0.15)
+    survivors, suppressed = _non_max_suppress(
+        promoted,
+        overlap_threshold=config.nms_overlap_threshold,
+        centroid_merge_px=config.nms_centroid_merge_px,
+    )
     rejection_counts["suppressed_nms"] = len(suppressed)
     for s in suppressed:
         s.promoted_to_plane = False
 
     # --- Pass 5: Convert final survivors to RoofPlane ---
-    planes = [_region_to_plane(r) for r in survivors]
+    planes = [_region_to_plane(r, config) for r in survivors]
 
     logger.info(
         "Segmentation: %d contours → %d regions → %d promoted → %d after NMS",
@@ -329,7 +338,7 @@ def _contour_to_region(
 ) -> SegmentedRegion | None:
     """Convert a single contour into a SegmentedRegion with quality metrics."""
     area_px = cv2.contourArea(contour)
-    if area_px < 200:
+    if area_px < config.min_contour_area_px:
         return None
 
     area_m2 = area_px * scale * scale
@@ -716,6 +725,7 @@ def _clip_to_roof_mask(
     roof_mask: np.ndarray,
     img_w: int,
     img_h: int,
+    retention: float = 0.80,
 ) -> list[tuple[int, int]]:
     """Clip polygon to roof mask. Keep original if clipping removes too much area."""
     if len(boundary_px) < 3:
@@ -732,8 +742,8 @@ def _clip_to_roof_mask(
     clipped = cv2.bitwise_and(poly_mask, roof_mask)
     clipped_area = np.count_nonzero(clipped)
 
-    # Only use clipped version if >=80% of area is retained
-    if clipped_area < original_area * 0.80:
+    # Only use clipped version if sufficient area is retained
+    if clipped_area < original_area * retention:
         return boundary_px
 
     contours, _ = cv2.findContours(clipped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -756,6 +766,7 @@ def _clip_dark_zones(
     img_w: int,
     img_h: int,
     dark_threshold: int = 50,
+    retention: float = 0.70,
 ) -> list[tuple[int, int]]:
     """Remove perimeter bleed into dark shadow / pavement zones."""
     if len(boundary_px) < 3:
@@ -773,7 +784,7 @@ def _clip_dark_zones(
     clipped = cv2.bitwise_and(poly_mask, bright_mask)
     clipped_area = np.count_nonzero(clipped)
 
-    if clipped_area < original_area * 0.70:
+    if clipped_area < original_area * retention:
         return boundary_px
 
     contours, _ = cv2.findContours(clipped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -872,12 +883,13 @@ def _non_max_suppress(
 # Plane conversion
 # ---------------------------------------------------------------------------
 
-def _region_to_plane(region: SegmentedRegion) -> RoofPlane:
+def _region_to_plane(region: SegmentedRegion, config: ImageEngineConfig | None = None) -> RoofPlane:
     """Convert a qualifying SegmentedRegion into a RoofPlane."""
     vertices_2d = [Point2D(x=x, z=z) for x, z in region.boundary_local]
     vertices_3d = [Point3D(x=x, y=0.0, z=z) for x, z in region.boundary_local]
 
-    confidence = min(0.5, region.confidence * 0.5)
+    cap = config.plane_confidence_cap if config else 0.5
+    confidence = min(cap, region.confidence * 0.5)
 
     return RoofPlane(
         id=f"ie_plane_{uuid.uuid4().hex[:8]}",

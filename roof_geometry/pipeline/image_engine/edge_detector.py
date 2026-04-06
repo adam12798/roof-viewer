@@ -83,13 +83,13 @@ def extract_lines(
     w, h = preprocessed.width_px, preprocessed.height_px
 
     # Primary: LSD
-    lsd_lines = _detect_lsd_lines(preprocessed.enhanced)
+    lsd_lines = _detect_lsd_lines(preprocessed.enhanced, config.lsd_min_length_px)
 
     # Secondary: Hough
     hough_lines = _detect_hough_lines(edge_map, config)
 
     # Combine and deduplicate
-    raw_lines = _combine_lines(lsd_lines, hough_lines, w, h, scale, config)
+    raw_lines = _combine_lines(lsd_lines, hough_lines, w, h, scale, config, config.hough_line_confidence)
 
     # Merge collinear segments
     merged = _merge_collinear(raw_lines, config)
@@ -137,7 +137,7 @@ def px_to_local(
     return x, z
 
 
-def _detect_lsd_lines(enhanced: np.ndarray) -> list[tuple[int, int, int, int]]:
+def _detect_lsd_lines(enhanced: np.ndarray, min_length_px: int = 40) -> list[tuple[int, int, int, int]]:
     """Run LSD on the enhanced grayscale image."""
     try:
         lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
@@ -145,11 +145,11 @@ def _detect_lsd_lines(enhanced: np.ndarray) -> list[tuple[int, int, int, int]]:
         if lines is None:
             return []
         result = []
+        min_sq = min_length_px * min_length_px
         for seg in lines:
             x1, y1, x2, y2 = seg[0]
-            # Pre-filter: drop very short LSD segments (noise)
             dx, dy = x2 - x1, y2 - y1
-            if dx * dx + dy * dy < 40 * 40:  # < 40px
+            if dx * dx + dy * dy < min_sq:
                 continue
             result.append((int(x1), int(y1), int(x2), int(y2)))
         return result
@@ -183,6 +183,7 @@ def _combine_lines(
     img_h: int,
     scale: float,
     config: ImageEngineConfig,
+    hough_confidence: float = 0.4,
 ) -> list[ExtractedLine]:
     """Combine LSD and Hough lines, removing near-duplicates from Hough."""
     result: list[ExtractedLine] = []
@@ -193,7 +194,7 @@ def _combine_lines(
 
     # Add Hough lines only if not near-duplicate of an existing LSD line
     for x1, y1, x2, y2 in hough_lines:
-        candidate = _make_line(x1, y1, x2, y2, img_w, img_h, scale, confidence=0.4)
+        candidate = _make_line(x1, y1, x2, y2, img_w, img_h, scale, confidence=hough_confidence)
         if not _is_duplicate(candidate, result, config):
             result.append(candidate)
 

@@ -134,6 +134,7 @@ class RoofParseOptions(BaseModel):
     detect_dormers: bool = Field(True, description="Run dormer detection sub-pipeline")
     detect_obstructions: bool = Field(True, description="Run obstruction detection sub-pipeline")
     pipeline_mode: str = Field("auto", description="Pipeline mode: 'auto', 'gradient', 'image_primary', 'lidar_primary', or 'image_engine'")
+    image_engine_profile: str | None = Field(None, description="Image engine profile: 'high_recall' or 'high_precision' (default: high_precision)")
 
 
 class DesignCenter(BaseModel):
@@ -536,6 +537,7 @@ class RoofParseResponse(BaseModel):
     confidence_report: ConfidenceReport = Field(..., description="Detection confidence summary")
     metadata: RoofParseMetadata = Field(..., description="Processing metadata")
     ridge_line: RidgeLine | None = Field(None, description="Direct ridge line from gradient detector")
+    sweep_ridge_line: RidgeLine | None = Field(None, description="Ridge line from sweep tracer (fitted to RIDGE_DOT points)")
     cell_labels_grid: list[list[int]] | None = Field(None, description="Grid of CellLabel int values (rows×cols) for visualization")
     grid_info: dict | None = Field(None, description="Grid metadata: x_origin, z_origin, resolution, rows, cols")
     image_engine_result: dict | None = Field(None, description="Full ImageEngineResult when image_engine mode is used")

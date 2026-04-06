@@ -126,7 +126,7 @@ def detect_roof_faces(
 
     if len(lidar_pts) < 10:
         logger.warning("Too few LiDAR points (%d)", len(lidar_pts))
-        return [], None, None
+        return [], None, None, None
 
     # Step 1: Build height grid (always, so classification grid is available)
     height_grid, x_origin, z_origin = build_height_grid(lidar_pts, grid_resolution)
@@ -194,16 +194,19 @@ def detect_roof_faces(
     logger.info("Max plausible roof height: %.2fm (anchor max %.2fm + 6m margin)",
                 max_roof_height, max(anchor_heights) if anchor_heights else 0.0)
 
-    # HARD TREE EXCLUSION: compute grid-level tree mask BEFORE classification
-    # and face growth. Tree cells are permanently excluded from all downstream logic.
-    tree_grid = compute_grid_tree_mask(height_grid, max_roof_height)
+    # HARD TREE EXCLUSION: DISABLED — only calibration slope-trace active.
+    # compute_grid_tree_mask was too aggressive; keeping code for future use.
+    # tree_grid = compute_grid_tree_mask(height_grid, max_roof_height)
+    tree_grid = None
 
-    cell_labels = _classify_grid_cells(
-        height_grid, roof_mask, dx, dz,
-        min_height=min_height, grid_resolution=grid_resolution,
-        max_roof_height=max_roof_height,
-        tree_grid=tree_grid,
-    )
+    # Grid classification DISABLED — all color rules off, only tracer active
+    # cell_labels = _classify_grid_cells(
+    #     height_grid, roof_mask, dx, dz,
+    #     min_height=min_height, grid_resolution=grid_resolution,
+    #     max_roof_height=max_roof_height,
+    #     tree_grid=tree_grid,
+    # )
+    cell_labels = np.zeros((rows, cols), dtype=int)  # all UNSURE
     cell_grid_info = {
         'grid': cell_labels.tolist(),
         'x_origin': x_origin,
@@ -233,8 +236,9 @@ def detect_roof_faces(
     main_structure_id = str(uuid.uuid4())[:8]
 
     # Mark tree cells as pre-assigned so face growth never enters them
-    if tree_grid is not None:
-        assigned |= tree_grid
+    # DISABLED — grid tree mask disabled, only calibration slope-trace active
+    # if tree_grid is not None:
+    #     assigned |= tree_grid
 
     # Grow face from the anchor side
     for ar, ac in anchor_cells:
@@ -360,7 +364,7 @@ def detect_roof_faces(
     _sister_faces(planes)
 
     logger.info("Anchor-seeded detection complete: %d roof planes", len(planes))
-    return planes, ridge_world, cell_grid_info
+    return planes, ridge_world, cell_grid_info, None
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +394,7 @@ def _detect_roof_faces_plane_first(
         prefilter_outliers,
         project_to_grid,
     )
+    from pipeline.color_classifier import classify_points_for_color
     from pipeline.plane_extractor import extract_planes_with_membership
     from pipeline.graph_builder import (
         _build_adjacency,
@@ -453,7 +458,7 @@ def _detect_roof_faces_plane_first(
     edges = _classify_edges(planes, shared_edges_info)
     components = _find_components(planes, adjacency)
 
-    # 7. Classify all points
+    # 7. Classify all points (tracer-only — runs trace_ridge_from_anchors for diagnostics)
     result = classify_from_planes(
         lidar_pts,
         planes,
@@ -467,13 +472,62 @@ def _detect_roof_faces_plane_first(
         components=components,
     )
 
-    # 8. Compute ridge from plane intersections
-    ridge_world = compute_ridge_from_planes(planes, edges)
+    # 7b. Color classification — clean file, no tree rules
+    color_labels, color_ridge_lines = classify_points_for_color(
+        lidar_pts,
+        planes,
+        point_labels,
+        edges=edges,
+        adjacency=adjacency,
+        components=components,
+        height_ground_threshold=thresholds.height_ground_threshold,
+        sweep_labels=result.sweep_labels,
+    )
 
-    # 9. Project per-point labels to the 2D grid for frontend
+    # 8. Compute ridge from plane intersections
+    ridge_world = compute_ridge_from_planes(planes, edges, tree_plane_ids=result.tree_plane_ids)
+
+    # 8b. Compute sweep-based ridge line from RIDGE_DOT points
+    sweep_ridge_world = None
+    if result.sweep_labels is not None:
+        ridge_mask = result.sweep_labels == CellLabel.RIDGE_DOT
+        if ridge_mask.sum() >= 5:
+            ridge_pts = lidar_pts[ridge_mask]
+            # PCA on XZ to get ridge direction
+            ridge_xz = ridge_pts[:, [0, 2]]
+            centroid = ridge_xz.mean(axis=0)
+            centered = ridge_xz - centroid
+            cov = centered.T @ centered
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            axis = eigvecs[:, -1]
+            axis = axis / np.linalg.norm(axis)
+            # Project all ridge points onto axis, find extents
+            projections = centered @ axis
+            min_proj, max_proj = float(projections.min()), float(projections.max())
+            start_xz = centroid + axis * min_proj
+            end_xz = centroid + axis * max_proj
+            # Ridge properties
+            dx = end_xz[0] - start_xz[0]
+            dz = end_xz[1] - start_xz[1]
+            import math as _math
+            azimuth = float(_math.degrees(_math.atan2(dx, dz))) % 360.0
+            horiz_len = _math.sqrt(dx**2 + dz**2)
+            peak_h = float(ridge_pts[:, 1].max())
+            median_h = float(np.median(ridge_pts[:, 1]))
+            dy = 0.0  # ridge is approximately level
+            pitch = 0.0
+            sweep_ridge_world = (
+                (float(start_xz[0]), float(start_xz[1])),
+                (float(end_xz[0]), float(end_xz[1])),
+                azimuth, pitch, horiz_len, peak_h,
+            )
+            logger.info("Sweep ridge line: %.1fm long, azimuth %.0f°, peak %.1fm, %d pts",
+                        horiz_len, azimuth, peak_h, int(ridge_mask.sum()))
+
+    # 9. Project COLOR labels (not classify_from_planes labels) to grid
     cell_labels = project_to_grid(
         lidar_pts,
-        result.per_point_class,
+        color_labels,
         height_grid,
         grid_resolution,
         x_origin,
@@ -489,9 +543,10 @@ def _detect_roof_faces_plane_first(
         'cols': cols,
     }
 
-    logger.info("Plane-first detection complete: %d planes, ridge=%s",
-                len(planes), "found" if ridge_world else "none")
-    return planes, ridge_world, cell_grid_info
+    logger.info("Plane-first detection complete: %d planes, ridge=%s, sweep_ridge=%s",
+                len(planes), "found" if ridge_world else "none",
+                "found" if sweep_ridge_world else "none")
+    return planes, ridge_world, cell_grid_info, sweep_ridge_world
 
 
 # ---------------------------------------------------------------------------
@@ -774,22 +829,22 @@ def _classify_grid_cells(
                 cell_labels[r, c] = CellLabel.GROUND
                 continue
 
-            # HARD TREE EXCLUSION — authoritative tree mask from tree_detector
-            if tree_grid is not None and tree_grid[r, c]:
-                cell_labels[r, c] = CellLabel.TREE
-                continue
+            # HARD TREE EXCLUSION — DISABLED, only calibration slope-trace active
+            # if tree_grid is not None and tree_grid[r, c]:
+            #     cell_labels[r, c] = CellLabel.TREE
+            #     continue
 
-            # Fallback tree checks when no tree_grid provided
-            if h > max_roof_height:
-                cell_labels[r, c] = CellLabel.TREE
-                continue
+            # Fallback tree checks — DISABLED
+            # if h > max_roof_height:
+            #     cell_labels[r, c] = CellLabel.TREE
+            #     continue
 
             if not roughness_mask[r, c]:
-                # Rough cell — check variance first to distinguish trees from edge cells
-                h_var = _local_variance_3x3(height_grid, r, c)
-                if h_var > _TREE_VARIANCE_THRESH:
-                    cell_labels[r, c] = CellLabel.TREE
-                    continue
+                # Rough cell — variance tree check DISABLED
+                # h_var = _local_variance_3x3(height_grid, r, c)
+                # if h_var > _TREE_VARIANCE_THRESH:
+                #     cell_labels[r, c] = CellLabel.TREE
+                #     continue
                 # Check if any neighbor is at ground level
                 is_ground_adjacent = False
                 for dr, dc in _NBRS:
@@ -891,11 +946,10 @@ def _classify_grid_cells(
             if grad_mag < 0.01:
                 continue
 
-            # Tree variance reclassification (catch-all for cells the tree_grid
-            # might have missed, e.g., borderline variance cells)
-            if _local_variance_3x3(height_grid, r, c) > _TREE_VARIANCE_THRESH:
-                cell_labels[r, c] = CellLabel.TREE
-                continue
+            # Tree variance reclassification — DISABLED, only calibration slope-trace active
+            # if _local_variance_3x3(height_grid, r, c) > _TREE_VARIANCE_THRESH:
+            #     cell_labels[r, c] = CellLabel.TREE
+            #     continue
 
             # Downhill neighbor
             uz, ux = gz / grad_mag, gx / grad_mag

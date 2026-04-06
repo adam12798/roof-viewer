@@ -12,6 +12,6 @@ Usage:
 """
 
 from pipeline.image_engine.processor import run_image_engine
-from pipeline.image_engine.schemas import ImageEngineConfig, ImageEngineResult
+from pipeline.image_engine.schemas import ImageEngineConfig, ImageEngineResult, make_config
 
-__all__ = ["run_image_engine", "ImageEngineConfig", "ImageEngineResult"]
+__all__ = ["run_image_engine", "ImageEngineConfig", "ImageEngineResult", "make_config"]

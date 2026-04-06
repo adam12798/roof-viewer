@@ -36,7 +36,7 @@ from pipeline.lidar_draper import drape_lidar
 from pipeline.gradient_detector import detect_roof_faces
 from pipeline.graph_builder import build_roof_graph
 from pipeline.confidence import score_confidence
-from pipeline.image_engine import run_image_engine
+from pipeline.image_engine import run_image_engine, make_config
 
 PIPELINE_VERSION = "0.3.0"
 logger = logging.getLogger(__name__)
@@ -174,12 +174,13 @@ class RoofParsingPipeline:
             # Gradient mode: default for auto — pure LiDAR height logic
             ridge_world = None
             cell_grid_info = None
+            sweep_ridge_world = None
             if requested_mode in ("auto", "gradient"):
                 lidar_resolution = request.lidar.resolution if request.lidar else 0.5
                 gradient_result = self._try_gradient(processed, request.anchor_dots,
                                                      grid_resolution=lidar_resolution)
                 if gradient_result is not None:
-                    gradient_planes, ridge_world, cell_grid_info = gradient_result
+                    gradient_planes, ridge_world, cell_grid_info, sweep_ridge_world = gradient_result
                     if gradient_planes:
                         fused = gradient_planes
                         pipeline_mode_used = "gradient"
@@ -237,6 +238,19 @@ class RoofParsingPipeline:
                     pitch_deg=float(pitch),
                 )
 
+            # Build sweep ridge line from tracer RIDGE_DOT points
+            sweep_ridge_line = None
+            if sweep_ridge_world is not None:
+                s, e, az, pitch, length, peak_h = sweep_ridge_world
+                sweep_ridge_line = RidgeLine(
+                    start=Point2D(x=s[0], z=s[1]),
+                    end=Point2D(x=e[0], z=e[1]),
+                    peak_height_m=float(peak_h),
+                    length_m=float(length),
+                    azimuth_deg=float(az),
+                    pitch_deg=float(pitch),
+                )
+
             return RoofParseResponse(
                 registration=registration,
                 roof_graph=roof_graph,
@@ -244,6 +258,7 @@ class RoofParsingPipeline:
                 confidence_report=confidence_report,
                 metadata=metadata,
                 ridge_line=ridge_line,
+                sweep_ridge_line=sweep_ridge_line,
                 cell_labels_grid=cell_grid_info['grid'] if cell_grid_info else None,
                 grid_info={k: v for k, v in cell_grid_info.items() if k != 'grid'} if cell_grid_info else None,
             )
@@ -300,7 +315,7 @@ class RoofParsingPipeline:
             if anchor_dots:
                 anchor_xz = [(d.x, d.z) for d in anchor_dots]
 
-            planes, ridge_world, cell_grid_info = self._time_stage(
+            planes, ridge_world, cell_grid_info, sweep_ridge_world = self._time_stage(
                 "gradient_detection",
                 detect_roof_faces,
                 processed_lidar,
@@ -309,7 +324,7 @@ class RoofParsingPipeline:
             )
             # Always return cell_grid_info so the classification grid reaches the frontend
             # even when no planes were found. The caller decides whether to fall back.
-            return planes, ridge_world, cell_grid_info
+            return planes, ridge_world, cell_grid_info, sweep_ridge_world
         except Exception as e:
             logger.warning("Gradient detection failed: %s — falling back", e)
             return None
@@ -414,11 +429,15 @@ class RoofParsingPipeline:
         Does not touch LiDAR data, gradient labels, or cell_labels_grid.
         """
         try:
+            ie_config = make_config(
+                profile=request.options.image_engine_profile,
+            )
             result = self._time_stage(
                 "image_engine",
                 run_image_engine,
                 request.image,
                 registration,
+                ie_config,
             )
 
             logger.info(
