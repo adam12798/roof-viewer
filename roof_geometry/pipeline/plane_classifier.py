@@ -50,7 +50,8 @@ except ImportError:
 
 # Import CellLabel from gradient_detector (canonical location)
 from pipeline.gradient_detector import CellLabel
-from pipeline.tree_detector import detect_and_exclude_trees, TreeExclusionResult, compute_roof_veto_score, _ROOF_VETO_THRESHOLD, apply_hard_tree_rules, trace_ridge_from_anchors, RoofTraceResult
+from pipeline.tree_detector import detect_and_exclude_trees, TreeExclusionResult, compute_roof_veto_score, _ROOF_VETO_THRESHOLD, apply_hard_tree_rules, RoofTraceResult
+from pipeline.tree_detector_v2 import trace_ridge_from_anchors
 
 
 # ---------------------------------------------------------------------------

@@ -1957,16 +1957,22 @@ def _expand_ridge_seeds(
 
     Returns (ridge_indices, near_ridge_indices).
     """
-    if len(seed_indices) < 5:
-        logger.info("Ridge expansion: only %d seeds, skipping (need 5+)", len(seed_indices))
+    if len(seed_indices) < 2:
+        logger.info("Ridge expansion: only %d seeds, skipping (need 2+)", len(seed_indices))
         return seed_indices, set()
 
     seed_list = list(seed_indices)
     seed_heights = pts[seed_list, 1]
     height_var = float(np.var(seed_heights))
 
-    if height_var > 0.4:
-        logger.info("Ridge expansion: height variance %.3f > 0.4, skipping", height_var)
+    # Height variance gate: reject if seeds are at wildly different heights.
+    # Use adaptive threshold — scaled by roof height range for tolerance on
+    # tall or multi-level roofs.  Floor at 0.4 for small roofs.
+    height_range = float(pts[:, 1].max() - pts[:, 1].min()) if len(pts) > 0 else 1.0
+    var_threshold = max(0.4, height_range * 0.15)
+    if height_var > var_threshold:
+        logger.info("Ridge expansion: height variance %.3f > %.3f (adaptive), skipping",
+                     height_var, var_threshold)
         return seed_indices, set()
 
     median_h = float(np.median(seed_heights))

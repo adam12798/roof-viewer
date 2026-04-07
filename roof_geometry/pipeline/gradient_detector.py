@@ -596,6 +596,87 @@ def _validate_roof_planes(
 
 
 # ---------------------------------------------------------------------------
+# Ridge seeding from plane intersection edges
+# ---------------------------------------------------------------------------
+
+def _seed_ridge_from_plane_edges(
+    lidar_pts: np.ndarray,
+    sweep_labels: np.ndarray,
+    edges: list,
+    planes: list,
+    tree_plane_ids: set | None = None,
+    snap_distance: float = 0.5,
+) -> tuple[np.ndarray, int]:
+    """
+    When the sweep tracer fails to find enough RIDGE_DOT points, seed
+    them from plane-plane intersection edges classified as ridges.
+
+    Each slope change between adjacent RANSAC planes produces a ridge
+    edge.  LiDAR points near those edges at the right height are marked
+    as RIDGE_DOT.
+
+    Returns (updated_ridge_mask, n_seeded).
+    """
+    from models.schemas import EdgeType
+
+    _tree_ids = tree_plane_ids or set()
+    ridge_mask = sweep_labels == CellLabel.RIDGE_DOT
+    n_before = int(ridge_mask.sum())
+
+    # Collect ridge and hip edges (both represent slope boundaries)
+    ridge_edges = [
+        e for e in edges
+        if e.edge_type in (EdgeType.ridge, EdgeType.hip)
+        and not any(pid in _tree_ids for pid in e.plane_ids)
+    ]
+
+    if not ridge_edges:
+        return ridge_mask, 0
+
+    # For each ridge edge, find nearby LiDAR points and mark as RIDGE_DOT
+    pts_xz = lidar_pts[:, [0, 2]]
+    pts_y = lidar_pts[:, 1]
+
+    for edge in ridge_edges:
+        # Edge endpoints in XZ
+        e_start = np.array([edge.start_point.x, edge.start_point.z])
+        e_end = np.array([edge.end_point.x, edge.end_point.z])
+        e_h_start = edge.start_point.y
+        e_h_end = edge.end_point.y
+
+        edge_vec = e_end - e_start
+        edge_len = float(np.linalg.norm(edge_vec))
+        if edge_len < 0.1:
+            continue
+        edge_dir = edge_vec / edge_len
+
+        # For each point, compute distance to the edge line segment
+        rel = pts_xz - e_start
+        along = rel @ edge_dir                          # projection along edge
+        along_clipped = np.clip(along, 0, edge_len)
+        closest = e_start + along_clipped[:, None] * edge_dir
+        perp_dist = np.linalg.norm(pts_xz - closest, axis=1)
+
+        # Interpolate edge height at the closest point
+        t = along_clipped / edge_len
+        edge_h_at_pt = e_h_start + t * (e_h_end - e_h_start)
+
+        # Points near the edge (within snap_distance) and at edge height
+        near = (perp_dist < snap_distance) & (np.abs(pts_y - edge_h_at_pt) < 0.3)
+
+        # Only seed points that are UNSURE, ROOF, or NEAR_RIDGE — don't
+        # override GROUND, TREE, etc.
+        for idx in np.where(near)[0]:
+            lbl = sweep_labels[idx]
+            if lbl in (CellLabel.UNSURE, CellLabel.ROOF, CellLabel.NEAR_RIDGE):
+                ridge_mask[idx] = True
+                sweep_labels[idx] = CellLabel.RIDGE_DOT
+
+    n_seeded = int(ridge_mask.sum()) - n_before
+    return ridge_mask, n_seeded
+
+
+# ---------------------------------------------------------------------------
 # Plane-first detection path
 # ---------------------------------------------------------------------------
 
@@ -622,7 +703,7 @@ def _detect_roof_faces_plane_first(
         prefilter_outliers,
         project_to_grid,
     )
-    from pipeline.color_classifier import classify_points_for_color
+    from pipeline.color_classifier_v2 import classify_points_for_color
     from pipeline.plane_extractor import extract_planes_with_membership
     from pipeline.graph_builder import (
         _build_adjacency,
@@ -727,10 +808,26 @@ def _detect_roof_faces_plane_first(
     ridge_world = compute_ridge_from_planes(planes, edges, tree_plane_ids=result.tree_plane_ids)
 
     # 8b. Compute sweep-based ridge line from RIDGE_DOT points
+    #     Fallback: if sweep tracer didn't find enough ridge points, seed
+    #     from plane-plane intersection edges (different slope regions meeting
+    #     at their highest boundary = ridge).
     sweep_ridge_world = None
     if result.sweep_labels is not None:
         ridge_mask = result.sweep_labels == CellLabel.RIDGE_DOT
-        if ridge_mask.sum() >= 5:
+
+        # Fallback: seed RIDGE_DOTs from plane intersection ridge edges
+        # Each slope change between adjacent planes produces a ridge edge.
+        # Find LiDAR points near those edges and mark as RIDGE_DOT.
+        if ridge_mask.sum() < 5 and edges and len(lidar_pts) > 0:
+            ridge_mask, n_seeded = _seed_ridge_from_plane_edges(
+                lidar_pts, result.sweep_labels, edges, planes,
+                result.tree_plane_ids,
+            )
+            if n_seeded > 0:
+                logger.info("Ridge fallback: seeded %d RIDGE_DOT points from "
+                            "plane intersection edges", n_seeded)
+
+        if ridge_mask.sum() >= 3:
             ridge_pts = lidar_pts[ridge_mask]
             # PCA on XZ to get ridge direction
             ridge_xz = ridge_pts[:, [0, 2]]
