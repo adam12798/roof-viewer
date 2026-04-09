@@ -11080,7 +11080,7 @@ app.get("/design", (req, res) => {
       d.mesh = buildDormerMesh(d, face, false);
       scene3d.add(d.mesh);
       d.handleMeshes = buildDormerHandles(d, face);
-      d.handleMeshes.forEach(function(h) { h.visible = !!d.selected; });
+      d.handleMeshes.forEach(function(h) { h.visible = !!d.editing; });
       // Keep the irradiance overlay visible across drag-time rebuilds by
       // re-applying the cached color to each fresh panel (stale but close
       // enough — the real refresh fires on pointerup).
@@ -11111,13 +11111,29 @@ app.get("/design", (req, res) => {
       });
     }
 
-    // Select a dormer
+    // Select a dormer (whole-select only: highlight, no handles, no panel)
+    function selectDormerWhole(faceIdx, dormerIdx) {
+      deselectDormer();
+      selectedDormerIdx = dormerIdx;
+      var face = roofFaces3d[faceIdx];
+      var d = face.dormers[dormerIdx];
+      d.selected = true;
+      d.editing = false;
+      rebuildDormer(face, dormerIdx);
+      var dp = document.getElementById('dormerPanel');
+      if (dp) dp.classList.add('hidden');
+      var efPanel = document.getElementById('efPanel');
+      if (efPanel) efPanel.classList.add('hidden');
+    }
+
+    // Select a dormer and enter edit mode (handles + panel)
     function selectDormer(faceIdx, dormerIdx) {
       deselectDormer();
       selectedDormerIdx = dormerIdx;
       var face = roofFaces3d[faceIdx];
       var d = face.dormers[dormerIdx];
       d.selected = true;
+      d.editing = true;
       rebuildDormer(face, dormerIdx);
       updateDormerPanel(d);
       var dp = document.getElementById('dormerPanel');
@@ -11132,6 +11148,7 @@ app.get("/design", (req, res) => {
         var face = roofFaces3d[roofSelectedFace];
         if (face && face.dormers[selectedDormerIdx]) {
           face.dormers[selectedDormerIdx].selected = false;
+          face.dormers[selectedDormerIdx].editing = false;
           rebuildDormer(face, selectedDormerIdx);
         }
       }
@@ -11736,7 +11753,12 @@ app.get("/design", (req, res) => {
         }),
         selectedFace: roofSelectedFace,
         selectedSection: roofSelectedSection,
-        selectedDormer: selectedDormerIdx
+        selectedDormer: selectedDormerIdx,
+        selectedDormerEditing: (roofSelectedFace >= 0 && selectedDormerIdx >= 0 &&
+                                roofFaces3d[roofSelectedFace] &&
+                                roofFaces3d[roofSelectedFace].dormers[selectedDormerIdx])
+          ? !!roofFaces3d[roofSelectedFace].dormers[selectedDormerIdx].editing
+          : false
       };
     }
 
@@ -11762,7 +11784,7 @@ app.get("/design", (req, res) => {
               pitch: dd.pitch,
               pitchSide: dd.pitchSide,
               pitchFront: dd.pitchFront,
-              mesh: null, outlineLines: null, handleMeshes: [], selected: false
+              mesh: null, outlineLines: null, handleMeshes: [], selected: false, editing: false
             };
             face.dormers.push(newD);
             rebuildDormer(face, face.dormers.length - 1);
@@ -11779,6 +11801,7 @@ app.get("/design", (req, res) => {
         rebuildRoofFace(roofSelectedFace);
         if (selectedDormerIdx >= 0 && face.dormers[selectedDormerIdx]) {
           face.dormers[selectedDormerIdx].selected = true;
+          face.dormers[selectedDormerIdx].editing = !!snapshot.selectedDormerEditing;
           rebuildDormer(face, selectedDormerIdx);
         }
       }
@@ -12178,7 +12201,7 @@ app.get("/design", (req, res) => {
         var dormers = roofFaces3d[fi].dormers;
         if (!dormers) continue;
         for (var di = 0; di < dormers.length; di++) {
-          if (!dormers[di].selected) continue;
+          if (!dormers[di].editing) continue;
           if (!dormers[di].handleMeshes || dormers[di].handleMeshes.length === 0) continue;
           var hits = raycaster3d.intersectObjects(dormers[di].handleMeshes);
           if (hits.length > 0) {
@@ -13516,10 +13539,21 @@ app.get("/design", (req, res) => {
         if (findEdgeHandleUnderCursor && findEdgeHandleUnderCursor(e)) return;
 
         // Check dormer selection first (in edit mode)
+        // Two-step: first click whole-selects; second click on the same
+        // dormer elevates into edit mode (handles + panel).
         if (roofEditMode && roofSelectedFace >= 0) {
           var dormerHit = findDormerUnderCursor(e);
           if (dormerHit.dormerIdx >= 0) {
-            selectDormer(dormerHit.faceIdx, dormerHit.dormerIdx);
+            var curD = roofFaces3d[dormerHit.faceIdx].dormers[dormerHit.dormerIdx];
+            if (curD.selected) {
+              // Already whole-selected — second click enters edit mode
+              if (!curD.editing) {
+                selectDormer(dormerHit.faceIdx, dormerHit.dormerIdx);
+              }
+              // already editing → no-op
+            } else {
+              selectDormerWhole(dormerHit.faceIdx, dormerHit.dormerIdx);
+            }
             return;
           }
         }
