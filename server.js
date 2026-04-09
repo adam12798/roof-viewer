@@ -5914,6 +5914,8 @@ app.get("/design", (req, res) => {
       position: relative;
     }
     .tb2-btn:hover { background: #f0f0f0; color: #111; }
+    .tb2-btn.active { background: rgba(255, 140, 40, 0.18); color: #c2410c; }
+    .tb2-btn.active:hover { background: rgba(255, 140, 40, 0.28); color: #9a3412; }
     .tb2-btn.tb2-calibrated { color: #22c55e; }
     .tb2-btn.tb2-calibrated:hover { color: #16a34a; background: rgba(34,197,94,0.1); }
     .tb2-btn:disabled { color: #ccc; cursor: default; pointer-events: none; }
@@ -6276,7 +6278,7 @@ app.get("/design", (req, res) => {
       <span class="tb2-tip">Calibrate</span>
     </button>
     <!-- Irradiance -->
-    <button class="tb2-btn">
+    <button class="tb2-btn" id="btnIrradiance" onclick="toggleIrradiance()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       <span class="tb2-shortcut">I</span>
       <span class="tb2-tip">Irradiance <span class="tb2-tip-key">I</span></span>
@@ -9308,6 +9310,7 @@ app.get("/design", (req, res) => {
           hoveredTreeIdx = -1;
           canvas.style.cursor = '';
         }
+        if (typeof hideIrradianceTooltip === 'function') hideIrradianceTooltip();
       });
 
       /* ── Marquee / box-select for trees ── */
@@ -10064,6 +10067,488 @@ app.get("/design", (req, res) => {
       return mesh;
     }
 
+    /* ═══════════════════════════════════════════════════════════════════
+       SHADING ENGINE — Irradiance visualization (v1: azimuth + pitch only)
+       ═══════════════════════════════════════════════════════════════════
+
+       Frame convention (verified):
+         +x = East, -x = West, +z = South, -z = North, +y = Up
+         Compass azimuth from an upward-pointing normal (nx, ny, nz):
+           compass_deg = atan2(nx, -nz) * 180/π, wrapped to [0, 360)
+
+       Color scale is fixed absolute [700, 1700] kWh/m²/yr. The backend
+       applies a 0.75 TMY derate to approximate cloud cover, so values
+       now match Aurora's scale (Lowell flat roof ≈ 1510 kWh/m²/yr).
+       Typical TMY values for New England: south 30° ≈ 1760, flat ≈ 1510,
+       east/west 30° ≈ 1400, north 30° ≈ 970. Max 1700 pushes south-facing
+       to bright yellow, min 700 keeps shaded edges pink/magenta (not
+       deep purple). Retune when full TMY / NSRDB integration ships.
+    */
+
+    var shadingCache = {};      // key: faceId + '__s' + secIdx  → { kwh, color }
+    var irradianceOn = false;   // current overlay state
+    var shadingInFlight = false;
+
+    var IRRADIANCE_MIN = 700;   // kWh/m²/yr — plasma dark purple end
+    var IRRADIANCE_MAX = 1700;  // kWh/m²/yr — plasma yellow end
+
+    // Matplotlib plasma colormap, 9 control points (RGB 0-1)
+    var PLASMA_LUT = [
+      [0.050, 0.030, 0.528],
+      [0.259, 0.012, 0.615],
+      [0.443, 0.001, 0.658],
+      [0.611, 0.090, 0.620],
+      [0.766, 0.216, 0.522],
+      [0.893, 0.358, 0.403],
+      [0.977, 0.510, 0.282],
+      [0.996, 0.679, 0.148],
+      [0.940, 0.975, 0.131]
+    ];
+
+    function plasmaColor(t) {
+      t = Math.max(0, Math.min(1, t));
+      var n = PLASMA_LUT.length - 1;
+      var f = t * n;
+      var i = Math.floor(f);
+      if (i >= n) i = n - 1;
+      var u = f - i;
+      var a = PLASMA_LUT[i], b = PLASMA_LUT[i + 1];
+      var r = a[0] + (b[0] - a[0]) * u;
+      var g = a[1] + (b[1] - a[1]) * u;
+      var bl = a[2] + (b[2] - a[2]) * u;
+      return new THREE.Color(r, g, bl);
+    }
+
+    function irradianceColor(kwh) {
+      var t = (kwh - IRRADIANCE_MIN) / (IRRADIANCE_MAX - IRRADIANCE_MIN);
+      return plasmaColor(Math.max(0, Math.min(1, t)));
+    }
+
+    /* ── Compute area of a triangulated BufferGeometry position attribute ── */
+    function computeMeshAreaFromPositions(posAttr) {
+      var area = 0;
+      var n = posAttr.count;
+      for (var i = 0; i + 2 < n; i += 3) {
+        var ax = posAttr.getX(i),   ay = posAttr.getY(i),   az = posAttr.getZ(i);
+        var bx = posAttr.getX(i+1), by = posAttr.getY(i+1), bz = posAttr.getZ(i+1);
+        var cx = posAttr.getX(i+2), cy = posAttr.getY(i+2), cz = posAttr.getZ(i+2);
+        var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+        var crx = e1y * e2z - e1z * e2y;
+        var cry = e1z * e2x - e1x * e2z;
+        var crz = e1x * e2y - e1y * e2x;
+        area += 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+      }
+      return area;
+    }
+
+    /* ── Derive (azimuth, pitch, area) tuples for all live sections on a face ── */
+    function deriveSectionInputs(face) {
+      var out = [];
+      if (!face || !face.sectionMeshes || face.sectionMeshes.length === 0) return out;
+      var ds = face.deletedSections || [false, false, false, false];
+      var sp = face.sectionPitches || [face.pitch, face.pitch, face.pitch, face.pitch];
+      for (var i = 0; i < face.sectionMeshes.length; i++) {
+        if (ds[i]) continue;
+        var sm = face.sectionMeshes[i];
+        if (!sm || !sm.geometry || !sm.geometry.attributes || !sm.geometry.attributes.position) continue;
+        var pos = sm.geometry.attributes.position;
+        if (pos.count < 3) continue;
+
+        // Normal from first triangle (cross product of two edges)
+        var ax = pos.getX(0), ay = pos.getY(0), az = pos.getZ(0);
+        var bx = pos.getX(1), by = pos.getY(1), bz = pos.getZ(1);
+        var cx = pos.getX(2), cy = pos.getY(2), cz = pos.getZ(2);
+        var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+        var nx = e1y * e2z - e1z * e2y;
+        var ny = e1z * e2x - e1x * e2z;
+        var nz = e1x * e2y - e1y * e2x;
+        var nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (nlen < 1e-9) continue;
+        nx /= nlen; ny /= nlen; nz /= nlen;
+        if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+
+        // Pitch (tilt from horizontal) and compass azimuth
+        var pitchRad = Math.acos(Math.max(-1, Math.min(1, ny)));
+        var pitchDeg = pitchRad * 180 / Math.PI;
+        // Fall back to sectionPitches[] if the geometry gives near-zero pitch
+        // (flat-roof degenerate case) — use stored pitch as source of truth.
+        if (pitchDeg < 0.5 && sp[i] > 0.5) pitchDeg = sp[i];
+        var azimuthDeg;
+        if (pitchDeg < 0.5) {
+          azimuthDeg = 0; // flat — azimuth irrelevant; POA is azimuth-independent
+        } else {
+          azimuthDeg = (Math.atan2(nx, -nz) * 180 / Math.PI + 360) % 360;
+        }
+
+        var area = computeMeshAreaFromPositions(pos);
+        out.push({
+          id: face.id + '__s' + i,
+          sectionIdx: i,
+          azimuth_deg: azimuthDeg,
+          pitch_deg: pitchDeg,
+          area_m2: area
+        });
+      }
+      return out;
+    }
+
+    /* ── Derive (azimuth, pitch, area) tuples for every dormer roof panel on a face ── */
+    function deriveDormerSectionInputs(face) {
+      var out = [];
+      if (!face || !face.dormers || face.dormers.length === 0) return out;
+      for (var di = 0; di < face.dormers.length; di++) {
+        var d = face.dormers[di];
+        if (!d || !d.roofPanels) continue;
+        for (var pi = 0; pi < d.roofPanels.length; pi++) {
+          var panel = d.roofPanels[pi];
+          if (!panel || !panel.geometry || !panel.geometry.attributes || !panel.geometry.attributes.position) continue;
+          var pos = panel.geometry.attributes.position;
+          if (pos.count < 3) continue;
+
+          // Normal from first triangle (cross product of two edges)
+          var ax = pos.getX(0), ay = pos.getY(0), az = pos.getZ(0);
+          var bx = pos.getX(1), by = pos.getY(1), bz = pos.getZ(1);
+          var cx = pos.getX(2), cy = pos.getY(2), cz = pos.getZ(2);
+          var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+          var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+          var nx = e1y * e2z - e1z * e2y;
+          var ny = e1z * e2x - e1x * e2z;
+          var nz = e1x * e2y - e1y * e2x;
+          var nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+          if (nlen < 1e-9) continue;
+          nx /= nlen; ny /= nlen; nz /= nlen;
+          if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+
+          var pitchRad = Math.acos(Math.max(-1, Math.min(1, ny)));
+          var pitchDeg = pitchRad * 180 / Math.PI;
+          var azimuthDeg;
+          if (pitchDeg < 0.5) {
+            azimuthDeg = 0;
+          } else {
+            azimuthDeg = (Math.atan2(nx, -nz) * 180 / Math.PI + 360) % 360;
+          }
+
+          var area = computeMeshAreaFromPositions(pos);
+          out.push({
+            id: face.id + '__d' + di + '__p' + pi,
+            dormerIdx: di,
+            panelIdx: pi,
+            azimuth_deg: azimuthDeg,
+            pitch_deg: pitchDeg,
+            area_m2: area
+          });
+        }
+      }
+      return out;
+    }
+
+    function collectAllSectionInputs() {
+      var out = [];
+      for (var i = 0; i < roofFaces3d.length; i++) {
+        var face = roofFaces3d[i];
+        if (!face) continue;
+        var secs = deriveSectionInputs(face);
+        for (var j = 0; j < secs.length; j++) {
+          var s = secs[j];
+          out.push({
+            id: s.id,
+            azimuth_deg: s.azimuth_deg,
+            pitch_deg: s.pitch_deg,
+            area_m2: s.area_m2
+          });
+        }
+        var dinputs = deriveDormerSectionInputs(face);
+        for (var k = 0; k < dinputs.length; k++) {
+          var di = dinputs[k];
+          out.push({
+            id: di.id,
+            azimuth_deg: di.azimuth_deg,
+            pitch_deg: di.pitch_deg,
+            area_m2: di.area_m2
+          });
+        }
+      }
+      return out;
+    }
+
+    /* ── Fetch annual irradiance from the backend shading engine ── */
+    function requestShading() {
+      if (shadingInFlight) return Promise.resolve(null);
+      var sections = collectAllSectionInputs();
+      if (!sections.length) return Promise.resolve({ sections: [] });
+      var payload = {
+        lat: (typeof designLat === 'number') ? designLat : 42.0,
+        lng: (typeof designLng === 'number') ? designLng : -71.0,
+        sections: sections
+      };
+      shadingInFlight = true;
+      return fetch('/api/roof/shading', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(resp) {
+        if (!resp.ok) throw new Error('Shading request failed: ' + resp.status);
+        return resp.json();
+      }).then(function(data) {
+        shadingCache = {};
+        (data.sections || []).forEach(function(s) {
+          shadingCache[s.id] = {
+            kwh: s.annual_kwh_per_m2,
+            color: irradianceColor(s.annual_kwh_per_m2)
+          };
+        });
+        shadingInFlight = false;
+        return data;
+      }).catch(function(err) {
+        console.error('[shading] request failed:', err);
+        shadingInFlight = false;
+        return null;
+      });
+    }
+
+    /* ── Swap a single roof section mesh to its irradiance color ── */
+    function _swapToIrradiance(mesh, key) {
+      var entry = shadingCache[key];
+      if (!mesh || !entry) return;
+      if (!mesh.userData.baseMaterial) mesh.userData.baseMaterial = mesh.material;
+      mesh.material = new THREE.MeshBasicMaterial({
+        color: entry.color,
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: true,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1
+      });
+    }
+
+    /* ── Restore a single mesh's stashed base material ── */
+    function _restoreBaseMaterial(mesh) {
+      if (mesh && mesh.userData && mesh.userData.baseMaterial) {
+        mesh.material = mesh.userData.baseMaterial;
+        delete mesh.userData.baseMaterial;
+      }
+    }
+
+    function applyIrradianceOverlay(enable) {
+      irradianceOn = !!enable;
+      if (!enable) {
+        hideIrradianceTooltip();
+        // Restore base materials on every section mesh and dormer panel
+        for (var i = 0; i < roofFaces3d.length; i++) {
+          var face = roofFaces3d[i];
+          if (!face) continue;
+          if (face.sectionMeshes) {
+            for (var j = 0; j < face.sectionMeshes.length; j++) {
+              _restoreBaseMaterial(face.sectionMeshes[j]);
+            }
+          }
+          if (face.dormers) {
+            for (var di = 0; di < face.dormers.length; di++) {
+              var d = face.dormers[di];
+              if (!d || !d.roofPanels) continue;
+              for (var pi = 0; pi < d.roofPanels.length; pi++) {
+                _restoreBaseMaterial(d.roofPanels[pi]);
+              }
+            }
+          }
+        }
+        return;
+      }
+      // Swap each section mesh material to its irradiance color
+      for (var i = 0; i < roofFaces3d.length; i++) {
+        var face = roofFaces3d[i];
+        if (!face) continue;
+        var ds = face.deletedSections || [];
+        if (face.sectionMeshes) {
+          for (var j = 0; j < face.sectionMeshes.length; j++) {
+            if (ds[j]) continue;
+            _swapToIrradiance(face.sectionMeshes[j], face.id + '__s' + j);
+          }
+        }
+        if (face.dormers) {
+          for (var di = 0; di < face.dormers.length; di++) {
+            var d = face.dormers[di];
+            if (!d || !d.roofPanels) continue;
+            for (var pi = 0; pi < d.roofPanels.length; pi++) {
+              _swapToIrradiance(d.roofPanels[pi], face.id + '__d' + di + '__p' + pi);
+            }
+          }
+        }
+      }
+    }
+
+    /* ── Toolbar entry point: wired to the existing Irradiance button ── */
+    function toggleIrradiance() {
+      var btn = document.getElementById('btnIrradiance');
+      if (irradianceOn) {
+        applyIrradianceOverlay(false);
+        hideIrradianceLegend();
+        if (btn) btn.classList.remove('active');
+        return;
+      }
+      if (btn) btn.classList.add('active');
+      if (Object.keys(shadingCache).length === 0) {
+        showIrradianceLegend(true); // "calculating..." state
+        requestShading().then(function(data) {
+          if (data) {
+            applyIrradianceOverlay(true);
+            showIrradianceLegend(false);
+          } else {
+            if (btn) btn.classList.remove('active');
+            hideIrradianceLegend();
+          }
+        });
+      } else {
+        applyIrradianceOverlay(true);
+        showIrradianceLegend(false);
+      }
+    }
+
+    /* ── Colorbar legend (DOM built lazily on first show) ── */
+    function ensureIrradianceLegend() {
+      var el = document.getElementById('irradianceLegend');
+      if (el) return el;
+      el = document.createElement('div');
+      el.id = 'irradianceLegend';
+      el.style.cssText = 'position:absolute;right:16px;bottom:80px;background:rgba(26,8,40,0.92);color:#fff;padding:10px 12px;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:11px;z-index:50;box-shadow:0 4px 14px rgba(0,0,0,0.4);pointer-events:none;display:none;min-width:180px;';
+      var title = document.createElement('div');
+      title.style.cssText = 'font-weight:600;margin-bottom:6px;';
+      title.textContent = 'Annual irradiance';
+      el.appendChild(title);
+      var sub = document.createElement('div');
+      sub.id = 'irradianceLegendSub';
+      sub.style.cssText = 'font-size:10px;color:#c9b9dc;margin-bottom:8px;';
+      sub.textContent = 'kWh/m²/yr · TMY estimate';
+      el.appendChild(sub);
+      // gradient bar
+      var barWrap = document.createElement('div');
+      barWrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      var lo = document.createElement('div');
+      lo.style.cssText = 'width:28px;text-align:right;font-variant-numeric:tabular-nums;';
+      lo.textContent = String(IRRADIANCE_MIN);
+      var canvas = document.createElement('canvas');
+      canvas.width = 140; canvas.height = 14;
+      canvas.style.cssText = 'border-radius:3px;display:block;';
+      var ctx = canvas.getContext('2d');
+      for (var x = 0; x < canvas.width; x++) {
+        var t = x / (canvas.width - 1);
+        var c = plasmaColor(t);
+        ctx.fillStyle = 'rgb(' + Math.round(c.r * 255) + ',' + Math.round(c.g * 255) + ',' + Math.round(c.b * 255) + ')';
+        ctx.fillRect(x, 0, 1, canvas.height);
+      }
+      var hi = document.createElement('div');
+      hi.style.cssText = 'width:28px;text-align:left;font-variant-numeric:tabular-nums;';
+      hi.textContent = String(IRRADIANCE_MAX);
+      barWrap.appendChild(lo);
+      barWrap.appendChild(canvas);
+      barWrap.appendChild(hi);
+      el.appendChild(barWrap);
+      document.body.appendChild(el);
+      return el;
+    }
+
+    function showIrradianceLegend(calculating) {
+      var el = ensureIrradianceLegend();
+      var sub = document.getElementById('irradianceLegendSub');
+      if (sub) sub.textContent = calculating ? 'calculating…' : 'kWh/m²/yr · TMY estimate';
+      el.style.display = 'block';
+    }
+    function hideIrradianceLegend() {
+      var el = document.getElementById('irradianceLegend');
+      if (el) el.style.display = 'none';
+    }
+
+    /* ── Hover tooltip: shows the specific cell's kWh/m²/yr ── */
+    function ensureIrradianceTooltip() {
+      var el = document.getElementById('irradianceTooltip');
+      if (el) return el;
+      el = document.createElement('div');
+      el.id = 'irradianceTooltip';
+      el.style.cssText = 'position:fixed;background:rgba(26,8,40,0.95);color:#fff;padding:6px 10px;border-radius:6px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:12px;z-index:60;pointer-events:none;display:none;box-shadow:0 4px 14px rgba(0,0,0,0.5);white-space:nowrap;border:1px solid rgba(255,255,255,0.1);';
+      document.body.appendChild(el);
+      return el;
+    }
+    function hideIrradianceTooltip() {
+      var el = document.getElementById('irradianceTooltip');
+      if (el) el.style.display = 'none';
+    }
+    // Raycast under the cursor against roof section meshes and dormer
+    // panels, look up the per-section value from shadingCache, and show
+    // it in the tooltip.
+    function updateIrradianceHover(event) {
+      if (!irradianceOn) { hideIrradianceTooltip(); return; }
+      var canvas = document.getElementById('canvas3d');
+      if (!canvas || !raycaster3d || !camera3d) return;
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      // Collect candidate meshes + their shadingCache keys
+      var meshes = [];
+      var keys = [];
+      for (var i = 0; i < roofFaces3d.length; i++) {
+        var face = roofFaces3d[i];
+        if (!face) continue;
+        var ds = face.deletedSections || [];
+        if (face.sectionMeshes) {
+          for (var j = 0; j < face.sectionMeshes.length; j++) {
+            if (ds[j]) continue;
+            var sm = face.sectionMeshes[j];
+            if (!sm) continue;
+            meshes.push(sm);
+            keys.push(face.id + '__s' + j);
+          }
+        }
+        if (face.dormers) {
+          for (var di = 0; di < face.dormers.length; di++) {
+            var d = face.dormers[di];
+            if (!d || !d.roofPanels) continue;
+            for (var pi = 0; pi < d.roofPanels.length; pi++) {
+              var panel = d.roofPanels[pi];
+              if (!panel) continue;
+              meshes.push(panel);
+              keys.push(face.id + '__d' + di + '__p' + pi);
+            }
+          }
+        }
+      }
+      if (meshes.length === 0) { hideIrradianceTooltip(); return; }
+      var hits = raycaster3d.intersectObjects(meshes, false);
+      if (hits.length === 0) { hideIrradianceTooltip(); return; }
+      var hitIdx = meshes.indexOf(hits[0].object);
+      if (hitIdx < 0) { hideIrradianceTooltip(); return; }
+      var entry = shadingCache[keys[hitIdx]];
+      if (!entry) { hideIrradianceTooltip(); return; }
+      var el = ensureIrradianceTooltip();
+      el.innerHTML = '<div style="font-variant-numeric:tabular-nums;font-weight:600;">' +
+                     Math.round(entry.kwh) + ' kWh/m²/yr</div>';
+      // Position near cursor with a small offset
+      var x = event.clientX + 14;
+      var y = event.clientY + 14;
+      var vw = window.innerWidth, vh = window.innerHeight;
+      el.style.display = 'block';
+      var w = el.offsetWidth, h = el.offsetHeight;
+      if (x + w + 8 > vw) x = event.clientX - w - 14;
+      if (y + h + 8 > vh) y = event.clientY - h - 14;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+    }
+
+    /* ── Invalidate the shading cache when a roof face changes ── */
+    function invalidateShadingCache() {
+      shadingCache = {};
+      if (irradianceOn) {
+        // If overlay is live, refresh in the background
+        requestShading().then(function(data) {
+          if (data && irradianceOn) applyIrradianceOverlay(true);
+        });
+      }
+    }
+
     /* ── Build edge outline lines (tube-based for consistent thickness) ── */
     var EDGE_LINE_RADIUS = 0.06;
     function buildRoofEdgeLines(verts, color) {
@@ -10311,12 +10796,16 @@ app.get("/design", (req, res) => {
         contactY.push(wH + getRoofSurfaceY(face, v[i].x, v[i].z));
       }
 
-      // Dormer wall height — raises the dormer structure above the roof surface.
-      // Front vertices get full wallH; back vertices stay on the roof surface.
+      // Dormer eave heights. Back vertices (2=back-right, 3=peak, 4=back-left)
+      // sit on the main roof surface. Front vertices (0, 1) are raised so their
+      // Y matches the back *shoulders* (v2 and v4) — NOT the peak (v3) — so
+      // the dormer eave line sits at the shoulder height. The peak is higher
+      // on a sloped roof, and pinning the front to the peak looked wrong.
       var dormerWH = dormer.wallHeight || DORMER_WALL_HEIGHT;
+      var shoulderMaxY = Math.max(contactY[2], contactY[4]);
       var eaveY = [];
-      eaveY[0] = contactY[0] + dormerWH;  // front-left: full height
-      eaveY[1] = contactY[1] + dormerWH;  // front-right: full height
+      eaveY[0] = shoulderMaxY;             // front-left: matches back shoulders
+      eaveY[1] = shoulderMaxY;             // front-right: matches back shoulders
       eaveY[2] = contactY[2];              // back-right: flush with roof
       eaveY[3] = contactY[3];              // peak: flush with roof
       eaveY[4] = contactY[4];              // back-left: flush with roof
@@ -10376,6 +10865,9 @@ app.get("/design", (req, res) => {
           v: (-wz + satExtentM / 2) / satExtentM
         };
       }
+      // Roof panels get collected for the shading engine overlay. Walls
+      // (wallMat) stay un-tagged so they are never recolored by irradiance.
+      var roofPanels = [];
       function addQuad(ax,ay,az, bx,by,bz, cx,cy,cz, dx,dy,dz, mat) {
         var geo = new THREE.BufferGeometry();
         var pos = new Float32Array([ax,ay,az, bx,by,bz, cx,cy,cz, ax,ay,az, cx,cy,cz, dx,dy,dz]);
@@ -10386,7 +10878,13 @@ app.get("/design", (req, res) => {
           geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
         }
         geo.computeVertexNormals();
-        group.add(new THREE.Mesh(geo, mat));
+        var m = new THREE.Mesh(geo, mat);
+        group.add(m);
+        if (mat === roofMat) {
+          m.userData.isDormerRoofPanel = true;
+          roofPanels.push(m);
+        }
+        return m;
       }
       function addTri(ax,ay,az, bx,by,bz, cx,cy,cz, mat) {
         var geo = new THREE.BufferGeometry();
@@ -10398,7 +10896,13 @@ app.get("/design", (req, res) => {
         }
         geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
         geo.computeVertexNormals();
-        group.add(new THREE.Mesh(geo, mat));
+        var m = new THREE.Mesh(geo, mat);
+        group.add(m);
+        if (mat === roofMat) {
+          m.userData.isDormerRoofPanel = true;
+          roofPanels.push(m);
+        }
+        return m;
       }
 
       // Ridge and roof geometry — all Y values are world-space (no group offset)
@@ -10529,6 +11033,10 @@ app.get("/design", (req, res) => {
         dormer.outlineLines = outlineGroup;
       }
 
+      // Expose the collected roof panels on the dormer so the shading
+      // engine can iterate them without re-walking the group tree.
+      dormer.roofPanels = roofPanels;
+
       // No group Y offset — all geometry is in world space
       return group;
     }
@@ -10537,39 +11045,30 @@ app.get("/design", (req, res) => {
     function buildDormerHandles(dormer, face) {
       var handles = [];
       var wH = getRoofWallHeight(face);
-      var dormerWH = dormer.wallHeight || DORMER_WALL_HEIGHT;
       var verts = dormer.vertices;
+      // Back shoulder Ys (local-to-face, without the +wH wall offset). The
+      // front vertex handles (v0, v1) are raised to match the higher of the
+      // two back *shoulders* (v2, v4) — NOT the peak (v3) — so the front
+      // dots visually line up with the shoulder dots, not the peak dot.
+      var backY2 = getRoofSurfaceY(face, verts[2].x, verts[2].z);
+      var backY4 = getRoofSurfaceY(face, verts[4].x, verts[4].z);
+      var shoulderMaxLocalY = Math.max(backY2, backY4);
+      function vertexLocalY(i, vx, vz) {
+        if (i <= 1) return shoulderMaxLocalY;
+        return getRoofSurfaceY(face, vx, vz);
+      }
       // Vertex handles (indices 0–4)
       verts.forEach(function(v, i) {
-        var y = getRoofSurfaceY(face, v.x, v.z);
-        var wallAdd = (i <= 1) ? dormerWH : 0;
+        var y = vertexLocalY(i, v.x, v.z);
         var sphere = new THREE.Mesh(
           new THREE.SphereGeometry(0.25, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xffffff })
         );
-        sphere.position.set(v.x, wH + y + wallAdd + 0.1, v.z);
+        sphere.position.set(v.x, wH + y + 0.1, v.z);
         sphere.userData.isDormerHandle = true;
         scene3d.add(sphere);
         handles.push(sphere);
       });
-      // Edge midpoint handles (indices 5–9): edge i connects vertex i to (i+1)%5
-      for (var ei = 0; ei < 5; ei++) {
-        var a = verts[ei], b = verts[(ei + 1) % 5];
-        var mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
-        var ya = getRoofSurfaceY(face, a.x, a.z);
-        var yb = getRoofSurfaceY(face, b.x, b.z);
-        var wallAddA = (ei <= 1) ? dormerWH : 0;
-        var wallAddB = (((ei + 1) % 5) <= 1) ? dormerWH : 0;
-        var my = wH + (ya + yb) / 2 + (wallAddA + wallAddB) / 2 + 0.1;
-        var edgeSphere = new THREE.Mesh(
-          new THREE.SphereGeometry(0.18, 8, 8),
-          new THREE.MeshBasicMaterial({ color: 0x00e5ff })
-        );
-        edgeSphere.position.set(mx, my, mz);
-        edgeSphere.userData.isDormerHandle = true;
-        scene3d.add(edgeSphere);
-        handles.push(edgeSphere);
-      }
       return handles;
     }
 
@@ -10581,6 +11080,17 @@ app.get("/design", (req, res) => {
       d.mesh = buildDormerMesh(d, face, false);
       scene3d.add(d.mesh);
       d.handleMeshes = buildDormerHandles(d, face);
+      d.handleMeshes.forEach(function(h) { h.visible = !!d.selected; });
+      // Keep the irradiance overlay visible across drag-time rebuilds by
+      // re-applying the cached color to each fresh panel (stale but close
+      // enough — the real refresh fires on pointerup).
+      if (typeof irradianceOn !== 'undefined' && irradianceOn && d.roofPanels) {
+        for (var pi = 0; pi < d.roofPanels.length; pi++) {
+          var panel = d.roofPanels[pi];
+          if (!panel) continue;
+          _swapToIrradiance(panel, face.id + '__d' + dormerIdx + '__p' + pi);
+        }
+      }
     }
 
     // Rebuild all dormers on a face
@@ -10946,13 +11456,16 @@ app.get("/design", (req, res) => {
       if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
 
       face.handleMeshes = buildRoofHandles(verts);
-      face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
+      face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; h.visible = false; });
 
       face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
       face.edgeHandleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
 
       face.labelSprites = buildEdgeLabels(verts);
       roofFaces3d.push(face);
+      // Irradiance: a new face needs its annual kWh value — clear cache and
+      // reapply overlay (the cache refresh will hit the backend).
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
       markDirty();
       return roofFaces3d.length - 1;
     }
@@ -10991,6 +11504,7 @@ app.get("/design", (req, res) => {
 
       face.vertices.forEach(function(v, i) {
         face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
+        face.handleMeshes[i].visible = !!face.selected;
       });
       if (face.edgeHandleMeshes) {
         for (var ei = 0; ei < face.vertices.length; ei++) {
@@ -11001,6 +11515,10 @@ app.get("/design", (req, res) => {
       // Rebuild dormers on this face
       clearFaceDormers(face);
       rebuildFaceDormers(idx);
+      // Irradiance: the section meshes just got rebuilt, so stashed baseMaterial
+      // references are gone. Clear the cache and re-apply overlay if it was on.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
+      if (irradianceOn) applyIrradianceOverlay(true);
       markDirty();
     }
 
@@ -11533,6 +12051,7 @@ app.get("/design", (req, res) => {
       mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster3d.setFromCamera(mouse3d, camera3d);
       for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        if (!roofFaces3d[fi].selected) continue;
         var hits = raycaster3d.intersectObjects(roofFaces3d[fi].handleMeshes);
         if (hits.length > 0) {
           var handleIdx = roofFaces3d[fi].handleMeshes.indexOf(hits[0].object);
@@ -11659,6 +12178,7 @@ app.get("/design", (req, res) => {
         var dormers = roofFaces3d[fi].dormers;
         if (!dormers) continue;
         for (var di = 0; di < dormers.length; di++) {
+          if (!dormers[di].selected) continue;
           if (!dormers[di].handleMeshes || dormers[di].handleMeshes.length === 0) continue;
           var hits = raycaster3d.intersectObjects(dormers[di].handleMeshes);
           if (hits.length > 0) {
@@ -13202,42 +13722,23 @@ app.get("/design", (req, res) => {
             dv[ci] = { x: sv[ci].x, z: sv[ci].z };
           }
 
-          if (dhi >= 5) {
-            // Edge handle (indices 5–9): edge i connects vertex i to (i+1)%5
-            // Move both edge vertices perpendicular to the edge direction
-            var edgeI = dhi - 5;
-            var edgeJ = (edgeI + 1) % 5;
-            var edgeMidX = (sv[edgeI].x + sv[edgeJ].x) / 2;
-            var edgeMidZ = (sv[edgeI].z + sv[edgeJ].z) / 2;
-            // Edge direction
-            var eEdx = sv[edgeJ].x - sv[edgeI].x, eEdz = sv[edgeJ].z - sv[edgeI].z;
-            var eLen = Math.sqrt(eEdx * eEdx + eEdz * eEdz) || 1;
-            // Normal to edge (perpendicular, pointing outward)
-            var enx = -eEdz / eLen, enz = eEdx / eLen;
-            // Project mouse delta onto edge normal
-            var eDeltaX = dhit.x - edgeMidX, eDeltaZ = dhit.z - edgeMidZ;
-            var eProj = eDeltaX * enx + eDeltaZ * enz;
-            dv[edgeI] = { x: sv[edgeI].x + enx * eProj, z: sv[edgeI].z + enz * eProj };
-            dv[edgeJ] = { x: sv[edgeJ].x + enx * eProj, z: sv[edgeJ].z + enz * eProj };
-          } else {
-            var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
-            var projW = deltaX * wux + deltaZ * wuz;
-            var projD = deltaX * dux + deltaZ * duz;
+          var deltaX = dhit.x - sv[dhi].x, deltaZ = dhit.z - sv[dhi].z;
+          var projW = deltaX * wux + deltaZ * wuz;
+          var projD = deltaX * dux + deltaZ * duz;
 
-            if (dhi === 0 || dhi === 1) {
-              // Front pair: mirror width, shift both in depth; back untouched
-              var wDeltaF = (dhi === 0) ? -projW : projW;
-              dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
-              dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
-            } else if (dhi === 2 || dhi === 4) {
-              // Back pair: mirror width, shift both in depth; front and peak untouched
-              var wDeltaB = (dhi === 2) ? projW : -projW;
-              dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
-              dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
-            } else {
-              // Peak (3): free movement, front untouched
-              dv[3] = { x: dhit.x, z: dhit.z };
-            }
+          if (dhi === 0 || dhi === 1) {
+            // Front pair: mirror width, shift both in depth; back untouched
+            var wDeltaF = (dhi === 0) ? -projW : projW;
+            dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
+            dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
+          } else if (dhi === 2 || dhi === 4) {
+            // Back pair: mirror width, shift both in depth; front and peak untouched
+            var wDeltaB = (dhi === 2) ? projW : -projW;
+            dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
+            dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
+          } else {
+            // Peak (3): free movement, front untouched
+            dv[3] = { x: dhit.x, z: dhit.z };
           }
 
           rebuildDormer(dface, dormerDraggingDormerIdx);
@@ -13339,6 +13840,12 @@ app.get("/design", (req, res) => {
             }
           }
         }
+        // Irradiance hover tooltip — only when the overlay is live and no drag is in progress
+        if (irradianceOn && roofDraggingHandle < 0 && dormerDraggingHandle < 0 && roofDraggingEdge < 0 && !roofMoveStart) {
+          updateIrradianceHover(e);
+        } else {
+          hideIrradianceTooltip();
+        }
       });
 
       // Pointerup: end drag
@@ -13356,6 +13863,8 @@ app.get("/design", (req, res) => {
           if (controls3d) controls3d.enabled = true;
           canvas.style.cursor = '';
           markDirty();
+          // Dormer orientation/size may have changed — refresh irradiance.
+          if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
         }
         if (roofDraggingEdge >= 0) {
           roofDraggingEdge = -1;
@@ -16258,6 +16767,26 @@ app.post("/api/roof/auto-detect", async (req, res) => {
     res.json(data);
   } catch (e) {
     res.status(503).json({ error: "Roof detection service unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
+  }
+});
+
+// ── Shading engine: annual irradiance per roof section ───────────────────
+app.post("/api/roof/shading", async (req, res) => {
+  const ROOF_SERVICE = process.env.ROOF_SERVICE_URL || "http://localhost:8000";
+  try {
+    const resp = await fetch(`${ROOF_SERVICE}/roof/shading`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body)
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.detail || "Shading engine error" });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(503).json({ error: "Shading engine unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
   }
 });
 

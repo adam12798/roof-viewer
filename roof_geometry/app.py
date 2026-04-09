@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from models.schemas import RoofParseRequest, RoofParseResponse
 from pipeline.orchestrator import RoofParsingPipeline
+from pipeline.shading_engine import run_shading_engine
+from pipeline.shading_engine.schemas import ShadingRequest, ShadingResponse
 
 app = FastAPI(
     title="Roof Geometry Parser",
@@ -56,6 +58,15 @@ async def parse_roof(request: RoofParseRequest):
     try:
         result = await pipeline.parse(request)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/roof/shading", response_model=ShadingResponse)
+async def shading(request: ShadingRequest):
+    """Compute clear-sky annual POA irradiance per roof section."""
+    try:
+        return run_shading_engine(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
