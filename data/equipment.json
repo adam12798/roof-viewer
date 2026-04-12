@@ -4,27 +4,26 @@
       "id": "qcells-qtron-blk-430",
       "name": "Q.TRON BLK M-G2.C1+/AC 430",
       "manufacturer": "Qcells",
+      "enabled": true,
+      "partners": "All",
+      "regions": "All regions",
+      "wattage": 430,
       "type": "Default",
       "componentType": "Mono Si",
-      "wattage": 430,
       "cellQuantity": 54,
       "efficiency": 22.0,
       "description": "108 Half-cut monocrystalline Q.ANTUM NEO cells",
       "microinverter": true,
       "microinverterManufacturer": "Qcells",
       "submoduleSimulation": true,
-      "regions": "All regions",
       "domesticContent": false,
       "dimensions": { "lengthMm": 1722, "widthMm": 1134, "heightMm": 40 },
       "weightKg": 22.95,
-      "mechanical": {
-        "staticLoadWind": 3600,
-        "staticLoadSnow": 5400
-      },
+      "mechanical": { "staticLoadWind": 3600, "staticLoadSnow": 5400 },
       "miscellaneous": {
         "annualDegradation": 0.33,
         "lightInducedDegradation": 1.17,
-        "connectorType": "Stäubli MC4",
+        "connectorType": "Staubli MC4",
         "workWarrantyYears": 25,
         "productWarrantyYears": 25,
         "frameType": "Black anodized aluminum",
@@ -32,8 +31,69 @@
         "backsheetColor": null
       },
       "createdAt": "2026-03-29T00:00:00.000Z"
-    }
+    },
+    { "id": "rec-alpha-pure-r-430", "name": "REC Alpha Pure-R 430", "manufacturer": "REC Group", "enabled": true, "partners": "All", "regions": "All regions", "wattage": 430 },
+    { "id": "longi-hi-mo-6-580", "name": "Hi-MO 6 Explorer LR5-72HGD 580M", "manufacturer": "LONGi", "enabled": true, "partners": "All", "regions": "All regions", "wattage": 580 },
+    { "id": "canadian-550-bihiku7", "name": "BiHiKu7 CS7N-550TB-AG", "manufacturer": "Canadian Solar", "enabled": true, "partners": "All", "regions": "All regions", "wattage": 550 },
+    { "id": "jinko-tiger-neo-580", "name": "Tiger Neo N-type 72HL4-BDV 580W", "manufacturer": "JinkoSolar", "enabled": true, "partners": "All", "regions": "All regions", "wattage": 580 },
+    { "id": "trina-vertex-s-plus-445", "name": "Vertex S+ TSM-NEG9R.28 445W", "manufacturer": "Trina Solar", "enabled": false, "partners": "All", "regions": "All regions", "wattage": 445 },
+    { "id": "silfab-prime-410", "name": "SIL-410-BK Prime", "manufacturer": "Silfab Solar", "enabled": false, "partners": "All", "regions": "All regions", "wattage": 410 },
+    { "id": "maxeon-7-435", "name": "Maxeon 7 SPR-MAX-435-COM", "manufacturer": "Maxeon Solar", "enabled": false, "partners": "All", "regions": "All regions", "wattage": 435 }
   ],
-  "inverters": [],
+  "inverters": [
+    { "id": "se11400h-usskbez8", "name": "USE11400H-USSKBEZ8 (11400W)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "All", "regions": "All regions", "acPower": 11400, "tags": ["Storage"] },
+    { "id": "se11400h-us-hub-240v", "name": "SE11400H-US Hub (USA) (240V) (Sept 2024)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "acPower": 11400, "tags": ["Storage"] },
+    { "id": "se10000h-us-hub-240v", "name": "SE10000H-US Hub (USA) (240V) (Sept 2024)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "acPower": 10000, "tags": ["Storage"] },
+    { "id": "se7600h-us-hub-240v", "name": "SE7600H-US Hub (USA) (240V) (Sept 2024)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "acPower": 7600, "tags": ["Storage"] },
+    { "id": "se5700h-us-hub-240v", "name": "SE5700H-US Hub (USA) (240V) (Sept 2024)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "acPower": 5760, "tags": ["Storage"] },
+    { "id": "se3800h-us-hub-240v", "name": "SE3800H-US Hub (USA) (240V) (Sept 2024)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "acPower": 3800, "tags": ["Storage"] },
+    { "id": "qcells-qmi-349b-g1", "name": "Q.MI.349B-G1", "manufacturer": "Qcells", "enabled": true, "partners": "All", "regions": "All regions", "acPower": 349 },
+    { "id": "enphase-iq8plus", "name": "IQ8PLUS-72-2-US (290W)", "manufacturer": "Enphase Energy", "enabled": true, "partners": "All", "regions": "All regions", "acPower": 290 }
+  ],
+  "dcOptimizers": [
+    { "id": "se-u650b", "name": "U650B", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "All", "regions": "All regions", "inputPower": 650 },
+    { "id": "se-u650-s650c", "name": "U650 (S650C)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "All", "regions": "All regions", "inputPower": 650 },
+    { "id": "optivolt-pbi-test", "name": "Optivolt Power Balancer (Integrated) (Test)", "manufacturer": "Optivolt", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "inputPower": 480 },
+    { "id": "projoy-peop1400", "name": "PEOP1400", "manufacturer": "Projoy Electric", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "inputPower": 700 },
+    { "id": "projoy-peop1200", "name": "PEOP1200", "manufacturer": "Projoy Electric", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "inputPower": 600 },
+    { "id": "projoy-peop1000", "name": "PEOP1000", "manufacturer": "Projoy Electric", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "inputPower": 500 },
+    { "id": "cetc-hs4-o-800", "name": "HS4-O-800", "manufacturer": "CETCsolar (Zhejiang JEC New Energy Technology CO., Ltd)", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "inputPower": 800 }
+  ],
+  "combinerBoxes": [
+    { "id": "midnite-mnpv6", "name": "MNPV6 Combiner", "manufacturer": "MidNite Solar", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "solaredge-synergy-cb", "name": "Synergy Manager CB", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "shoals-big-lead-16", "name": "BLA Big Lead Assembly 16", "manufacturer": "Shoals Technologies", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
+  "loadCenters": [
+    { "id": "span-panel", "name": "SPAN Smart Panel", "manufacturer": "Span Inc.", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "leviton-lc-200a", "name": "LP220-MB 200A Load Center", "manufacturer": "Leviton", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "sq-d-hom2040", "name": "Homeline HOM2040M200PC", "manufacturer": "Square D", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
+  "disconnects": [
+    { "id": "eaton-dg222", "name": "DG222NGB 60A Safety Switch", "manufacturer": "Eaton", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "siemens-gnf322", "name": "GNF322 60A Disconnect", "manufacturer": "Siemens", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "sq-d-du222rb", "name": "DU222RB 60A Non-Fused", "manufacturer": "Square D", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
+  "servicePanels": [
+    { "id": "sq-d-qo130l200pg", "name": "QO130L200PG 200A Main Lug", "manufacturer": "Square D", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "eaton-brp20b200", "name": "BRP20B200 200A Panel", "manufacturer": "Eaton", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "siemens-p3040b1200", "name": "P3040B1200CU 200A Panel", "manufacturer": "Siemens", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
+  "meters": [
+    { "id": "itron-centron-c2s", "name": "CENTRON C2S OpenWay Riva", "manufacturer": "Itron", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "landis-gyr-e360", "name": "E360 Grid Stream RF Meter", "manufacturer": "Landis+Gyr", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "se-revenue-grade", "name": "SE-MTR-3Y-400V-A Revenue Grade", "manufacturer": "SolarEdge Technologies Inc.", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
+  "batteries": [
+    { "id": "tesla-powerwall3", "name": "Powerwall 3", "manufacturer": "Tesla Energy", "enabled": true, "partners": "All", "regions": "All regions", "capacity": 13.5, "tags": ["ESS"] },
+    { "id": "enphase-iq-5p", "name": "IQ Battery 5P", "manufacturer": "Enphase Energy", "enabled": true, "partners": "All", "regions": "All regions", "capacity": 5.0, "tags": ["ESS"] },
+    { "id": "frankl-pwrcell-m6", "name": "PWRcell M6 Battery", "manufacturer": "Generac (FranklinWH)", "enabled": true, "partners": "All", "regions": "All regions", "capacity": 9.0, "tags": ["ESS"] },
+    { "id": "se-home-battery", "name": "Home Battery 400V (9.7 kWh)", "manufacturer": "SolarEdge Technologies Inc.", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "capacity": 9.7, "tags": ["ESS"] },
+    { "id": "lg-resu-16h-prime", "name": "RESU 16H Prime", "manufacturer": "LG Energy Solution", "enabled": false, "partners": "\u2014 (Team Sunshine)", "regions": "All regions", "capacity": 16.0, "tags": ["ESS"] }
+  ],
+  "energyOptimizations": [
+    { "id": "se-smart-ev-charger", "name": "Smart EV Charger 48A", "manufacturer": "SolarEdge Technologies Inc.", "enabled": true, "partners": "All", "regions": "All regions" },
+    { "id": "span-ev-charger", "name": "SPAN Drive 48A EVSE", "manufacturer": "Span Inc.", "enabled": false, "partners": "All", "regions": "All regions" }
+  ],
   "racking": []
 }

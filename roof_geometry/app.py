@@ -15,8 +15,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from models.schemas import RoofParseRequest, RoofParseResponse
 from pipeline.orchestrator import RoofParsingPipeline
-from pipeline.shading_engine import run_shading_engine
-from pipeline.shading_engine.schemas import ShadingRequest, ShadingResponse
+from pipeline.shading_engine import run_per_pixel_shading, run_shading_engine
+from pipeline.shading_engine.schemas import (
+    PerPixelShadingRequest,
+    PerPixelShadingResponse,
+    ShadingRequest,
+    ShadingResponse,
+)
 
 app = FastAPI(
     title="Roof Geometry Parser",
@@ -67,6 +72,21 @@ async def shading(request: ShadingRequest):
     """Compute clear-sky annual POA irradiance per roof section."""
     try:
         return run_shading_engine(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/roof/shading/per_pixel", response_model=PerPixelShadingResponse)
+async def shading_per_pixel(request: PerPixelShadingRequest):
+    """Compute per-pixel annual POA irradiance for each roof section.
+
+    Aurora-style bake: each section is rasterized onto a regular grid
+    and the annual POA is integrated from ~120 stratified solar
+    samples.  Obstructions (chimneys, vents) and tree ellipsoids cast
+    shadows that zero the beam component per (pixel, sample).
+    """
+    try:
+        return run_per_pixel_shading(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

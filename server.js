@@ -6353,7 +6353,7 @@ app.get("/design", (req, res) => {
             <svg class="lp-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
           </div>
           <div class="lp-submenu" id="obstructionsSubmenu">
-            <div class="lp-subitem"><div class="lp-subitem-left">
+            <div class="lp-subitem" id="btnAddObstructionRect"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>
               Rectangle</div><span class="lp-subitem-key">O</span>
             </div>
@@ -6849,6 +6849,59 @@ app.get("/design", (req, res) => {
         <div class="tp-toggle-row">
           <span class="tp-toggle-label">Remove trunk</span>
           <button class="tp-switch" id="tpRemoveTrunk"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chimney property panel — shares .tree-panel/.tp-* styles -->
+    <div class="tree-panel hidden" id="chimneyPanel">
+      <div class="tp-header">
+        <span class="tp-title">Chimney</span>
+        <div class="tp-actions">
+          <button class="tp-action-btn" id="cpDelete" title="Delete chimney">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+          </button>
+          <button class="tp-action-btn" id="cpClose" title="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tp-body">
+        <div class="tp-row">
+          <span class="tp-label">Width</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="cpWidth" type="number" step="0.1" min="0.5">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-slider-row visible">
+          <button class="tp-slider-btn" data-input="cpWidth" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="cpWidthSlider" type="range" min="0.5" max="6" step="0.1">
+          <button class="tp-slider-btn" data-input="cpWidth" data-delta="0.5">+</button>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Depth</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="cpDepth" type="number" step="0.1" min="0.5">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-slider-row visible">
+          <button class="tp-slider-btn" data-input="cpDepth" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="cpDepthSlider" type="range" min="0.5" max="6" step="0.1">
+          <button class="tp-slider-btn" data-input="cpDepth" data-delta="0.5">+</button>
+        </div>
+        <div class="tp-row">
+          <span class="tp-label">Height</span>
+          <div class="tp-input-wrap">
+            <input class="tp-input" id="cpHeight" type="number" step="0.1" min="0.5">
+            <span class="tp-unit">ft</span>
+          </div>
+        </div>
+        <div class="tp-slider-row visible">
+          <button class="tp-slider-btn" data-input="cpHeight" data-delta="-0.5">&minus;</button>
+          <input class="tp-slider" id="cpHeightSlider" type="range" min="0.5" max="20" step="0.1">
+          <button class="tp-slider-btn" data-input="cpHeight" data-delta="0.5">+</button>
         </div>
       </div>
     </div>
@@ -7513,6 +7566,21 @@ app.get("/design", (req, res) => {
     var DORMER_WALL_HEIGHT = 1.2;    // meters (~4ft) — height of dormer cheek walls above roof
     var dormerDragStartVerts = null; // saved verts at drag start for edge-based resize
 
+    /* ── Chimney state ──
+       Chimneys are simple vertical box obstructions that sit on a roof
+       face.  Each entry lives on face.chimneys[] and stores the world
+       (x, z) centre, the world Y of the roof at the click point
+       (base_y), and width/depth/height in metres.  They render as
+       brick-coloured boxes and are sent to the per-pixel shading engine
+       as Obstruction3D prisms so they cast real shadows on the roof. */
+    var chimneyPlaceMode = false;
+    var chimneyGhostMesh = null;
+    var selectedChimneyFaceIdx = -1;
+    var selectedChimneyIdx = -1;
+    var CHIMNEY_DEFAULT_W = 0.8;  // metres (~32 in)
+    var CHIMNEY_DEFAULT_D = 0.8;  // metres
+    var CHIMNEY_DEFAULT_H = 1.4;  // metres (~55 in) — typical residential chimney
+
     /* ── Unified undo stack — captures all interactable actions ── */
     var undoStack = [];
     var redoStack = [];
@@ -7721,6 +7789,19 @@ app.get("/design", (req, res) => {
     document.addEventListener('click', function(e) {
       if (!e.target.closest('.lp-item-wrap') && !e.target.closest('.lp-submenu')) {
         closeAllSubmenus();
+      }
+    });
+
+    /* ── Obstruction submenu item handlers ── */
+    var btnAddObsRect = document.getElementById('btnAddObstructionRect');
+    if (btnAddObsRect) btnAddObsRect.addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeAllSubmenus();
+      // Toggle: clicking again exits placement mode.
+      if (typeof chimneyPlaceMode !== 'undefined' && chimneyPlaceMode) {
+        exitChimneyPlaceMode();
+      } else {
+        enterChimneyPlaceMode();
       }
     });
 
@@ -8019,6 +8100,29 @@ app.get("/design", (req, res) => {
                 };
                 face.dormers.push(newD);
                 rebuildDormer(face, face.dormers.length - 1);
+              });
+            }
+            // Restore chimneys
+            if (rf.chimneys && rf.chimneys.length > 0) {
+              var face2 = roofFaces3d[fIdx];
+              if (!face2.chimneys) face2.chimneys = [];
+              rf.chimneys.forEach(function(cc) {
+                var newC = {
+                  cx: cc.cx, cz: cc.cz, baseY: cc.baseY,
+                  width: cc.width || CHIMNEY_DEFAULT_W,
+                  depth: cc.depth || CHIMNEY_DEFAULT_D,
+                  height: cc.height || CHIMNEY_DEFAULT_H,
+                  // Older saves won't have rotationY — fall back to the
+                  // current face orientation so they still look square.
+                  // Negated to match Three.js rotation.y sign convention
+                  // (see stampChimney for why).
+                  rotationY: (typeof cc.rotationY === 'number')
+                    ? cc.rotationY
+                    : -getRoofSlopeAngle(face2),
+                  mesh: null, selected: false
+                };
+                face2.chimneys.push(newC);
+                rebuildChimney(face2, face2.chimneys.length - 1);
               });
             }
           });
@@ -8512,7 +8616,56 @@ app.get("/design", (req, res) => {
         endViewCubeDrag();
       });
 
-      // ── Face clicks — keep current tilt for sides, reset for top/bottom (matches 2D cube) ──
+      // ── Smooth camera glide to a target spherical pose ──
+      var vcAnimId3d = null;
+      function animateCameraToSpherical(targetR, targetPolar, targetAzimuth, duration) {
+        if (!camera3d || !controls3d) return;
+        if (vcAnimId3d != null) {
+          cancelAnimationFrame(vcAnimId3d);
+          vcAnimId3d = null;
+        }
+        var s = getCameraSpherical();
+        var startR = s.r, startPolar = s.polar, startAzimuth = s.azimuth;
+
+        // Shortest-path azimuth delta (handles wrap-around through ±π)
+        var deltaAzimuth = targetAzimuth - startAzimuth;
+        while (deltaAzimuth > Math.PI)  deltaAzimuth -= 2 * Math.PI;
+        while (deltaAzimuth < -Math.PI) deltaAzimuth += 2 * Math.PI;
+        var deltaR = targetR - startR;
+        var deltaPolar = targetPolar - startPolar;
+
+        if (Math.abs(deltaR) < 1e-3 && Math.abs(deltaPolar) < 5e-4 && Math.abs(deltaAzimuth) < 5e-4) {
+          return; // already there
+        }
+
+        var startTime = performance.now();
+        var dur = duration || 500;
+
+        function easeInOutCubic(t) {
+          return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function step(now) {
+          var t = Math.min(1, (now - startTime) / dur);
+          var e = easeInOutCubic(t);
+          setCameraFromSpherical(
+            startR + deltaR * e,
+            startPolar + deltaPolar * e,
+            startAzimuth + deltaAzimuth * e
+          );
+          if (t < 1) {
+            vcAnimId3d = requestAnimationFrame(step);
+          } else {
+            vcAnimId3d = null;
+          }
+        }
+        vcAnimId3d = requestAnimationFrame(step);
+      }
+
+      // ── Face clicks — snap so the clicked face directly faces the camera ──
+      // Frame: +x=East, -x=West, +z=South, -z=North, +y=Up.
+      // Cube labels show the side of the scene currently in view, so clicking
+      // label X should move the camera to the viewpoint where X is visible.
       function handleFaceClick3d(view) {
         if (!camera3d || !controls3d) return;
         var s = getCameraSpherical();
@@ -8520,18 +8673,19 @@ app.get("/design", (req, res) => {
         var polar = s.polar;
         var azimuth = s.azimuth;
 
-        if (view === 'top') {
-          polar = 0.001 * DEG; azimuth = 0;
-        } else if (view === 'bottom') {
-          polar = 179.999 * DEG; azimuth = 0;
+        if (view === 'front') {           // "TOP" label → top-down
+          polar = 0.1 * DEG; azimuth = 0;
+        } else if (view === 'back') {     // "BOT" label → bottom-up
+          polar = 179.9 * DEG; azimuth = 0;
         } else {
-          polar = 90 * DEG;
-          if (view === 'front') azimuth = 0;
-          else if (view === 'back') azimuth = Math.PI;
-          else if (view === 'left') azimuth = Math.PI / 2;
-          else if (view === 'right') azimuth = -Math.PI / 2;
+          // 80° matches the drag clamp — lowest viewing angle reachable by dragging
+          polar = 80 * DEG;
+          if      (view === 'top')    azimuth = Math.PI;       // "N" → camera from north (-Z)
+          else if (view === 'bottom') azimuth = 0;              // "S" → camera from south (+Z)
+          else if (view === 'left')   azimuth = -Math.PI / 2;   // "W" → camera from west (-X)
+          else if (view === 'right')  azimuth =  Math.PI / 2;   // "E" → camera from east (+X)
         }
-        setCameraFromSpherical(r, polar, azimuth);
+        animateCameraToSpherical(r, polar, azimuth, 500);
       }
 
       wrap3d.querySelectorAll('.vc-face').forEach(function(face) {
@@ -8542,14 +8696,14 @@ app.get("/design", (req, res) => {
         });
       });
 
-      // North tick click — snap view to face north (keep current tilt)
+      // North tick click — glide view to face north (keep current tilt)
       var northTick = wrap3d.querySelector('.vc-north-tick');
       if (northTick) {
         northTick.addEventListener('click', function(e) {
           e.stopPropagation();
           if (!camera3d || !controls3d) return;
           var s = getCameraSpherical();
-          setCameraFromSpherical(s.r, s.polar, 0);
+          animateCameraToSpherical(s.r, s.polar, 0, 500);
         });
       }
 
@@ -9063,6 +9217,13 @@ app.get("/design", (req, res) => {
           azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections,
           dormers: (f.dormers || []).map(function(d) {
             return { type: d.type, vertices: d.vertices, pitch: d.pitch, pitchSide: d.pitchSide, pitchFront: d.pitchFront };
+          }),
+          chimneys: (f.chimneys || []).map(function(c) {
+            return {
+              cx: c.cx, cz: c.cz, baseY: c.baseY,
+              width: c.width, depth: c.depth, height: c.height,
+              rotationY: c.rotationY || 0
+            };
           })
         };
       });
@@ -9707,6 +9868,78 @@ app.get("/design", (req, res) => {
       rebuildSelectedTree();
     });
 
+    /* ── Chimney panel handlers ── */
+    function _selectedChimney() {
+      if (selectedChimneyFaceIdx < 0 || selectedChimneyIdx < 0) return null;
+      var f = roofFaces3d[selectedChimneyFaceIdx];
+      if (!f || !f.chimneys) return null;
+      return f.chimneys[selectedChimneyIdx] || null;
+    }
+
+    function _rebuildSelectedChimney() {
+      if (selectedChimneyFaceIdx < 0 || selectedChimneyIdx < 0) return;
+      rebuildChimney(roofFaces3d[selectedChimneyFaceIdx], selectedChimneyIdx);
+      // Re-show selection outline.
+      var c = _selectedChimney();
+      if (c && c.mesh && c.mesh.userData.outline) c.mesh.userData.outline.visible = true;
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
+      markDirty();
+    }
+
+    function _bindChimneyDimInput(inputId, sliderId, dimKey) {
+      var input  = document.getElementById(inputId);
+      var slider = document.getElementById(sliderId);
+      if (!input) return;
+      var apply = function(ftVal) {
+        var c = _selectedChimney();
+        if (!c) return;
+        var m = parseFloat(ftVal) * FT_TO_M;
+        if (!isFinite(m) || m <= 0.01) return;
+        c[dimKey] = m;
+        if (slider) slider.value = ftVal;
+        _rebuildSelectedChimney();
+      };
+      input.addEventListener('input', function() {
+        if (!_selectedChimney() || !this.value) return;
+        apply(this.value);
+      });
+      if (slider) slider.addEventListener('input', function() {
+        if (!_selectedChimney() || !this.value) return;
+        input.value = parseFloat(this.value).toFixed(1);
+        apply(this.value);
+      });
+    }
+    _bindChimneyDimInput('cpWidth',  'cpWidthSlider',  'width');
+    _bindChimneyDimInput('cpDepth',  'cpDepthSlider',  'depth');
+    _bindChimneyDimInput('cpHeight', 'cpHeightSlider', 'height');
+
+    // Plus / minus buttons inside the chimney panel use the same
+    // data-input/data-delta convention as the tree panel.
+    document.querySelectorAll('#chimneyPanel .tp-slider-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var input = document.getElementById(btn.dataset.input);
+        if (!input) return;
+        var cur = parseFloat(input.value) || 0;
+        var d   = parseFloat(btn.dataset.delta) || 0;
+        var min = parseFloat(input.min) || 0.5;
+        var next = Math.max(min, cur + d);
+        input.value = next.toFixed(1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+
+    var cpDeleteBtn = document.getElementById('cpDelete');
+    if (cpDeleteBtn) cpDeleteBtn.addEventListener('click', function() {
+      if (selectedChimneyFaceIdx < 0 || selectedChimneyIdx < 0) return;
+      pushUndo();
+      deleteChimney(selectedChimneyFaceIdx, selectedChimneyIdx);
+    });
+
+    var cpCloseBtn = document.getElementById('cpClose');
+    if (cpCloseBtn) cpCloseBtn.addEventListener('click', function() {
+      deselectChimney();
+    });
+
     /* ── Slider show/hide on input focus ── */
     var sliderPairs = [
       { input: 'tpHeight',      slider: 'tpHeightSlider',      row: 'tpHeightSliderRow' },
@@ -10086,8 +10319,14 @@ app.get("/design", (req, res) => {
     */
 
     var shadingCache = {};      // key: faceId + '__s' + secIdx  → { kwh, color }
+    var perPixelCache = {};     // key: sectionId → { width, height, grid: Float32Array, texture, origin, uAxis, vAxis, min, max, mean }
     var irradianceOn = false;   // current overlay state
     var shadingInFlight = false;
+
+    // Feature flag: when true, toggleIrradiance() uses the per-pixel bake
+    // (DataTexture + shader material) instead of the per-section flat-color
+    // swap. Falls back to the legacy path on backend error.
+    var USE_PER_PIXEL_SHADING = true;
 
     var IRRADIANCE_MIN = 700;   // kWh/m²/yr — plasma dark purple end
     var IRRADIANCE_MAX = 1700;  // kWh/m²/yr — plasma yellow end
@@ -10122,6 +10361,283 @@ app.get("/design", (req, res) => {
     function irradianceColor(kwh) {
       var t = (kwh - IRRADIANCE_MIN) / (IRRADIANCE_MAX - IRRADIANCE_MIN);
       return plasmaColor(Math.max(0, Math.min(1, t)));
+    }
+
+    /* ── Shared plasma LUT DataTexture (256x1 RGBA) for the per-pixel shader ──
+       Sampled once from plasmaColor() at startup. The per-pixel shader samples
+       the LUT by the normalized (kwh - uMin) / (uMax - uMin) value, so the
+       plasma gradient comes from exactly one source of truth. */
+    var PLASMA_LUT_TEXTURE = null;
+    function ensurePlasmaLutTexture() {
+      if (PLASMA_LUT_TEXTURE) return PLASMA_LUT_TEXTURE;
+      var N = 256;
+      var data = new Uint8Array(N * 4);
+      for (var i = 0; i < N; i++) {
+        var c = plasmaColor(i / (N - 1));
+        data[i * 4 + 0] = Math.round(Math.max(0, Math.min(1, c.r)) * 255);
+        data[i * 4 + 1] = Math.round(Math.max(0, Math.min(1, c.g)) * 255);
+        data[i * 4 + 2] = Math.round(Math.max(0, Math.min(1, c.b)) * 255);
+        data[i * 4 + 3] = 255;
+      }
+      var tex = new THREE.DataTexture(data, N, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.needsUpdate = true;
+      PLASMA_LUT_TEXTURE = tex;
+      return tex;
+    }
+
+    /* ── Decode base64 → Float32Array (little-endian, from backend) ── */
+    function _decodeBase64Float32(b64) {
+      var bin = atob(b64);
+      var len = bin.length;
+      var bytes = new Uint8Array(len);
+      for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      // Assume little-endian source (matches "<f4" from NumPy).
+      return new Float32Array(bytes.buffer, bytes.byteOffset, len / 4);
+    }
+
+    /* ── Build a per-pixel DataTexture from a float kWh/m²/yr grid.
+       Always uses RGBA8 (alpha encodes mask: 0 = out-of-mask, 255 = in-mask)
+       and encodes kWh into the R channel normalized against IRRADIANCE_MIN
+       and IRRADIANCE_MAX. This is WebGL1-safe and visually sufficient
+       (1 / 255 × 1000 ≈ 4 kWh/m² quantization, below human perception in
+       the plasma gradient). */
+    function _buildPerPixelDataTexture(grid, width, height) {
+      var range = Math.max(1e-6, IRRADIANCE_MAX - IRRADIANCE_MIN);
+      var data = new Uint8Array(width * height * 4);
+      // Compute mean of valid pixels so NaN (out-of-mask) cells can be
+      // filled with the section mean. The mesh itself already clips to
+      // the polygon, so the alpha channel is not used for masking —
+      // padding NaN pixels prevents bilinear-filter bleed at section
+      // edges (blending interior texels toward R=0 would tint the
+      // perimeter magenta = the plasma low end).
+      var sum = 0, cnt = 0;
+      for (var s = 0; s < grid.length; s++) {
+        var gv = grid[s];
+        if (!isNaN(gv)) { sum += gv; cnt++; }
+      }
+      var meanKwh = cnt > 0 ? sum / cnt : IRRADIANCE_MIN;
+      var meanT = (meanKwh - IRRADIANCE_MIN) / range;
+      if (meanT < 0) meanT = 0; else if (meanT > 1) meanT = 1;
+      var meanByte = Math.round(meanT * 255);
+      for (var i = 0; i < grid.length; i++) {
+        var g = grid[i];
+        var byte;
+        if (isNaN(g)) {
+          byte = meanByte; // pad NaN with mean — no dark bleed at edges
+        } else {
+          var t = (g - IRRADIANCE_MIN) / range;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          byte = Math.round(t * 255);
+        }
+        data[i * 4 + 0] = byte;
+        data[i * 4 + 1] = byte;
+        data[i * 4 + 2] = byte;
+        data[i * 4 + 3] = 255;
+      }
+      var tex = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.UnsignedByteType);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.flipY = false;
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    /* ── Walk every roof face's chimneys → Obstruction3D entries.
+       Each chimney is a vertical box: footprint is its 4 XZ corners
+       at base_y (the roof Y at the click point), top_y = base_y + h. */
+    function collectAllObstructions3D() {
+      var out = [];
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var f = roofFaces3d[fi];
+        if (!f || !f.chimneys) continue;
+        for (var ci = 0; ci < f.chimneys.length; ci++) {
+          var c = f.chimneys[ci];
+          var hw = (c.width || CHIMNEY_DEFAULT_W) * 0.5;
+          var hd = (c.depth || CHIMNEY_DEFAULT_D) * 0.5;
+          var by = c.baseY;
+          var ty = by + (c.height || CHIMNEY_DEFAULT_H);
+          // Rotate the 4 local corners around (cx, cz) by the chimney's
+          // Y rotation so the backend shadow prism matches the visible
+          // mesh (which is oriented square to the parent face's ridge).
+          var ry = c.rotationY || 0;
+          var cs = Math.cos(ry), sn = Math.sin(ry);
+          var locals = [
+            [-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]
+          ];
+          var footprint = [];
+          for (var k = 0; k < 4; k++) {
+            var lx = locals[k][0], lz = locals[k][1];
+            // Three.js rotation.y applies R(θ): x' = x cosθ + z sinθ,
+            // z' = -x sinθ + z cosθ (right-handed, Y up).
+            var wx = lx * cs + lz * sn;
+            var wz = -lx * sn + lz * cs;
+            footprint.push({ x: c.cx + wx, y: by, z: c.cz + wz });
+          }
+          out.push({
+            id: 'chim_' + fi + '_' + ci,
+            footprint: footprint,
+            base_y: by,
+            top_y: ty
+          });
+        }
+      }
+      return out;
+    }
+
+    /* ── Fetch per-pixel irradiance grids from the backend ── */
+    function requestPerPixelShading() {
+      if (shadingInFlight) return Promise.resolve(null);
+      var sections = collectAllSectionPlaneInputs();
+      if (!sections.length) return Promise.resolve({ sections: [] });
+      var obstructions = collectAllObstructions3D();
+      var payload = {
+        lat: (typeof designLat === 'number') ? designLat : 42.0,
+        lng: (typeof designLng === 'number') ? designLng : -71.0,
+        sections: sections,
+        obstructions: obstructions,
+        shadow_mode: obstructions.length > 0 ? 'obstructions' : 'none',
+        solar_samples: 120
+      };
+      shadingInFlight = true;
+      return fetch('/api/roof/shading/per_pixel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(resp) {
+        if (!resp.ok) throw new Error('Per-pixel shading request failed: ' + resp.status);
+        return resp.json();
+      }).then(function(data) {
+        perPixelCache = {};
+        (data.sections || []).forEach(function(s) {
+          var grid = _decodeBase64Float32(s.kwh_grid_b64);
+          var tex = _buildPerPixelDataTexture(grid, s.width, s.height);
+          perPixelCache[s.id] = {
+            width: s.width,
+            height: s.height,
+            grid: grid,
+            texture: tex,
+            origin: s.origin,   // { x, y, z }
+            uAxis: s.u_axis,    // { x, y, z } — one pixel in U
+            vAxis: s.v_axis,    // { x, y, z } — one pixel in V
+            min: s.min_kwh_per_m2,
+            max: s.max_kwh_per_m2,
+            mean: s.mean_kwh_per_m2
+          };
+        });
+        shadingInFlight = false;
+        return data;
+      }).catch(function(err) {
+        console.error('[shading] per-pixel request failed:', err);
+        shadingInFlight = false;
+        return null;
+      });
+    }
+
+    /* ── Compute per-vertex UVs from a section's plane frame and install them ──
+       The plane frame origin/uAxis/vAxis are returned by the backend so the
+       frontend and backend agree on the exact same rasterized grid. */
+    function _assignPerPixelUVs(mesh, entry) {
+      if (!mesh || !mesh.geometry || !entry) return;
+      var pos = mesh.geometry.attributes.position;
+      if (!pos) return;
+
+      // One pixel in world units (length of uAxis/vAxis) — hence the
+      // total span of the grid in world units is (width * |uAxis|) by
+      // (height * |vAxis|). UVs are the projection of (p - origin) onto
+      // (uAxis, vAxis) divided by that total span.
+      var uAxis = entry.uAxis, vAxis = entry.vAxis, origin = entry.origin;
+      var uLen2 = uAxis.x * uAxis.x + uAxis.y * uAxis.y + uAxis.z * uAxis.z;
+      var vLen2 = vAxis.x * vAxis.x + vAxis.y * vAxis.y + vAxis.z * vAxis.z;
+      if (uLen2 < 1e-12 || vLen2 < 1e-12) return;
+
+      // Stash the mesh's existing UV attribute (usually the satellite
+      // texture UVs) so _restoreBaseMaterial can put them back when the
+      // overlay is toggled off.  Without this, the base material
+      // returns but with our per-section UVs baked in, and the
+      // satellite image gets tiled into every section mesh.
+      if (mesh.userData.baseUv === undefined) {
+        mesh.userData.baseUv = mesh.geometry.attributes.uv || null;
+      }
+
+      var w = entry.width, h = entry.height;
+      var uvs = new Float32Array(pos.count * 2);
+      for (var i = 0; i < pos.count; i++) {
+        var px = pos.getX(i) - origin.x;
+        var py = pos.getY(i) - origin.y;
+        var pz = pos.getZ(i) - origin.z;
+        // Scalar projection onto uAxis / |uAxis|² gives coordinate in
+        // "pixel units along U". Divide by grid width for UV.
+        var uPx = (px * uAxis.x + py * uAxis.y + pz * uAxis.z) / uLen2;
+        var vPx = (px * vAxis.x + py * vAxis.y + pz * vAxis.z) / vLen2;
+        uvs[i * 2 + 0] = uPx / w;
+        uvs[i * 2 + 1] = vPx / h;
+      }
+      mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    }
+
+    /* ── Shader material: sample per-pixel byte texture, map through plasma LUT.
+       The R channel already holds the normalized (kwh - IRRADIANCE_MIN) /
+       (IRRADIANCE_MAX - IRRADIANCE_MIN) so we feed it directly into the
+       plasma LUT. Alpha channel masks out pixels outside the section polygon. */
+    function _buildPerPixelShaderMaterial(entry) {
+      var uniforms = {
+        uIrradiance: { value: entry.texture },
+        uPlasma:     { value: ensurePlasmaLutTexture() },
+        uOpacity:    { value: 0.9 }
+      };
+      // NOTE: this whole client-side script is wrapped in a template
+      // literal on the server, so escape sequences like \\n must be
+      // double-escaped to survive template interpolation.  We use
+      // ' ' (a single space) as the GLSL line separator instead — the
+      // shader compiler treats whitespace the same as newlines.
+      var vert = [
+        'varying vec2 vUv;',
+        'void main() {',
+        '  vUv = uv;',
+        '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+        '}'
+      ].join(' ');
+      // No alpha discard: the mesh geometry already matches the
+      // section polygon, so every fragment is guaranteed to be inside
+      // the mask.  Discarding on the texture's alpha channel causes
+      // bilinear bleed at the polygon edge (magenta halo).
+      var frag = [
+        'uniform sampler2D uIrradiance;',
+        'uniform sampler2D uPlasma;',
+        'uniform float uOpacity;',
+        'varying vec2 vUv;',
+        'void main() {',
+        '  vec4 samp = texture2D(uIrradiance, vUv);',
+        '  float t = clamp(samp.r, 0.0, 1.0);',
+        '  vec3 rgb = texture2D(uPlasma, vec2(t, 0.5)).rgb;',
+        '  gl_FragColor = vec4(rgb, uOpacity);',
+        '}'
+      ].join(' ');
+      return new THREE.ShaderMaterial({
+        uniforms: uniforms,
+        vertexShader: vert,
+        fragmentShader: frag,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: true,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1
+      });
+    }
+
+    function _swapToPerPixelIrradiance(mesh, key) {
+      var entry = perPixelCache[key];
+      if (!mesh || !entry) return;
+      if (!mesh.userData.baseMaterial) mesh.userData.baseMaterial = mesh.material;
+      _assignPerPixelUVs(mesh, entry);
+      mesh.material = _buildPerPixelShaderMaterial(entry);
     }
 
     /* ── Compute area of a triangulated BufferGeometry position attribute ── */
@@ -10273,6 +10789,158 @@ app.get("/design", (req, res) => {
       return out;
     }
 
+    /* ── Extract deduplicated 3D vertices from a BufferGeometry ────────────
+       Two vertices are considered identical if their (x,y,z) coordinates
+       agree to 3 decimal places (millimetre precision).  Ordering is the
+       order of first appearance in the position attribute.  This produces
+       the 3- or 4-vertex polygon the per-pixel bake needs. */
+    function _dedupePolygonVertices(posAttr) {
+      var verts = [];
+      var seen = {};
+      for (var k = 0; k < posAttr.count; k++) {
+        var x = posAttr.getX(k);
+        var y = posAttr.getY(k);
+        var z = posAttr.getZ(k);
+        var key = x.toFixed(3) + ',' + y.toFixed(3) + ',' + z.toFixed(3);
+        if (seen[key]) continue;
+        seen[key] = true;
+        verts.push({ x: x, y: y, z: z });
+      }
+      return verts;
+    }
+
+    /* ── Derive per-section plane inputs (with 3D vertices) for per-pixel ── */
+    function deriveSectionPlaneInputs(face) {
+      var out = [];
+      if (!face || !face.sectionMeshes || face.sectionMeshes.length === 0) return out;
+      var ds = face.deletedSections || [false, false, false, false];
+      var sp = face.sectionPitches || [face.pitch, face.pitch, face.pitch, face.pitch];
+      for (var i = 0; i < face.sectionMeshes.length; i++) {
+        if (ds[i]) continue;
+        var sm = face.sectionMeshes[i];
+        if (!sm || !sm.geometry || !sm.geometry.attributes || !sm.geometry.attributes.position) continue;
+        var pos = sm.geometry.attributes.position;
+        if (pos.count < 3) continue;
+
+        var ax = pos.getX(0), ay = pos.getY(0), az = pos.getZ(0);
+        var bx = pos.getX(1), by = pos.getY(1), bz = pos.getZ(1);
+        var cx = pos.getX(2), cy = pos.getY(2), cz = pos.getZ(2);
+        var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+        var nx = e1y * e2z - e1z * e2y;
+        var ny = e1z * e2x - e1x * e2z;
+        var nz = e1x * e2y - e1y * e2x;
+        var nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (nlen < 1e-9) continue;
+        nx /= nlen; ny /= nlen; nz /= nlen;
+        if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+
+        var pitchRad = Math.acos(Math.max(-1, Math.min(1, ny)));
+        var pitchDeg = pitchRad * 180 / Math.PI;
+        if (pitchDeg < 0.5 && sp[i] > 0.5) pitchDeg = sp[i];
+        var azimuthDeg;
+        if (pitchDeg < 0.5) {
+          azimuthDeg = 0;
+        } else {
+          azimuthDeg = (Math.atan2(nx, -nz) * 180 / Math.PI + 360) % 360;
+        }
+
+        var verts = _dedupePolygonVertices(pos);
+        if (verts.length < 3) continue;
+
+        out.push({
+          id: face.id + '__s' + i,
+          sectionIdx: i,
+          azimuth_deg: azimuthDeg,
+          pitch_deg: pitchDeg,
+          vertices: verts,
+          resolution_m: 0.25
+        });
+      }
+      return out;
+    }
+
+    /* ── Derive per-dormer-panel plane inputs with 3D vertices ── */
+    function deriveDormerSectionPlaneInputs(face) {
+      var out = [];
+      if (!face || !face.dormers || face.dormers.length === 0) return out;
+      for (var di = 0; di < face.dormers.length; di++) {
+        var d = face.dormers[di];
+        if (!d || !d.roofPanels) continue;
+        for (var pi = 0; pi < d.roofPanels.length; pi++) {
+          var panel = d.roofPanels[pi];
+          if (!panel || !panel.geometry || !panel.geometry.attributes || !panel.geometry.attributes.position) continue;
+          var pos = panel.geometry.attributes.position;
+          if (pos.count < 3) continue;
+
+          var ax = pos.getX(0), ay = pos.getY(0), az = pos.getZ(0);
+          var bx = pos.getX(1), by = pos.getY(1), bz = pos.getZ(1);
+          var cx = pos.getX(2), cy = pos.getY(2), cz = pos.getZ(2);
+          var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+          var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+          var nx = e1y * e2z - e1z * e2y;
+          var ny = e1z * e2x - e1x * e2z;
+          var nz = e1x * e2y - e1y * e2x;
+          var nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+          if (nlen < 1e-9) continue;
+          nx /= nlen; ny /= nlen; nz /= nlen;
+          if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+
+          var pitchRad = Math.acos(Math.max(-1, Math.min(1, ny)));
+          var pitchDeg = pitchRad * 180 / Math.PI;
+          var azimuthDeg;
+          if (pitchDeg < 0.5) {
+            azimuthDeg = 0;
+          } else {
+            azimuthDeg = (Math.atan2(nx, -nz) * 180 / Math.PI + 360) % 360;
+          }
+
+          var verts = _dedupePolygonVertices(pos);
+          if (verts.length < 3) continue;
+
+          out.push({
+            id: face.id + '__d' + di + '__p' + pi,
+            dormerIdx: di,
+            panelIdx: pi,
+            azimuth_deg: azimuthDeg,
+            pitch_deg: pitchDeg,
+            vertices: verts,
+            resolution_m: 0.25
+          });
+        }
+      }
+      return out;
+    }
+
+    function collectAllSectionPlaneInputs() {
+      var out = [];
+      for (var i = 0; i < roofFaces3d.length; i++) {
+        var face = roofFaces3d[i];
+        if (!face) continue;
+        var secs = deriveSectionPlaneInputs(face);
+        for (var j = 0; j < secs.length; j++) {
+          out.push({
+            id: secs[j].id,
+            azimuth_deg: secs[j].azimuth_deg,
+            pitch_deg: secs[j].pitch_deg,
+            vertices: secs[j].vertices,
+            resolution_m: secs[j].resolution_m
+          });
+        }
+        var dins = deriveDormerSectionPlaneInputs(face);
+        for (var k = 0; k < dins.length; k++) {
+          out.push({
+            id: dins[k].id,
+            azimuth_deg: dins[k].azimuth_deg,
+            pitch_deg: dins[k].pitch_deg,
+            vertices: dins[k].vertices,
+            resolution_m: dins[k].resolution_m
+          });
+        }
+      }
+      return out;
+    }
+
     /* ── Fetch annual irradiance from the backend shading engine ── */
     function requestShading() {
       if (shadingInFlight) return Promise.resolve(null);
@@ -10325,11 +10993,23 @@ app.get("/design", (req, res) => {
       });
     }
 
-    /* ── Restore a single mesh's stashed base material ── */
+    /* ── Restore a single mesh's stashed base material (and UVs) ── */
     function _restoreBaseMaterial(mesh) {
       if (mesh && mesh.userData && mesh.userData.baseMaterial) {
         mesh.material = mesh.userData.baseMaterial;
         delete mesh.userData.baseMaterial;
+      }
+      // Restore the original UV attribute that _assignPerPixelUVs stashed
+      // (if any). Without this, the base material comes back with our
+      // per-section UVs, tiling the satellite texture onto every roof face.
+      if (mesh && mesh.userData && mesh.userData.baseUv !== undefined) {
+        var baseUv = mesh.userData.baseUv;
+        if (baseUv) {
+          mesh.geometry.setAttribute('uv', baseUv);
+        } else if (mesh.geometry.attributes.uv) {
+          mesh.geometry.deleteAttribute('uv');
+        }
+        delete mesh.userData.baseUv;
       }
     }
 
@@ -10358,6 +11038,7 @@ app.get("/design", (req, res) => {
         }
         return;
       }
+      var usePerPixel = USE_PER_PIXEL_SHADING && Object.keys(perPixelCache).length > 0;
       // Swap each section mesh material to its irradiance color
       for (var i = 0; i < roofFaces3d.length; i++) {
         var face = roofFaces3d[i];
@@ -10366,7 +11047,12 @@ app.get("/design", (req, res) => {
         if (face.sectionMeshes) {
           for (var j = 0; j < face.sectionMeshes.length; j++) {
             if (ds[j]) continue;
-            _swapToIrradiance(face.sectionMeshes[j], face.id + '__s' + j);
+            var key = face.id + '__s' + j;
+            if (usePerPixel) {
+              _swapToPerPixelIrradiance(face.sectionMeshes[j], key);
+            } else {
+              _swapToIrradiance(face.sectionMeshes[j], key);
+            }
           }
         }
         if (face.dormers) {
@@ -10374,7 +11060,12 @@ app.get("/design", (req, res) => {
             var d = face.dormers[di];
             if (!d || !d.roofPanels) continue;
             for (var pi = 0; pi < d.roofPanels.length; pi++) {
-              _swapToIrradiance(d.roofPanels[pi], face.id + '__d' + di + '__p' + pi);
+              var dkey = face.id + '__d' + di + '__p' + pi;
+              if (usePerPixel) {
+                _swapToPerPixelIrradiance(d.roofPanels[pi], dkey);
+              } else {
+                _swapToIrradiance(d.roofPanels[pi], dkey);
+              }
             }
           }
         }
@@ -10391,8 +11082,44 @@ app.get("/design", (req, res) => {
         return;
       }
       if (btn) btn.classList.add('active');
-      if (Object.keys(shadingCache).length === 0) {
+
+      // Per-pixel path (Aurora-style bake) — preferred when the flag is on
+      if (USE_PER_PIXEL_SHADING) {
+        if (Object.keys(perPixelCache).length > 0) {
+          applyIrradianceOverlay(true);
+          showIrradianceLegend(false);
+          return;
+        }
         showIrradianceLegend(true); // "calculating..." state
+        requestPerPixelShading().then(function(data) {
+          if (data && data.sections && data.sections.length > 0) {
+            applyIrradianceOverlay(true);
+            showIrradianceLegend(false);
+            return;
+          }
+          // Fall back to the legacy per-section path if per-pixel fails.
+          console.warn('[shading] per-pixel unavailable, falling back to per-section');
+          if (Object.keys(shadingCache).length === 0) {
+            requestShading().then(function(legacy) {
+              if (legacy) {
+                applyIrradianceOverlay(true);
+                showIrradianceLegend(false);
+              } else {
+                if (btn) btn.classList.remove('active');
+                hideIrradianceLegend();
+              }
+            });
+          } else {
+            applyIrradianceOverlay(true);
+            showIrradianceLegend(false);
+          }
+        });
+        return;
+      }
+
+      // Legacy per-section path
+      if (Object.keys(shadingCache).length === 0) {
+        showIrradianceLegend(true);
         requestShading().then(function(data) {
           if (data) {
             applyIrradianceOverlay(true);
@@ -10479,6 +11206,39 @@ app.get("/design", (req, res) => {
     // Raycast under the cursor against roof section meshes and dormer
     // panels, look up the per-section value from shadingCache, and show
     // it in the tooltip.
+    /* ── Sample the per-pixel grid at a world position using the entry's
+       plane frame. Returns the kWh value or NaN if the pixel is outside
+       the mask. Tries a 3×3 neighborhood if the primary pixel is NaN. */
+    function _samplePerPixelFromWorld(entry, worldPoint) {
+      if (!entry || !entry.grid) return NaN;
+      var origin = entry.origin, uAxis = entry.uAxis, vAxis = entry.vAxis;
+      var uLen2 = uAxis.x * uAxis.x + uAxis.y * uAxis.y + uAxis.z * uAxis.z;
+      var vLen2 = vAxis.x * vAxis.x + vAxis.y * vAxis.y + vAxis.z * vAxis.z;
+      if (uLen2 < 1e-12 || vLen2 < 1e-12) return NaN;
+      var px = worldPoint.x - origin.x;
+      var py = worldPoint.y - origin.y;
+      var pz = worldPoint.z - origin.z;
+      var uPx = (px * uAxis.x + py * uAxis.y + pz * uAxis.z) / uLen2;
+      var vPx = (px * vAxis.x + py * vAxis.y + pz * vAxis.z) / vLen2;
+      // Pixel centres are at (col + 0.5, row + 0.5) so round down.
+      var col = Math.floor(uPx);
+      var row = Math.floor(vPx);
+      var w = entry.width, h = entry.height;
+      if (col < 0 || col >= w || row < 0 || row >= h) return NaN;
+      var v = entry.grid[row * w + col];
+      if (!isNaN(v)) return v;
+      // Nearest in-mask pixel in a 3x3 neighborhood.
+      for (var dr = -1; dr <= 1; dr++) {
+        for (var dc = -1; dc <= 1; dc++) {
+          var r2 = row + dr, c2 = col + dc;
+          if (r2 < 0 || r2 >= h || c2 < 0 || c2 >= w) continue;
+          var v2 = entry.grid[r2 * w + c2];
+          if (!isNaN(v2)) return v2;
+        }
+      }
+      return NaN;
+    }
+
     function updateIrradianceHover(event) {
       if (!irradianceOn) { hideIrradianceTooltip(); return; }
       var canvas = document.getElementById('canvas3d');
@@ -10487,7 +11247,7 @@ app.get("/design", (req, res) => {
       mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster3d.setFromCamera(mouse3d, camera3d);
-      // Collect candidate meshes + their shadingCache keys
+      // Collect candidate meshes + their cache keys
       var meshes = [];
       var keys = [];
       for (var i = 0; i < roofFaces3d.length; i++) {
@@ -10519,13 +11279,27 @@ app.get("/design", (req, res) => {
       if (meshes.length === 0) { hideIrradianceTooltip(); return; }
       var hits = raycaster3d.intersectObjects(meshes, false);
       if (hits.length === 0) { hideIrradianceTooltip(); return; }
-      var hitIdx = meshes.indexOf(hits[0].object);
+      var hit = hits[0];
+      var hitIdx = meshes.indexOf(hit.object);
       if (hitIdx < 0) { hideIrradianceTooltip(); return; }
-      var entry = shadingCache[keys[hitIdx]];
-      if (!entry) { hideIrradianceTooltip(); return; }
+      var key = keys[hitIdx];
+
+      var kwh = NaN;
+      // Prefer the per-pixel cache if available for this section.
+      var pp = perPixelCache[key];
+      if (pp && hit.point) {
+        kwh = _samplePerPixelFromWorld(pp, hit.point);
+        if (isNaN(kwh)) kwh = pp.mean;  // fall back to section mean
+      }
+      if (isNaN(kwh)) {
+        var legacy = shadingCache[key];
+        if (legacy) kwh = legacy.kwh;
+      }
+      if (isNaN(kwh)) { hideIrradianceTooltip(); return; }
+
       var el = ensureIrradianceTooltip();
       el.innerHTML = '<div style="font-variant-numeric:tabular-nums;font-weight:600;">' +
-                     Math.round(entry.kwh) + ' kWh/m²/yr</div>';
+                     Math.round(kwh) + ' kWh/m²/yr</div>';
       // Position near cursor with a small offset
       var x = event.clientX + 14;
       var y = event.clientY + 14;
@@ -10541,11 +11315,26 @@ app.get("/design", (req, res) => {
     /* ── Invalidate the shading cache when a roof face changes ── */
     function invalidateShadingCache() {
       shadingCache = {};
+      // Dispose any float/byte textures from the per-pixel cache before
+      // dropping references, to free GPU memory.
+      for (var k in perPixelCache) {
+        if (perPixelCache[k] && perPixelCache[k].texture && perPixelCache[k].texture.dispose) {
+          perPixelCache[k].texture.dispose();
+        }
+      }
+      perPixelCache = {};
       if (irradianceOn) {
-        // If overlay is live, refresh in the background
-        requestShading().then(function(data) {
-          if (data && irradianceOn) applyIrradianceOverlay(true);
-        });
+        // If overlay is live, refresh in the background using the
+        // currently-selected path.
+        if (USE_PER_PIXEL_SHADING) {
+          requestPerPixelShading().then(function(data) {
+            if (data && irradianceOn) applyIrradianceOverlay(true);
+          });
+        } else {
+          requestShading().then(function(data) {
+            if (data && irradianceOn) applyIrradianceOverlay(true);
+          });
+        }
       }
     }
 
@@ -10830,9 +11619,9 @@ app.get("/design", (req, res) => {
 
       // Build geometry based on type
       var wallMat = new THREE.MeshBasicMaterial({
-        color: 0xcccccc,
+        color: isGhost ? 0x00e5ff : 0xcccccc,
         transparent: isGhost,
-        opacity: isGhost ? 0.3 : 1.0,
+        opacity: isGhost ? 0.35 : 1.0,
         side: THREE.DoubleSide
       });
 
@@ -10852,8 +11641,8 @@ app.get("/design", (req, res) => {
         });
       } else {
         roofMat = new THREE.MeshBasicMaterial({
-          color: dormer.selected ? 0x00bfa5 : 0x8899aa,
-          transparent: true, opacity: isGhost ? 0.3 : (dormer.selected ? 0.6 : 0.5),
+          color: isGhost ? 0x00e5ff : (dormer.selected ? 0x00bfa5 : 0x8899aa),
+          transparent: true, opacity: isGhost ? 0.5 : (dormer.selected ? 0.6 : 0.5),
           side: THREE.DoubleSide
         });
       }
@@ -10911,16 +11700,23 @@ app.get("/design", (req, res) => {
 
       if (dormer.type === 'gable') {
         ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = ridgeTopY;
-        // Ridge back is flush with main roof at the peak contact point
-        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = eaveY[3];
+        // Ridge is horizontal: back peak Y matches front peak Y so the ridge
+        // line runs level from front to back instead of sloping down to the roof.
+        ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = ridgeTopY;
 
         // Front gable pediment (triangle above the front wall)
         addTri(v[0].x, eaveY[0], v[0].z, v[1].x, eaveY[1], v[1].z,
                ridgeFrontX, ridgeFrontY, ridgeFrontZ, wallMat);
-        // Left roof slope: front-left → ridge-front → ridge-back(peak) → back-left
+        // Back gable pediment — two triangles filling the gap between the
+        // v4→v3→v2 back polyline (on the roof) and the raised back ridge point.
+        addTri(v[2].x, eaveY[2], v[2].z, v[3].x, eaveY[3], v[3].z,
+               ridgeBackX, ridgeBackY, ridgeBackZ, wallMat);
+        addTri(v[3].x, eaveY[3], v[3].z, v[4].x, eaveY[4], v[4].z,
+               ridgeBackX, ridgeBackY, ridgeBackZ, wallMat);
+        // Left roof slope: front-left → ridge-front → ridge-back → back-left
         addQuad(v[0].x, eaveY[0], v[0].z, ridgeFrontX, ridgeFrontY, ridgeFrontZ,
                 ridgeBackX, ridgeBackY, ridgeBackZ, v[4].x, eaveY[4], v[4].z, roofMat);
-        // Right roof slope: front-right → back-right → ridge-back(peak) → ridge-front
+        // Right roof slope: front-right → back-right → ridge-back → ridge-front
         addQuad(v[1].x, eaveY[1], v[1].z, v[2].x, eaveY[2], v[2].z,
                 ridgeBackX, ridgeBackY, ridgeBackZ, ridgeFrontX, ridgeFrontY, ridgeFrontZ, roofMat);
 
@@ -10959,16 +11755,6 @@ app.get("/design", (req, res) => {
         addTri(v[0].x, eaveY[0], v[0].z, v[3].x, sc3, v[3].z, v[4].x, sc4, v[4].z, roofMat);
         ridgeFrontX = midFrontX; ridgeFrontZ = midFrontZ; ridgeFrontY = frontEaveY;
         ridgeBackX = v[3].x; ridgeBackZ = v[3].z; ridgeBackY = sc3;
-      }
-
-      // Exterior walls around all 5 edges — from Y=0 (ground) to contact height,
-      // matching the main roof wall treatment in buildRoofWalls.
-      for (var wi = 0; wi < 5; wi++) {
-        var wa = wi, wb = (wi + 1) % 5;
-        addQuad(v[wa].x, contactY[wa], v[wa].z,
-                v[wb].x, contactY[wb], v[wb].z,
-                v[wb].x, 0, v[wb].z,
-                v[wa].x, 0, v[wa].z, wallMat);
       }
 
       // Dormer cheek walls — vertical surfaces from roof contact up to dormer eave.
@@ -11010,13 +11796,15 @@ app.get("/design", (req, res) => {
         }
       }
 
-      // Outline (cyan edges at eave heights)
-      if (!isGhost) {
+      // Outline (cyan edges traced along the dormer-roof intersection).
+      // Drawn for real dormers AND ghost placement so the ghost footprint
+      // is clearly visible against the satellite imagery.
+      {
         var outlineGroup = new THREE.Group();
         var EDGE_R = 0.04;
         for (var ei = 0; ei < 5; ei++) {
           var a = v[ei], b = v[(ei + 1) % 5];
-          var ay2 = eaveY[ei], by2 = eaveY[(ei + 1) % 5];
+          var ay2 = contactY[ei], by2 = contactY[(ei + 1) % 5];
           var edx = b.x - a.x, edz = b.z - a.z;
           var elen = Math.sqrt(edx * edx + edz * edz);
           if (elen < 0.01) continue;
@@ -11030,7 +11818,7 @@ app.get("/design", (req, res) => {
           outlineGroup.add(cyl);
         }
         group.add(outlineGroup);
-        dormer.outlineLines = outlineGroup;
+        if (!isGhost) dormer.outlineLines = outlineGroup;
       }
 
       // Expose the collected roof panels on the dormer so the shading
@@ -11170,38 +11958,45 @@ app.get("/design", (req, res) => {
       markDirty();
     }
 
-    // Snap dormer center so front edge aligns with nearest eave
-    function snapDormerToEave(face, clickX, clickZ, depth) {
+    // Snap dormer center so front edge aligns with the eave of the given section.
+    // sectionIdx: 0=S0 left hip (short edge v0-v3), 1=S1 right hip (short edge v1-v2),
+    //             2=S2 front trap (long edge v0-v1), 3=S3 back trap (long edge v3-v2).
+    // If sectionIdx is undefined/-1, falls back to nearest long eave (legacy).
+    function snapDormerToEave(face, clickX, clickZ, depth, sectionIdx) {
       if (!face || face.vertices.length !== 4) return { x: clickX, z: clickZ };
       var verts = face.vertices;
-      var d01 = Math.sqrt(Math.pow(verts[1].x - verts[0].x, 2) + Math.pow(verts[1].z - verts[0].z, 2));
-      var d12 = Math.sqrt(Math.pow(verts[2].x - verts[1].x, 2) + Math.pow(verts[2].z - verts[1].z, 2));
-      var eaves;
-      if (d01 >= d12) {
-        eaves = [
-          { a: verts[0], b: verts[1] },
-          { a: verts[3], b: verts[2] }
-        ];
+      var hip = computeHipGeometry(verts, face.pitch);
+      var ea, eb;
+      if (sectionIdx === 0) {
+        ea = hip.v0; eb = hip.v3;   // S0 left hip short eave
+      } else if (sectionIdx === 1) {
+        ea = hip.v1; eb = hip.v2;   // S1 right hip short eave
+      } else if (sectionIdx === 3) {
+        ea = hip.v3; eb = hip.v2;   // S3 back long eave
+      } else if (sectionIdx === 2) {
+        ea = hip.v0; eb = hip.v1;   // S2 front long eave
       } else {
-        eaves = [
-          { a: verts[1], b: verts[2] },
-          { a: verts[0], b: verts[3] }
+        // Legacy: nearest of the two long eaves
+        var candidates = [
+          { a: hip.v0, b: hip.v1 },
+          { a: hip.v3, b: hip.v2 }
         ];
+        var bestDist = Infinity, best = null;
+        for (var i = 0; i < candidates.length; i++) {
+          var cea = candidates[i].a, ceb = candidates[i].b;
+          var cedx = ceb.x - cea.x, cedz = ceb.z - cea.z;
+          var celen = Math.sqrt(cedx * cedx + cedz * cedz);
+          if (celen < 0.01) continue;
+          var cnx = -cedz / celen, cnz = cedx / celen;
+          var cdist = Math.abs((clickX - cea.x) * cnx + (clickZ - cea.z) * cnz);
+          if (cdist < bestDist) { bestDist = cdist; best = candidates[i]; }
+        }
+        if (!best) return { x: clickX, z: clickZ };
+        ea = best.a; eb = best.b;
       }
-      var bestDist = Infinity, bestEave = null;
-      for (var i = 0; i < eaves.length; i++) {
-        var ea = eaves[i].a, eb = eaves[i].b;
-        var edx = eb.x - ea.x, edz = eb.z - ea.z;
-        var elen = Math.sqrt(edx * edx + edz * edz);
-        if (elen < 0.01) continue;
-        var nx = -edz / elen, nz = edx / elen;
-        var dist = Math.abs((clickX - ea.x) * nx + (clickZ - ea.z) * nz);
-        if (dist < bestDist) { bestDist = dist; bestEave = eaves[i]; }
-      }
-      if (!bestEave) return { x: clickX, z: clickZ };
-      var ea = bestEave.a, eb = bestEave.b;
       var edx = eb.x - ea.x, edz = eb.z - ea.z;
       var elen = Math.sqrt(edx * edx + edz * edz);
+      if (elen < 0.01) return { x: clickX, z: clickZ };
       var t = ((clickX - ea.x) * edx + (clickZ - ea.z) * edz) / (elen * elen);
       t = Math.max(0.1, Math.min(0.9, t));
       var eaveX = ea.x + t * edx, eaveZ = ea.z + t * edz;
@@ -11239,6 +12034,60 @@ app.get("/design", (req, res) => {
       // At angle θ, dormer front faces (sinθ, -cosθ) in XZ plane.
       // For front to face downslope (-slopeDx, -slopeDz): sinθ = -slopeDx, cosθ = slopeDz
       return Math.atan2(-slopeDx, slopeDz);
+    }
+
+    // Determine which hip-roof section (0=S0 left hip, 1=S1 right hip,
+    // 2=S2 front trap, 3=S3 back trap) contains the world-space point (px,pz).
+    // Returns -1 if the face is not a 4-vertex hip roof or point is outside.
+    function getSectionAtPoint(face, px, pz) {
+      if (!face || face.vertices.length !== 4) return -1;
+      var hip = computeHipGeometry(face.vertices, face.pitch);
+      var longLen = Math.sqrt((hip.v1.x - hip.v0.x) * (hip.v1.x - hip.v0.x) +
+                              (hip.v1.z - hip.v0.z) * (hip.v1.z - hip.v0.z));
+      var shortLen = Math.sqrt((hip.v3.x - hip.v0.x) * (hip.v3.x - hip.v0.x) +
+                               (hip.v3.z - hip.v0.z) * (hip.v3.z - hip.v0.z));
+      // Project (px,pz) into (u,w) — u along long edge from v0, w perpendicular toward v3
+      var dx = px - hip.v0.x, dz = pz - hip.v0.z;
+      var u = dx * hip.ldx + dz * hip.ldz;
+      var wpx = -hip.ldz, wpz = hip.ldx;
+      // Ensure perpendicular points from v0 toward v3
+      var v3dx = hip.v3.x - hip.v0.x, v3dz = hip.v3.z - hip.v0.z;
+      if (v3dx * wpx + v3dz * wpz < 0) { wpx = -wpx; wpz = -wpz; }
+      var w = dx * wpx + dz * wpz;
+      // Hip sections are triangles with 45° slopes (inset = shortLen/2):
+      //   S0 covers u < min(w, shortLen-w), S1 covers longLen-u < min(w, shortLen-w),
+      //   otherwise split front/back by w vs shortLen/2.
+      var dFromLong = Math.min(w, shortLen - w);
+      if (u < dFromLong) return 0;
+      if (longLen - u < dFromLong) return 1;
+      if (w < shortLen / 2) return 2;
+      return 3;
+    }
+
+    // Downslope angle for a specific section of a hip roof face.
+    // Uses computeHipGeometry outputs so each section faces its own eave.
+    function getSectionDownslopeAngle(face, sectionIdx) {
+      if (!face || face.vertices.length !== 4) return 0;
+      var hip = computeHipGeometry(face.vertices, face.pitch);
+      var downX, downZ;
+      if (sectionIdx === 0) {
+        // S0 left hip tri: ridge apex R0 → eave midpoint m0 = (-ldx, -ldz)
+        downX = -hip.ldx; downZ = -hip.ldz;
+      } else if (sectionIdx === 1) {
+        // S1 right hip tri: ridge apex R1 → eave midpoint m1 = (+ldx, +ldz)
+        downX = hip.ldx; downZ = hip.ldz;
+      } else if (sectionIdx === 2) {
+        // S2 front trap: ridge peak → front eave midpoint (mf)
+        downX = hip.mfx - hip.px; downZ = hip.mfz - hip.pz;
+      } else if (sectionIdx === 3) {
+        // S3 back trap: ridge peak → back eave midpoint (mb)
+        downX = hip.mbx - hip.px; downZ = hip.mbz - hip.pz;
+      } else {
+        return getRoofSlopeAngle(face);
+      }
+      // computeDormerVerts: front direction in world is (sinθ, -cosθ).
+      // Match (downX, downZ) → sinθ = downX, cosθ = -downZ → θ = atan2(downX, -downZ).
+      return Math.atan2(downX, -downZ);
     }
 
     // Enter dormer placement mode
@@ -11310,9 +12159,17 @@ app.get("/design", (req, res) => {
           hitRoof = true;
           var pt = hits[0].point;
           var wH = getRoofWallHeight(face);
+          // Determine which section (0..3) was hit so we can orient the
+          // dormer downslope of that specific face.
+          var ghostSectionIdx = -1;
+          for (var gsi = 0; gsi < face.sectionMeshes.length; gsi++) {
+            if (face.sectionMeshes[gsi] === hits[0].object) { ghostSectionIdx = gsi; break; }
+          }
           // Remove old ghost, rebuild at hit position with proper orientation
           scene3d.remove(dormerGhostMesh);
-          var angle = getRoofSlopeAngle(face);
+          var angle = (ghostSectionIdx >= 0)
+            ? getSectionDownslopeAngle(face, ghostSectionIdx)
+            : getRoofSlopeAngle(face);
           var ghostDormer = {
             type: dormerPlaceType,
             vertices: computeDormerVerts(pt.x, pt.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
@@ -11361,10 +12218,18 @@ app.get("/design", (req, res) => {
       if (hits.length === 0) return false;
 
       var pt = hits[0].point;
-      var angle = getRoofSlopeAngle(face);
+      // Determine which section (0..3) was clicked so downslope orientation
+      // and eave snap match the specific face the user is placing on.
+      var stampSectionIdx = -1;
+      for (var ssi = 0; ssi < face.sectionMeshes.length; ssi++) {
+        if (face.sectionMeshes[ssi] === hits[0].object) { stampSectionIdx = ssi; break; }
+      }
+      var angle = (stampSectionIdx >= 0)
+        ? getSectionDownslopeAngle(face, stampSectionIdx)
+        : getRoofSlopeAngle(face);
       pushUndo();
 
-      var snapped = snapDormerToEave(face, pt.x, pt.z, DORMER_DEFAULT_DEPTH);
+      var snapped = snapDormerToEave(face, pt.x, pt.z, DORMER_DEFAULT_DEPTH, stampSectionIdx);
       var newDormer = {
         type: dormerPlaceType,
         vertices: computeDormerVerts(snapped.x, snapped.z, angle, DORMER_DEFAULT_WIDTH, DORMER_DEFAULT_DEPTH),
@@ -11425,6 +12290,276 @@ app.get("/design", (req, res) => {
       }
     }
 
+    /* ── Chimney helpers ──────────────────────────────────────────────
+       A chimney is a vertical box prism on the roof.  Stored shape:
+         { cx, cz, baseY, width, depth, height, mesh, selected }
+       cx/cz   — world XZ centre at the click point
+       baseY   — world Y of the roof at that point (raycaster hit Y)
+       width/depth/height — metres
+       mesh    — THREE.Group attached to scene3d (rebuilt on edit)
+       selected — flag used by the highlight outline */
+
+    function buildChimneyMesh(chimney, isGhost) {
+      var w = chimney.width || CHIMNEY_DEFAULT_W;
+      var d = chimney.depth || CHIMNEY_DEFAULT_D;
+      var h = chimney.height || CHIMNEY_DEFAULT_H;
+      var grp = new THREE.Group();
+
+      var bodyMat = new THREE.MeshStandardMaterial({
+        color: isGhost ? 0xb87a4a : 0x8b4513,
+        roughness: 0.85,
+        metalness: 0.05,
+        transparent: !!isGhost,
+        opacity: isGhost ? 0.55 : 1.0
+      });
+      var capMat = new THREE.MeshStandardMaterial({
+        color: isGhost ? 0x4a4a4a : 0x2a2a2a,
+        roughness: 0.7,
+        metalness: 0.1,
+        transparent: !!isGhost,
+        opacity: isGhost ? 0.55 : 1.0
+      });
+
+      // Body
+      var body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
+      // Position so the BOTTOM of the box sits at y=0; placement code
+      // moves the whole group up to chimney.baseY.
+      body.position.y = h / 2;
+      grp.add(body);
+
+      // Cap (slightly wider, very thin) for a tiny detail
+      var capW = w * 1.12;
+      var capD = d * 1.12;
+      var capH = Math.min(0.08, h * 0.08);
+      var cap = new THREE.Mesh(new THREE.BoxGeometry(capW, capH, capD), capMat);
+      cap.position.y = h + capH / 2;
+      grp.add(cap);
+
+      // Selection outline (BoxHelper). Hidden unless selected.
+      var box = new THREE.Box3().setFromObject(grp);
+      var outline = new THREE.Box3Helper(box, new THREE.Color(0xffd54a));
+      outline.visible = !!chimney.selected;
+      grp.add(outline);
+      grp.userData.outline = outline;
+
+      grp.userData.kind = 'chimney';
+      grp.userData.chimneyRef = chimney;
+      return grp;
+    }
+
+    function rebuildChimney(face, idx) {
+      var c = face.chimneys[idx];
+      if (!c) return;
+      if (c.mesh) scene3d.remove(c.mesh);
+      var m = buildChimneyMesh(c, false);
+      m.position.set(c.cx, c.baseY, c.cz);
+      // Rotate the box so its sides are square to the parent face's
+      // ridge/eave (same convention as dormers).
+      m.rotation.y = c.rotationY || 0;
+      c.mesh = m;
+      scene3d.add(m);
+    }
+
+    function clearFaceChimneys(face) {
+      if (!face.chimneys) return;
+      face.chimneys.forEach(function(c) {
+        if (c.mesh) scene3d.remove(c.mesh);
+      });
+    }
+
+    function hideChimneyPanel() {
+      var p = document.getElementById('chimneyPanel');
+      if (p) p.classList.add('hidden');
+    }
+
+    function showChimneyPanel() {
+      var p = document.getElementById('chimneyPanel');
+      if (!p) return;
+      var c = (selectedChimneyFaceIdx >= 0 && selectedChimneyIdx >= 0)
+        ? roofFaces3d[selectedChimneyFaceIdx].chimneys[selectedChimneyIdx]
+        : null;
+      if (!c) { p.classList.add('hidden'); return; }
+      var M_TO_FT = 3.28084;
+      var setVal = function(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = val.toFixed(1);
+      };
+      setVal('cpWidth',  c.width  * M_TO_FT);
+      setVal('cpDepth',  c.depth  * M_TO_FT);
+      setVal('cpHeight', c.height * M_TO_FT);
+      setVal('cpWidthSlider',  c.width  * M_TO_FT);
+      setVal('cpDepthSlider',  c.depth  * M_TO_FT);
+      setVal('cpHeightSlider', c.height * M_TO_FT);
+      p.classList.remove('hidden');
+    }
+
+    function deselectChimney() {
+      if (selectedChimneyFaceIdx >= 0 && selectedChimneyIdx >= 0) {
+        var f = roofFaces3d[selectedChimneyFaceIdx];
+        if (f && f.chimneys) {
+          var c = f.chimneys[selectedChimneyIdx];
+          if (c) {
+            c.selected = false;
+            if (c.mesh && c.mesh.userData.outline) c.mesh.userData.outline.visible = false;
+          }
+        }
+      }
+      selectedChimneyFaceIdx = -1;
+      selectedChimneyIdx = -1;
+      hideChimneyPanel();
+    }
+
+    function selectChimney(faceIdx, chimIdx) {
+      deselectChimney();
+      var f = roofFaces3d[faceIdx];
+      if (!f || !f.chimneys || !f.chimneys[chimIdx]) return;
+      selectedChimneyFaceIdx = faceIdx;
+      selectedChimneyIdx = chimIdx;
+      var c = f.chimneys[chimIdx];
+      c.selected = true;
+      if (c.mesh && c.mesh.userData.outline) c.mesh.userData.outline.visible = true;
+      showChimneyPanel();
+    }
+
+    function deleteChimney(faceIdx, chimIdx) {
+      var f = roofFaces3d[faceIdx];
+      if (!f || !f.chimneys) return;
+      var c = f.chimneys[chimIdx];
+      if (!c) return;
+      if (c.mesh) scene3d.remove(c.mesh);
+      f.chimneys.splice(chimIdx, 1);
+      selectedChimneyFaceIdx = -1;
+      selectedChimneyIdx = -1;
+      // Re-bake shading because the obstruction set changed.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
+      markDirty();
+    }
+
+    function findChimneyUnderCursor(event) {
+      var canvas = document.getElementById('canvas3d');
+      if (!canvas || !raycaster3d || !camera3d) return { faceIdx: -1, chimIdx: -1 };
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var f = roofFaces3d[fi];
+        if (!f || !f.chimneys) continue;
+        for (var ci = 0; ci < f.chimneys.length; ci++) {
+          var c = f.chimneys[ci];
+          if (!c.mesh) continue;
+          var hits = raycaster3d.intersectObject(c.mesh, true);
+          if (hits.length > 0) return { faceIdx: fi, chimIdx: ci };
+        }
+      }
+      return { faceIdx: -1, chimIdx: -1 };
+    }
+
+    function enterChimneyPlaceMode() {
+      // Exit any other placement mode first.
+      if (typeof dormerPlaceMode !== 'undefined' && dormerPlaceMode &&
+          typeof exitDormerPlaceMode === 'function') {
+        exitDormerPlaceMode();
+      }
+      chimneyPlaceMode = true;
+      var canvas = document.getElementById('canvas3d');
+      if (canvas) canvas.style.cursor = 'crosshair';
+      var btn = document.getElementById('btnAddChimney');
+      if (btn) btn.classList.add('active');
+      // Ghost mesh
+      if (chimneyGhostMesh) scene3d.remove(chimneyGhostMesh);
+      chimneyGhostMesh = buildChimneyMesh({
+        width: CHIMNEY_DEFAULT_W, depth: CHIMNEY_DEFAULT_D, height: CHIMNEY_DEFAULT_H
+      }, true);
+      chimneyGhostMesh.visible = false;
+      scene3d.add(chimneyGhostMesh);
+    }
+
+    function exitChimneyPlaceMode() {
+      chimneyPlaceMode = false;
+      var canvas = document.getElementById('canvas3d');
+      if (canvas) canvas.style.cursor = '';
+      var btn = document.getElementById('btnAddChimney');
+      if (btn) btn.classList.remove('active');
+      if (chimneyGhostMesh) { scene3d.remove(chimneyGhostMesh); chimneyGhostMesh = null; }
+    }
+
+    function _raycastAnyRoofSection(event) {
+      var canvas = document.getElementById('canvas3d');
+      if (!canvas) return null;
+      var rect = canvas.getBoundingClientRect();
+      mouse3d.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse3d.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster3d.setFromCamera(mouse3d, camera3d);
+      var meshes = [];
+      var faceOf = [];
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var f = roofFaces3d[fi];
+        if (!f || !f.sectionMeshes) continue;
+        var ds = f.deletedSections || [];
+        for (var si = 0; si < f.sectionMeshes.length; si++) {
+          if (ds[si]) continue;
+          var sm = f.sectionMeshes[si];
+          if (!sm) continue;
+          meshes.push(sm);
+          faceOf.push(fi);
+        }
+      }
+      if (!meshes.length) return null;
+      var hits = raycaster3d.intersectObjects(meshes, false);
+      if (!hits.length) return null;
+      var hit = hits[0];
+      var idx = meshes.indexOf(hit.object);
+      return { point: hit.point, faceIdx: faceOf[idx] };
+    }
+
+    function updateChimneyGhost(event) {
+      if (!chimneyPlaceMode || !chimneyGhostMesh) return;
+      var hit = _raycastAnyRoofSection(event);
+      if (!hit) { chimneyGhostMesh.visible = false; return; }
+      chimneyGhostMesh.position.set(hit.point.x, hit.point.y, hit.point.z);
+      // Match the hovered face's orientation so the ghost previews
+      // the actual square-to-ridge placement.
+      var hoverFace = roofFaces3d[hit.faceIdx];
+      // Negate to match stampChimney's Three.js-native sign convention.
+      chimneyGhostMesh.rotation.y = hoverFace ? -getRoofSlopeAngle(hoverFace) : 0;
+      chimneyGhostMesh.visible = true;
+    }
+
+    function stampChimney(event) {
+      if (!chimneyPlaceMode) return false;
+      var hit = _raycastAnyRoofSection(event);
+      if (!hit) return false;
+      var face = roofFaces3d[hit.faceIdx];
+      if (!face) return false;
+      if (!face.chimneys) face.chimneys = [];
+      pushUndo();
+      var c = {
+        cx: hit.point.x,
+        cz: hit.point.z,
+        baseY: hit.point.y,
+        width: CHIMNEY_DEFAULT_W,
+        depth: CHIMNEY_DEFAULT_D,
+        height: CHIMNEY_DEFAULT_H,
+        // Orient the box square to the parent face's ridge/eave.
+        // NOTE: getRoofSlopeAngle returns an angle in the math-CCW
+        // convention used by computeDormerVerts (x' = lx·cos - lz·sin).
+        // Three.js mesh.rotation.y is the opposite sign, so we negate
+        // once here and store the Three.js-native angle.
+        rotationY: -getRoofSlopeAngle(face),
+        mesh: null,
+        selected: false
+      };
+      face.chimneys.push(c);
+      var idx = face.chimneys.length - 1;
+      rebuildChimney(face, idx);
+      selectChimney(hit.faceIdx, idx);
+      markDirty();
+      // Re-bake shading because the obstruction set changed.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
+      return true;
+    }
+
     /* ── Finalize a roof face (add to scene + array) ── */
     function finalizeRoofFace(verts, pitch, azimuth, height, deletedSections, sectionPitches) {
       var p = pitch || 0;
@@ -11449,7 +12584,8 @@ app.get("/design", (req, res) => {
         selectedSection: -1,
         handleMeshes: [], edgeHandleMeshes: [], labelSprites: [],
         selected: false,
-        dormers: []
+        dormers: [],
+        chimneys: []
       };
       var usePitch = face.pitch || 10;
       var wH = getRoofWallHeight(face);
@@ -11550,6 +12686,7 @@ app.get("/design", (req, res) => {
         if (face.edgeHandleMeshes) face.edgeHandleMeshes.forEach(function(h) { scene3d.remove(h); });
         face.labelSprites.forEach(function(s) { scene3d.remove(s); });
         clearFaceDormers(face);
+        clearFaceChimneys(face);
       });
       roofFaces3d = [];
       roofSelectedFace = -1;
@@ -13532,6 +14669,20 @@ app.get("/design", (req, res) => {
           if (stampDormer(e)) return;
         }
 
+        // Chimney placement mode — stamp chimney on click
+        if (chimneyPlaceMode) {
+          if (stampChimney(e)) return;
+        }
+
+        // Click on an existing chimney → select it (highlight outline)
+        var chimHit = findChimneyUnderCursor(e);
+        if (chimHit.chimIdx >= 0) {
+          selectChimney(chimHit.faceIdx, chimHit.chimIdx);
+          return;
+        }
+        // Click empty space → drop chimney selection
+        if (selectedChimneyIdx >= 0) deselectChimney();
+
         // Not in drawing mode — check for dormer or face/section selection
         if (roofDraggingHandle >= 0 || roofDraggingEdge >= 0 || dormerDraggingHandle >= 0 || isViewCubeBusy()) return;
         if (roofMovingMode) return; // handled by move drag
@@ -13545,15 +14696,11 @@ app.get("/design", (req, res) => {
           var dormerHit = findDormerUnderCursor(e);
           if (dormerHit.dormerIdx >= 0) {
             var curD = roofFaces3d[dormerHit.faceIdx].dormers[dormerHit.dormerIdx];
-            if (curD.selected) {
-              // Already whole-selected — second click enters edit mode
-              if (!curD.editing) {
-                selectDormer(dormerHit.faceIdx, dormerHit.dormerIdx);
-              }
-              // already editing → no-op
-            } else {
+            if (!curD.editing) {
+              // Click = whole-select (cyan). Dblclick elevates to edit mode.
               selectDormerWhole(dormerHit.faceIdx, dormerHit.dormerIdx);
             }
+            // Already editing → no-op (stay in edit mode)
             return;
           }
         }
@@ -13724,6 +14871,10 @@ app.get("/design", (req, res) => {
         if (dormerPlaceMode) {
           updateDormerGhost(e);
         }
+        // Chimney ghost tracking
+        if (chimneyPlaceMode) {
+          updateChimneyGhost(e);
+        }
         // Dormer handle dragging (edge-symmetric: dragging a corner mirrors its pair on the same edge)
         if (dormerDraggingHandle >= 0) {
           var dhit = raycastGroundPlane(e);
@@ -13766,10 +14917,16 @@ app.get("/design", (req, res) => {
             dv[0] = { x: sv[0].x + wux * (-wDeltaF) + dux * projD, z: sv[0].z + wuz * (-wDeltaF) + duz * projD };
             dv[1] = { x: sv[1].x + wux * ( wDeltaF) + dux * projD, z: sv[1].z + wuz * ( wDeltaF) + duz * projD };
           } else if (dhi === 2 || dhi === 4) {
-            // Back pair: mirror width, shift both in depth; front and peak untouched
+            // Back pair: mirror width, shift both in depth.
+            // Width delta also propagates to the front pair so the dormer
+            // stays rectangular in plan. Depth stays local to the back edge.
+            // Front eave Y tracks max(contactY[2], contactY[4]) inside
+            // buildDormerMesh/Handles, so moving back in XZ pulls front Y along.
             var wDeltaB = (dhi === 2) ? projW : -projW;
             dv[2] = { x: sv[2].x + wux * ( wDeltaB) + dux * projD, z: sv[2].z + wuz * ( wDeltaB) + duz * projD };
             dv[4] = { x: sv[4].x + wux * (-wDeltaB) + dux * projD, z: sv[4].z + wuz * (-wDeltaB) + duz * projD };
+            dv[0] = { x: sv[0].x + wux * (-wDeltaB),                z: sv[0].z + wuz * (-wDeltaB) };
+            dv[1] = { x: sv[1].x + wux * ( wDeltaB),                z: sv[1].z + wuz * ( wDeltaB) };
           } else {
             // Peak (3): free movement, front untouched
             dv[3] = { x: dhit.x, z: dhit.z };
@@ -14001,6 +15158,29 @@ app.get("/design", (req, res) => {
           e.preventDefault();
           pushUndo();
           deleteDormer(roofSelectedFace, selectedDormerIdx);
+          return;
+        }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selectedChimneyIdx >= 0 && selectedChimneyFaceIdx >= 0) {
+          e.preventDefault();
+          pushUndo();
+          deleteChimney(selectedChimneyFaceIdx, selectedChimneyIdx);
+          return;
+        }
+        if (e.key === 'Escape' && chimneyPlaceMode) {
+          e.preventDefault();
+          exitChimneyPlaceMode();
+          return;
+        }
+        // "O" hotkey — toggle obstruction (chimney) placement mode.
+        // Only when no input/textarea has focus.
+        if ((e.key === 'o' || e.key === 'O') &&
+            !e.metaKey && !e.ctrlKey && !e.altKey &&
+            document.activeElement &&
+            document.activeElement.tagName !== 'INPUT' &&
+            document.activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          if (chimneyPlaceMode) exitChimneyPlaceMode();
+          else enterChimneyPlaceMode();
           return;
         }
         if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
@@ -14271,16 +15451,28 @@ app.get("/design", (req, res) => {
       });
 
       // ── Roof Edit Banner: dormer buttons ──
-      document.querySelectorAll('.reb-dormer-btn').forEach(function(btn) {
+      document.querySelectorAll('.reb-dormer-btn[data-dormer]').forEach(function(btn) {
         btn.addEventListener('click', function(e) {
           e.stopPropagation();
           var type = btn.dataset.dormer;
+          if (chimneyPlaceMode) exitChimneyPlaceMode();
           if (dormerPlaceMode && dormerPlaceType === type) {
             exitDormerPlaceMode();
           } else {
             enterDormerPlaceMode(type);
           }
         });
+      });
+
+      // ── Roof Edit Banner: chimney button ──
+      var btnChim = document.getElementById('btnAddChimney');
+      if (btnChim) btnChim.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (chimneyPlaceMode) {
+          exitChimneyPlaceMode();
+        } else {
+          enterChimneyPlaceMode();
+        }
       });
 
       var rebCloseBtn = document.getElementById('rebCloseBtn');
@@ -16816,6 +18008,26 @@ app.post("/api/roof/shading", async (req, res) => {
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       return res.status(resp.status).json({ error: err.detail || "Shading engine error" });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(503).json({ error: "Shading engine unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
+  }
+});
+
+// ── Per-pixel shading (Aurora-style bake) ────────────────────────────────
+app.post("/api/roof/shading/per_pixel", async (req, res) => {
+  const ROOF_SERVICE = process.env.ROOF_SERVICE_URL || "http://localhost:8000";
+  try {
+    const resp = await fetch(`${ROOF_SERVICE}/roof/shading/per_pixel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body)
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.detail || "Per-pixel shading error" });
     }
     const data = await resp.json();
     res.json(data);

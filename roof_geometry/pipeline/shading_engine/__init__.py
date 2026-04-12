@@ -18,20 +18,36 @@ Usage::
     response = run_shading_engine(request)
 """
 
+from pipeline.shading_engine.per_pixel import run_per_pixel_shading
 from pipeline.shading_engine.processor import run_shading_engine
 from pipeline.shading_engine.schemas import (
     ObservedRange,
+    Obstruction3D,
+    PerPixelShadingRequest,
+    PerPixelShadingResponse,
+    SectionGrid,
     SectionInput,
+    SectionPlaneInput,
     SectionResult,
     ShadingRequest,
     ShadingResponse,
+    Tree3D,
+    Vec3,
 )
 
 __all__ = [
     "run_shading_engine",
+    "run_per_pixel_shading",
     "ShadingRequest",
     "ShadingResponse",
     "SectionInput",
     "SectionResult",
     "ObservedRange",
+    "PerPixelShadingRequest",
+    "PerPixelShadingResponse",
+    "SectionPlaneInput",
+    "SectionGrid",
+    "Obstruction3D",
+    "Tree3D",
+    "Vec3",
 ]
