@@ -187,6 +187,41 @@ def _section_plane_frame(vertices: list[Vec3]) -> tuple[np.ndarray, np.ndarray, 
     return n, u_dir, v_dir, verts
 
 
+def _points_in_polygon_xz(points_xz: np.ndarray, poly_xz: np.ndarray) -> np.ndarray:
+    """Vectorized ray-casting point-in-polygon test on the XZ plane.
+
+    ``points_xz`` is (N, 2) and ``poly_xz`` is (M, 2).  Returns an (N,)
+    boolean mask: True where the point lies inside the polygon.  The
+    polygon may be convex or concave.  Collinear/edge points are
+    treated as inside with a small epsilon tolerance.
+    """
+    n = points_xz.shape[0]
+    m = poly_xz.shape[0]
+    if n == 0 or m < 3:
+        return np.zeros(n, dtype=bool)
+
+    px = points_xz[:, 0]
+    pz = points_xz[:, 1]
+    inside = np.zeros(n, dtype=bool)
+    j = m - 1
+    for i in range(m):
+        xi, zi = poly_xz[i, 0], poly_xz[i, 1]
+        xj, zj = poly_xz[j, 0], poly_xz[j, 1]
+        # Edge crosses horizontal line through pt_z?
+        cond1 = (zi > pz) != (zj > pz)
+        denom = (zj - zi)
+        # Guard against zero-length edges.
+        if abs(denom) < 1e-12:
+            j = i
+            continue
+        x_cross = (xj - xi) * (pz - zi) / denom + xi
+        cond2 = px < x_cross
+        flip = cond1 & cond2
+        inside ^= flip
+        j = i
+    return inside
+
+
 def _rasterize_polygon_mask(uv: np.ndarray, width: int, height: int) -> np.ndarray:
     """Scanline-fill a (height, width) boolean mask from polygon UVs.
 
@@ -265,8 +300,16 @@ def _bake_one_section(
     hours_per_sample: float,
     albedo: float,
     shadow_enabled: bool,
+    excluded_footprints_xz: list[np.ndarray] | None = None,
 ) -> SectionGrid:
-    """Compute the per-pixel annual kWh/m²/yr grid for a single section."""
+    """Compute the per-pixel annual kWh/m²/yr grid for a single section.
+
+    ``excluded_footprints_xz`` is an optional list of (M, 2) XZ polygon
+    arrays.  Pixels whose world XZ lies inside any of these polygons are
+    marked NaN in the output grid and skipped for the bake.  This is
+    used to clip obstruction (chimney, dormer) footprints out of the
+    parent section so we do not bake pixels that sit under a 3D object.
+    """
     normal, u_dir, v_dir, verts = _section_plane_frame(section.vertices)
 
     # Polygon in plane-local (u, v) coordinates (metres).
@@ -311,6 +354,47 @@ def _bake_one_section(
         + ((pixel_cols[:, None] + 0.5) * res) * u_dir[None, :]
         + ((pixel_rows[:, None] + 0.5) * res) * v_dir[None, :]
     )
+
+    # Clip out pixels whose XZ lies under any excluded obstruction
+    # footprint (e.g. a chimney sitting on the main roof, or a sibling
+    # dormer).  Those pixels are physically covered by a 3D object and
+    # should not be baked as part of this section.
+    excluded_row_idxs: np.ndarray | None = None
+    excluded_col_idxs: np.ndarray | None = None
+    if excluded_footprints_xz:
+        points_xz = np.stack(
+            [pixel_positions[:, 0], pixel_positions[:, 2]], axis=1
+        )
+        keep = np.ones(n_pixels, dtype=bool)
+        for poly_xz in excluded_footprints_xz:
+            if poly_xz is None or poly_xz.shape[0] < 3:
+                continue
+            # Fast bounding-box reject.
+            xmin = float(poly_xz[:, 0].min())
+            xmax = float(poly_xz[:, 0].max())
+            zmin = float(poly_xz[:, 1].min())
+            zmax = float(poly_xz[:, 1].max())
+            in_bbox = (
+                (points_xz[:, 0] >= xmin)
+                & (points_xz[:, 0] <= xmax)
+                & (points_xz[:, 1] >= zmin)
+                & (points_xz[:, 1] <= zmax)
+            )
+            candidate = keep & in_bbox
+            if not np.any(candidate):
+                continue
+            inside = _points_in_polygon_xz(points_xz[candidate], poly_xz)
+            # Mark these candidate pixels as excluded where inside==True.
+            idx = np.nonzero(candidate)[0]
+            keep[idx[inside]] = False
+        if not np.all(keep):
+            excluded_row_idxs = pixel_rows[~keep]
+            excluded_col_idxs = pixel_cols[~keep]
+            pixel_rows = pixel_rows[keep]
+            pixel_cols = pixel_cols[keep]
+            pixel_positions = pixel_positions[keep]
+            n_pixels = pixel_rows.size
+
     # Lift off the plane to avoid self-shadowing on obstruction prisms
     # that share the plane.
     ray_origins = pixel_positions + normal[None, :] * _RAY_LIFT_M
@@ -404,20 +488,58 @@ def run_per_pixel_shading(request: PerPixelShadingRequest) -> PerPixelShadingRes
     mode = (request.shadow_mode or "both").lower()
     obstructions = [] if mode in ("none", "trees") else list(request.obstructions)
     trees = [] if mode in ("none", "obstructions") else list(request.trees)
-    scene = from_obstructions_and_trees(obstructions, trees)
+    default_scene = from_obstructions_and_trees(obstructions, trees)
     shadow_enabled = mode != "none"
+
+    # Pre-compute each obstruction's XZ footprint as a numpy array for
+    # point-in-polygon clipping.  We store tuples of
+    # ``(owner_id, footprint_xz)`` so the per-section loop can filter
+    # by owner_id without rebuilding the underlying polygons.
+    obstruction_meta: list[tuple[str | None, np.ndarray]] = []
+    for ob in obstructions:
+        if not ob.footprint:
+            continue
+        poly_xz = np.array(
+            [[v.x, v.z] for v in ob.footprint], dtype=np.float64,
+        )
+        obstruction_meta.append((ob.owner_id, poly_xz))
+
+    # Cache filtered occluder scenes keyed by owner_id (None = default).
+    scene_cache: dict[str | None, OccluderScene] = {None: default_scene}
+    owner_ids_present = {ob.owner_id for ob in obstructions if ob.owner_id}
 
     section_grids: list[SectionGrid] = []
     for section in request.sections:
+        owner = section.owner_id
+        if owner and owner in owner_ids_present:
+            if owner not in scene_cache:
+                filtered_obs = [o for o in obstructions if o.owner_id != owner]
+                scene_cache[owner] = from_obstructions_and_trees(
+                    filtered_obs, trees,
+                )
+            section_scene = scene_cache[owner]
+            # Exclude footprints of all obstructions EXCEPT the ones
+            # this section owns (so a dormer panel is not clipped by
+            # its own prism footprint, but IS clipped by a sibling
+            # chimney/dormer sitting on it).
+            excluded = [
+                poly for (oid, poly) in obstruction_meta if oid != owner
+            ]
+        else:
+            section_scene = default_scene
+            # Main-roof sections: clip ALL obstruction footprints so we
+            # do not bake pixels that sit under a chimney or dormer.
+            excluded = [poly for (_, poly) in obstruction_meta]
         grid = _bake_one_section(
             section,
-            scene,
+            section_scene,
             sun_dirs,
             cos_z,
             ghi, dni, dhi,
             hours_per_sample=hours_per_sample,
             albedo=request.albedo,
             shadow_enabled=shadow_enabled,
+            excluded_footprints_xz=excluded if excluded else None,
         )
         section_grids.append(grid)
 

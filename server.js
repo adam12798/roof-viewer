@@ -8497,6 +8497,7 @@ app.get("/design", (req, res) => {
       if (!renderer3d) return;
       if (controls3d) controls3d.update();
       updateHandleScales();
+      updateMeasurementLabelTilt();
       renderer3d.render(scene3d, camera3d);
       updateViewCube3d();
     }
@@ -9202,6 +9203,8 @@ app.get("/design", (req, res) => {
         lng: lng
       });
       markDirty();
+      // A new shadow caster was added — refresh the per-pixel bake.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
     }
 
     function serializeTrees() {
@@ -9289,6 +9292,8 @@ app.get("/design", (req, res) => {
       hoveredTreeIdx = -1;
       if (allTreesSelected) deselectAllTrees();
       markDirty();
+      // A shadow caster was removed — refresh the per-pixel bake.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
     }
 
     var allTreesSelected = false;
@@ -9358,6 +9363,8 @@ app.get("/design", (req, res) => {
             t.lng = t.center.x / mPerDegLng + designLng;
             t.lat = -(t.center.z / metersPerDegLat) + designLat;
             markDirty();
+            // The tree moved — re-bake so the shadow follows it.
+            if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
             if (selectedTreeIdx === draggingTreeIdx) selectTree(draggingTreeIdx);
           }
           canvas.style.cursor = hoveredTreeIdx >= 0 ? 'grab' : 'crosshair';
@@ -10021,8 +10028,14 @@ app.get("/design", (req, res) => {
       return Math.abs(area) / 2;
     }
 
-    /* ── Text sprite for edge labels ── */
-    function makeTextSprite(text) {
+    // Tilt threshold (radians) above which labels hug the eave instead of floating low.
+    var LABEL_TILT_THRESHOLD = 25 * Math.PI / 180;
+    // Y position used in top-down view (floats just above the ground plane).
+    var LABEL_Y_TOPDOWN = 0.6;
+    // Extra clearance above the eave in tilted view so the label doesn't z-fight with the edge line.
+    var LABEL_EAVE_CLEARANCE = 0.12;
+
+    function makeEdgeLabelSprite(text) {
       var canvas = document.createElement('canvas');
       canvas.width = 256; canvas.height = 64;
       var ctx = canvas.getContext('2d');
@@ -10033,25 +10046,143 @@ app.get("/design", (req, res) => {
       ctx.fillStyle = '#fff';
       ctx.fillText(text, 128, 32);
       var tex = new THREE.CanvasTexture(canvas);
-      var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      var mat = new THREE.SpriteMaterial({
+        map: tex,
+        transparent: true,
+        depthTest: false
+      });
       var sprite = new THREE.Sprite(mat);
       sprite.scale.set(3.5, 0.875, 1);
+      sprite.renderOrder = 999;
       return sprite;
     }
 
-    /* ── Build edge measurement labels ── */
-    function buildEdgeLabels(verts) {
+    /* Build edge measurement labels. wH is the face wall height (eave Y). */
+    function buildEdgeLabels(verts, wH) {
       var labels = [];
+      var eaveY = (typeof wH === 'number') ? wH : 0;
       for (var i = 0; i < verts.length; i++) {
         var a = verts[i], b = verts[(i + 1) % verts.length];
         var dx = b.x - a.x, dz = b.z - a.z;
-        var lengthFt = (Math.sqrt(dx * dx + dz * dz) * 3.28084).toFixed(1);
-        var sprite = makeTextSprite(lengthFt + ' ft');
-        sprite.position.set((a.x + b.x) / 2, 0.6, (a.z + b.z) / 2);
+        var lenM = Math.sqrt(dx * dx + dz * dz);
+        if (lenM < 1e-4) continue;
+        var lengthFt = (lenM * 3.28084).toFixed(1);
+        var sprite = makeEdgeLabelSprite(lengthFt + ' ft');
+        var midX = (a.x + b.x) / 2;
+        var midZ = (a.z + b.z) / 2;
+        sprite.position.set(midX, LABEL_Y_TOPDOWN, midZ);
+        sprite.userData.edgeLabel = {
+          ax: a.x, az: a.z,
+          bx: b.x, bz: b.z,
+          midX: midX,
+          midZ: midZ,
+          dx: dx,
+          dz: dz,
+          lengthM: lenM,
+          eaveY: eaveY
+        };
         scene3d.add(sprite);
         labels.push(sprite);
       }
       return labels;
+    }
+
+    /* ── Dedup measurement labels across all roof faces ──
+       When two edge labels overlap spatially (midpoints within threshold and
+       their edges are roughly parallel), hide the one with the longer length so
+       short sub-segment measurements dominate over the larger enclosing edge. */
+    var LABEL_DEDUP_DIST = 2.0;        // meters between midpoints
+    var LABEL_DEDUP_PARALLEL = 0.9;    // |cos(theta)| between normalized edges
+
+    function refreshMeasurementLabelDedup() {
+      if (typeof roofFaces3d === 'undefined' || !roofFaces3d) return;
+      var all = [];
+      roofFaces3d.forEach(function(face) {
+        if (!face || !face.labelSprites) return;
+        face.labelSprites.forEach(function(m) {
+          if (m && m.userData && m.userData.edgeLabel) {
+            m.visible = true;
+            all.push(m);
+          }
+        });
+      });
+      for (var i = 0; i < all.length; i++) {
+        var A = all[i];
+        if (!A.visible) continue;
+        var ea = A.userData.edgeLabel;
+        var la = ea.lengthM;
+        var invA = la > 1e-6 ? 1 / la : 0;
+        for (var j = i + 1; j < all.length; j++) {
+          var B = all[j];
+          if (!B.visible) continue;
+          var eb = B.userData.edgeLabel;
+          var ddx = ea.midX - eb.midX;
+          var ddz = ea.midZ - eb.midZ;
+          if (ddx * ddx + ddz * ddz > LABEL_DEDUP_DIST * LABEL_DEDUP_DIST) continue;
+          var lb = eb.lengthM;
+          var invB = lb > 1e-6 ? 1 / lb : 0;
+          var dot = (ea.dx * eb.dx + ea.dz * eb.dz) * invA * invB;
+          if (Math.abs(dot) < LABEL_DEDUP_PARALLEL) continue;
+          // Overlap — hide the longer measurement, keep the shorter.
+          if (la >= lb) {
+            A.visible = false;
+            break; // A is gone, move to next i
+          } else {
+            B.visible = false;
+          }
+        }
+      }
+    }
+
+    /* ── Tilt-aware Y position and screen-space rotation for edge labels ──
+       Called from animate3d every frame. Does two things per label:
+       1) Snaps the sprite's Y position: top-down view keeps the low floating
+          position (reads inside the roof footprint), tilted view pulls labels
+          up to each face's eave height so they hug the low edge of the roof.
+       2) Rotates the sprite in screen space so its baseline tracks the edge
+          direction as projected to the screen. Sprites still billboard (always
+          face the camera) so text is readable from any orbit angle, but the
+          text now runs along the line instead of always horizontal. */
+    var _labelProjA = null, _labelProjB = null;
+    function updateMeasurementLabelTilt() {
+      if (typeof roofFaces3d === 'undefined' || !roofFaces3d) return;
+      if (!camera3d || !controls3d) return;
+      var cdx = camera3d.position.x - controls3d.target.x;
+      var cdy = camera3d.position.y - controls3d.target.y;
+      var cdz = camera3d.position.z - controls3d.target.z;
+      var rr = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+      if (rr < 1e-6) return;
+      var polar = Math.acos(Math.max(-1, Math.min(1, cdy / rr)));
+      var tilted = polar > LABEL_TILT_THRESHOLD;
+      if (!_labelProjA) { _labelProjA = new THREE.Vector3(); _labelProjB = new THREE.Vector3(); }
+      var HALF_PI = Math.PI / 2;
+      for (var f = 0; f < roofFaces3d.length; f++) {
+        var face = roofFaces3d[f];
+        if (!face || !face.labelSprites) continue;
+        for (var k = 0; k < face.labelSprites.length; k++) {
+          var m = face.labelSprites[k];
+          if (!m || !m.userData || !m.userData.edgeLabel) continue;
+          var ed = m.userData.edgeLabel;
+          var targetY = tilted
+            ? (ed.eaveY + LABEL_EAVE_CLEARANCE)
+            : LABEL_Y_TOPDOWN;
+          if (m.position.y !== targetY) m.position.y = targetY;
+          // Project the edge endpoints into NDC and compute the 2D angle.
+          _labelProjA.set(ed.ax, targetY, ed.az).project(camera3d);
+          _labelProjB.set(ed.bx, targetY, ed.bz).project(camera3d);
+          var sdx = _labelProjB.x - _labelProjA.x;
+          var sdy = _labelProjB.y - _labelProjA.y;
+          if (sdx === 0 && sdy === 0) continue;
+          var angle = Math.atan2(sdy, sdx);
+          // Keep the text upright: flip by π if the angle leaves the readable
+          // half-plane, which just reverses the "reading direction" of the edge.
+          if (angle > HALF_PI) angle -= Math.PI;
+          else if (angle < -HALF_PI) angle += Math.PI;
+          if (m.material) m.material.rotation = angle;
+        }
+      }
     }
 
     /* ── Fit oriented minimum bounding rectangle to a set of points ── */
@@ -10490,18 +10621,84 @@ app.get("/design", (req, res) => {
       return out;
     }
 
+    /* ── Walk every dormer on every roof face → Obstruction3D prism.
+       A dormer is modeled as a vertical flat-top prism from its lowest
+       eave contact Y up to its ridge peak Y. The footprint is the 4
+       real eave corners of the plan-view polygon (we drop v[3], the
+       plan-view "peak" point, which is an interior point not part of
+       the convex eave outline). This over-counts shadow slightly (the
+       real dormer roof is sloped) but is conservative and correct. */
+    function collectAllDormers3D() {
+      var out = [];
+      for (var fi = 0; fi < roofFaces3d.length; fi++) {
+        var f = roofFaces3d[fi];
+        if (!f || !f.dormers) continue;
+        for (var di = 0; di < f.dormers.length; di++) {
+          var d = f.dormers[di];
+          if (!d || d.baseY == null || d.topY == null || !d.vertices) continue;
+          if (d.vertices.length < 5) continue;
+          var v = d.vertices;
+          var footprint = [
+            { x: v[0].x, y: d.baseY, z: v[0].z },  // front-left
+            { x: v[1].x, y: d.baseY, z: v[1].z },  // front-right
+            { x: v[2].x, y: d.baseY, z: v[2].z },  // back-right
+            { x: v[4].x, y: d.baseY, z: v[4].z }   // back-left
+          ];
+          out.push({
+            id: 'dorm_' + fi + '_' + di,
+            footprint: footprint,
+            base_y: d.baseY,
+            top_y: d.topY,
+            // owner_id ties this prism to the dormer's roof panel
+            // sections so the bake excludes it when it would
+            // otherwise self-shadow the dormer's own surface.
+            owner_id: 'dormer_' + fi + '_' + di
+          });
+        }
+      }
+      return out;
+    }
+
+    /* ── Walk every placed tree → Tree3D ellipsoid entry.
+       We model the canopy only (ellipsoid from 35%→100% of tree height)
+       so the narrow trunk isn't treated as a thick opaque column and
+       the shadow matches the visible sphere canopy in the 3D scene. */
+    function collectAllTrees3D() {
+      var out = [];
+      if (typeof trees3d === 'undefined' || !trees3d) return out;
+      for (var i = 0; i < trees3d.length; i++) {
+        var t = trees3d[i];
+        if (!t || !t.center || !(t.radius > 0) || !(t.height > 0)) continue;
+        var groundY = (t.mesh && t.mesh.position) ? t.mesh.position.y : 0;
+        out.push({
+          id: 'tree_' + i,
+          center_x: t.center.x,
+          center_z: t.center.z,
+          base_y: groundY + 0.35 * t.height,  // canopy bottom; skip trunk
+          peak_y: groundY + t.height,
+          radius_m: t.radius
+        });
+      }
+      return out;
+    }
+
     /* ── Fetch per-pixel irradiance grids from the backend ── */
     function requestPerPixelShading() {
       if (shadingInFlight) return Promise.resolve(null);
       var sections = collectAllSectionPlaneInputs();
       if (!sections.length) return Promise.resolve({ sections: [] });
-      var obstructions = collectAllObstructions3D();
+      var chimneys = collectAllObstructions3D();
+      var dormers = collectAllDormers3D();
+      var trees = collectAllTrees3D();
+      var obstructions = chimneys.concat(dormers);  // same Obstruction3D prism schema
+      var hasAny = obstructions.length > 0 || trees.length > 0;
       var payload = {
         lat: (typeof designLat === 'number') ? designLat : 42.0,
         lng: (typeof designLng === 'number') ? designLng : -71.0,
         sections: sections,
         obstructions: obstructions,
-        shadow_mode: obstructions.length > 0 ? 'obstructions' : 'none',
+        trees: trees,
+        shadow_mode: hasAny ? 'both' : 'none',
         solar_samples: 120
       };
       shadingInFlight = true;
@@ -10860,8 +11057,13 @@ app.get("/design", (req, res) => {
       return out;
     }
 
-    /* ── Derive per-dormer-panel plane inputs with 3D vertices ── */
-    function deriveDormerSectionPlaneInputs(face) {
+    /* ── Derive per-dormer-panel plane inputs with 3D vertices ──
+       faceIdx is the index of face in roofFaces3d and is used to build
+       the owner_id tag that ties each panel section to the matching
+       dormer prism obstruction produced by collectAllDormers3D — the
+       per-pixel bake uses this to exclude the dormer's own prism when
+       shading its own roof panels. */
+    function deriveDormerSectionPlaneInputs(face, faceIdx) {
       var out = [];
       if (!face || !face.dormers || face.dormers.length === 0) return out;
       for (var di = 0; di < face.dormers.length; di++) {
@@ -10905,7 +11107,8 @@ app.get("/design", (req, res) => {
             azimuth_deg: azimuthDeg,
             pitch_deg: pitchDeg,
             vertices: verts,
-            resolution_m: 0.25
+            resolution_m: 0.25,
+            owner_id: 'dormer_' + faceIdx + '_' + di
           });
         }
       }
@@ -10927,14 +11130,15 @@ app.get("/design", (req, res) => {
             resolution_m: secs[j].resolution_m
           });
         }
-        var dins = deriveDormerSectionPlaneInputs(face);
+        var dins = deriveDormerSectionPlaneInputs(face, i);
         for (var k = 0; k < dins.length; k++) {
           out.push({
             id: dins[k].id,
             azimuth_deg: dins[k].azimuth_deg,
             pitch_deg: dins[k].pitch_deg,
             vertices: dins[k].vertices,
-            resolution_m: dins[k].resolution_m
+            resolution_m: dins[k].resolution_m,
+            owner_id: dins[k].owner_id
           });
         }
       }
@@ -11617,6 +11821,17 @@ app.get("/design", (req, res) => {
       var frontEaveY = (eaveY[0] + eaveY[1]) / 2;
       var ridgeTopY = frontEaveY + ridgeH;
 
+      // Cache the dormer's vertical envelope so the shading engine can
+      // treat it as a flat-top prism occluder. base_y must use the
+      // TRUE contact Ys — NOT eaveY, whose front values (0, 1) are
+      // raised to the shoulder height. contactY captures the real
+      // lowest point where the dormer's front wall touches the main
+      // roof. top_y is the ridge peak.
+      dormer.baseY = Math.min(
+        contactY[0], contactY[1], contactY[2], contactY[3], contactY[4]
+      );
+      dormer.topY = ridgeTopY;
+
       // Build geometry based on type
       var wallMat = new THREE.MeshBasicMaterial({
         color: isGhost ? 0x00e5ff : 0xcccccc,
@@ -11956,6 +12171,8 @@ app.get("/design", (req, res) => {
       var dp = document.getElementById('dormerPanel');
       if (dp) dp.classList.add('hidden');
       markDirty();
+      // A shadow caster was removed — refresh the per-pixel bake.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
     }
 
     // Snap dormer center so front edge aligns with the eave of the given section.
@@ -12246,6 +12463,8 @@ app.get("/design", (req, res) => {
       rebuildDormer(face, dIdx);
       selectDormer(roofSelectedFace, dIdx);
       markDirty();
+      // A new shadow caster was added — refresh the per-pixel bake.
+      if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
       return true;
     }
 
@@ -12614,8 +12833,9 @@ app.get("/design", (req, res) => {
       face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
       face.edgeHandleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
 
-      face.labelSprites = buildEdgeLabels(verts);
+      face.labelSprites = buildEdgeLabels(verts, wH);
       roofFaces3d.push(face);
+      refreshMeasurementLabelDedup();
       // Irradiance: a new face needs its annual kWh value — clear cache and
       // reapply overlay (the cache refresh will hit the backend).
       if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
@@ -12653,7 +12873,8 @@ app.get("/design", (req, res) => {
 
       face.hipLines = buildHipRoofLines(face.vertices, usePitch, face.deletedSections);
       if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
-      face.labelSprites = buildEdgeLabels(face.vertices);
+      face.labelSprites = buildEdgeLabels(face.vertices, wH);
+      refreshMeasurementLabelDedup();
 
       face.vertices.forEach(function(v, i) {
         face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
@@ -12732,6 +12953,7 @@ app.get("/design", (req, res) => {
       roofFaces3d.splice(idx, 1);
       if (roofSelectedFace === idx) { roofSelectedFace = -1; roofSelectedSection = -1; }
       else if (roofSelectedFace > idx) roofSelectedFace--;
+      refreshMeasurementLabelDedup();
       updateRoofPropsPanel();
       markDirty();
     }
@@ -13065,6 +13287,70 @@ app.get("/design", (req, res) => {
       return dirs[idx];
     }
 
+    /* ── Compute azimuth from a section mesh's geometric normal ── */
+    function _meshAzimuthDeg(mesh) {
+      if (!mesh || !mesh.geometry || !mesh.geometry.attributes ||
+          !mesh.geometry.attributes.position) return null;
+      var pos = mesh.geometry.attributes.position;
+      if (pos.count < 3) return null;
+      var ax = pos.getX(0), ay = pos.getY(0), az = pos.getZ(0);
+      var bx = pos.getX(1), by = pos.getY(1), bz = pos.getZ(1);
+      var cx = pos.getX(2), cy = pos.getY(2), cz = pos.getZ(2);
+      var e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+      var e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      var nx = e1y * e2z - e1z * e2y;
+      var ny = e1z * e2x - e1x * e2z;
+      var nz = e1x * e2y - e1y * e2x;
+      var nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (nlen < 1e-9) return null;
+      nx /= nlen; ny /= nlen; nz /= nlen;
+      if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      var pitchDeg = Math.acos(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI;
+      if (pitchDeg < 0.5) return null;
+      return (Math.atan2(nx, -nz) * 180 / Math.PI + 360) % 360;
+    }
+
+    /* ── Best geometric azimuth for a face (optionally section-specific) ── */
+    function computeFaceGeometricAzimuth(face, sectionIdx) {
+      if (sectionIdx >= 0 && face.sectionMeshes && face.sectionMeshes[sectionIdx]) {
+        var a = _meshAzimuthDeg(face.sectionMeshes[sectionIdx]);
+        if (a !== null) return Math.round(a * 10) / 10;
+      }
+      var order = [2, 3, 0, 1];
+      for (var i = 0; i < order.length; i++) {
+        var si = order[i];
+        if (!face.sectionMeshes || !face.sectionMeshes[si]) continue;
+        if (face.deletedSections && face.deletedSections[si]) continue;
+        var a = _meshAzimuthDeg(face.sectionMeshes[si]);
+        if (a !== null) return Math.round(a * 10) / 10;
+      }
+      return face.azimuth || 180;
+    }
+
+    /* ── Rotate footprint vertices to a new azimuth ── */
+    function rotateFaceToAzimuth(faceIdx, newAzimuth) {
+      var face = roofFaces3d[faceIdx];
+      var currentAz = computeFaceGeometricAzimuth(face, roofSelectedSection);
+      var deltaRad = (newAzimuth - currentAz) * Math.PI / 180;
+      if (Math.abs(deltaRad) < 1e-6) { face.azimuth = newAzimuth; return; }
+      var cx = 0, cz = 0;
+      for (var i = 0; i < face.vertices.length; i++) {
+        cx += face.vertices[i].x;
+        cz += face.vertices[i].z;
+      }
+      cx /= face.vertices.length;
+      cz /= face.vertices.length;
+      var cosD = Math.cos(deltaRad), sinD = Math.sin(deltaRad);
+      for (var i = 0; i < face.vertices.length; i++) {
+        var dx = face.vertices[i].x - cx;
+        var dz = face.vertices[i].z - cz;
+        face.vertices[i].x = cx + dx * cosD - dz * sinD;
+        face.vertices[i].z = cz + dx * sinD + dz * cosD;
+      }
+      face.azimuth = newAzimuth;
+      rebuildRoofFace(faceIdx);
+    }
+
     /* ── Update properties panel ── */
     function updateRoofPropsPanel() {
       var section = document.getElementById('roofPropsSection');
@@ -13089,9 +13375,11 @@ app.get("/design", (req, res) => {
       }
 
       document.getElementById('roofPropPitch').value = displayPitch;
-      document.getElementById('roofPropAzimuth').value = face.azimuth;
+      var geoAz = computeFaceGeometricAzimuth(face, roofSelectedSection);
+      face.azimuth = geoAz;
+      document.getElementById('roofPropAzimuth').value = Math.round(geoAz);
       var azDir = document.getElementById('roofPropAzDir');
-      if (azDir) azDir.textContent = '(' + azimuthToCompass(face.azimuth) + ')';
+      if (azDir) azDir.textContent = '(' + azimuthToCompass(geoAz) + ')';
       document.getElementById('roofPropHeight').value = (face.height * 3.28084).toFixed(1);
 
       // Slope as x/12
@@ -13179,11 +13467,12 @@ app.get("/design", (req, res) => {
         efSlope.textContent = sv + ' / 12';
       }
 
-      // Azimuth
+      // Azimuth — computed from section mesh geometry
+      var efGeoAz = computeFaceGeometricAzimuth(face, roofSelectedSection);
       var efAz = document.getElementById('efAzimuth');
-      if (efAz) efAz.value = face.azimuth;
+      if (efAz) efAz.value = Math.round(efGeoAz);
       var efAzDir = document.getElementById('efAzDir');
-      if (efAzDir) efAzDir.textContent = azimuthToCompass(face.azimuth);
+      if (efAzDir) efAzDir.textContent = azimuthToCompass(efGeoAz);
 
       // Height
       var efH = document.getElementById('efHeight');
@@ -14689,20 +14978,29 @@ app.get("/design", (req, res) => {
         // Don't select/deselect if clicking on an edge (edge drag handles this)
         if (findEdgeHandleUnderCursor && findEdgeHandleUnderCursor(e)) return;
 
-        // Check dormer selection first (in edit mode)
-        // Two-step: first click whole-selects; second click on the same
-        // dormer elevates into edit mode (handles + panel).
-        if (roofEditMode && roofSelectedFace >= 0) {
-          var dormerHit = findDormerUnderCursor(e);
-          if (dormerHit.dormerIdx >= 0) {
-            var curD = roofFaces3d[dormerHit.faceIdx].dormers[dormerHit.dormerIdx];
-            if (!curD.editing) {
-              // Click = whole-select (cyan). Dblclick elevates to edit mode.
-              selectDormerWhole(dormerHit.faceIdx, dormerHit.dormerIdx);
+        // Check dormer selection first — always, regardless of edit mode.
+        // Two-step: first click whole-selects (cyan); second click on the
+        // same dormer elevates into edit mode (handles + panel).
+        var dormerHit = findDormerUnderCursor(e);
+        if (dormerHit.dormerIdx >= 0) {
+          var curD = roofFaces3d[dormerHit.faceIdx].dormers[dormerHit.dormerIdx];
+          if (!roofEditMode) {
+            if (roofSelectedFace !== dormerHit.faceIdx) {
+              selectRoofWhole(dormerHit.faceIdx);
             }
-            // Already editing → no-op (stay in edit mode)
-            return;
+            enterRoofEditMode();
           }
+          // Deselect any highlighted roof section so only the dormer is cyan.
+          var dFace = roofFaces3d[dormerHit.faceIdx];
+          if (dFace.selectedSection >= 0) {
+            dFace.selectedSection = -1;
+            roofSelectedSection = -1;
+            rebuildRoofFace(dormerHit.faceIdx);
+          }
+          if (!curD.editing) {
+            selectDormerWhole(dormerHit.faceIdx, dormerHit.dormerIdx);
+          }
+          return;
         }
 
         var hit = findRoofFaceUnderCursor(e);
@@ -15246,7 +15544,8 @@ app.get("/design", (req, res) => {
       if (azInput) azInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
         pushUndo();
-        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        rotateFaceToAzimuth(roofSelectedFace, parseFloat(this.value) || 0);
+        updateRoofPropsPanel();
         markDirty();
       });
       if (heightInput) heightInput.addEventListener('change', function() {
@@ -15300,7 +15599,7 @@ app.get("/design", (req, res) => {
       if (efAzInput) efAzInput.addEventListener('change', function() {
         if (roofSelectedFace < 0) return;
         pushUndo();
-        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        rotateFaceToAzimuth(roofSelectedFace, parseFloat(this.value) || 0);
         updateRoofPropsPanel();
         markDirty();
       });
@@ -15411,7 +15710,7 @@ app.get("/design", (req, res) => {
       // Azimuth (roofPropsSection)
       if (azInput) azInput.addEventListener('input', function() {
         if (roofSelectedFace < 0) return;
-        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        rotateFaceToAzimuth(roofSelectedFace, parseFloat(this.value) || 0);
         updateRoofPropsPanel();
       });
 
@@ -15446,7 +15745,7 @@ app.get("/design", (req, res) => {
       // Azimuth (efPanel)
       if (efAzInput) efAzInput.addEventListener('input', function() {
         if (roofSelectedFace < 0) return;
-        roofFaces3d[roofSelectedFace].azimuth = parseFloat(this.value) || 0;
+        rotateFaceToAzimuth(roofSelectedFace, parseFloat(this.value) || 0);
         updateRoofPropsPanel();
       });
 
@@ -15554,6 +15853,8 @@ app.get("/design", (req, res) => {
         rebuildDormer(face, newIdx);
         selectDormer(roofSelectedFace, newIdx);
         markDirty();
+        // A new shadow caster was added — refresh the per-pixel bake.
+        if (typeof invalidateShadingCache === 'function') invalidateShadingCache();
       });
 
     })();

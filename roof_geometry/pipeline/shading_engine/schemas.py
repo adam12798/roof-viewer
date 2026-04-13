@@ -89,6 +89,12 @@ class SectionPlaneInput(BaseModel):
     local metres — typically 3 or 4 points.  The backend projects them
     onto the section's own (u, v) plane frame and rasterizes the
     polygon onto a regular grid at ``resolution_m`` metres/pixel.
+
+    ``owner_id`` is an optional tag that associates this section with a
+    3D object (e.g. a dormer) which also appears as an ``Obstruction3D``.
+    When set, the bake excludes obstructions with the same ``owner_id``
+    from the occluder scene for this section so the object does not
+    self-shadow its own roof panels.
     """
 
     id: str
@@ -96,6 +102,7 @@ class SectionPlaneInput(BaseModel):
     pitch_deg: float = Field(..., ge=0.0, le=90.0)
     vertices: list[Vec3]
     resolution_m: float = Field(default=0.25, gt=0.0, le=2.0)
+    owner_id: str | None = None
 
 
 class Obstruction3D(BaseModel):
@@ -103,12 +110,19 @@ class Obstruction3D(BaseModel):
 
     The prism is a vertical extrusion of ``footprint`` (a closed
     polygon on the roof surface) from ``base_y`` up to ``top_y``.
+
+    ``owner_id`` is an optional tag that ties this obstruction to a
+    3D object which also appears as one or more ``SectionPlaneInput``
+    entries (e.g. a dormer with roof panels baked as sections).  The
+    bake skips obstructions whose ``owner_id`` matches the section's
+    ``owner_id`` to prevent the object self-shadowing its own surface.
     """
 
     id: str
     footprint: list[Vec3]
     base_y: float
     top_y: float
+    owner_id: str | None = None
 
 
 class Tree3D(BaseModel):
