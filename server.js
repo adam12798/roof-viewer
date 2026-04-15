@@ -1764,6 +1764,40 @@ function saveEquipment(eq) {
   fs.writeFileSync(path.join(__dirname, "data/equipment.json"), JSON.stringify(eq, null, 2));
 }
 
+function loadFinancingProducts() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/financing-products.json"), "utf8")); }
+  catch { return []; }
+}
+function saveFinancingProducts(fps) {
+  fs.writeFileSync(path.join(__dirname, "data/financing-products.json"), JSON.stringify(fps, null, 2));
+}
+const FINANCING_TYPE_META = {
+  ppa: {
+    label: "PPA",
+    title: "Power purchase agreement",
+    subtitle: "Payments change month-to-month based on system performance and degradation.",
+    addLabel: "Add PPA"
+  },
+  levelizedPpa: {
+    label: "Levelized PPA",
+    title: "Levelized PPA",
+    subtitle: "Payments stay the same month-to-month.",
+    addLabel: "Add Levelized PPA"
+  },
+  loan: {
+    label: "Loan",
+    title: "Loan",
+    subtitle: "Loan financing product.",
+    addLabel: "Add Loan"
+  },
+  lease: {
+    label: "Lease",
+    title: "Lease",
+    subtitle: "Lease financing product.",
+    addLabel: "Add Lease"
+  }
+};
+
 // List all equipment
 app.get("/api/equipment", (req, res) => {
   res.json(loadEquipment());
@@ -2317,6 +2351,18 @@ app.get("/project/:id", (req, res) => {
   const project = projects.find(p => p.id === req.params.id);
   if (!project) return res.status(404).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>Project not found</h2><p><a href="/">← Back</a></p></body></html>`);
 
+  // Cross-reference: find agreement template matching customer's utility provider
+  const customerUtility = project.utility || 'Eversource Energy';
+  let matchedTemplate = null;
+  try {
+    const tplData = JSON.parse(require('fs').readFileSync(__dirname + '/data/agreementTemplates.json', 'utf8'));
+    const u = customerUtility.toLowerCase();
+    matchedTemplate = (tplData.items || []).find(t => {
+      const tu = (t.utility || '').toLowerCase();
+      return tu && (tu === u || u.includes(tu) || tu.includes(u));
+    });
+  } catch(e) {}
+
   const tab = req.query.tab || "dashboard";
   ensureDesigns(project);
   saveProjects(projects);
@@ -2745,8 +2791,12 @@ app.get("/project/:id", (req, res) => {
           </div>
           <div class="db-utility-block">
             <div class="db-fl">Utility provider</div>
-            <div class="db-utility-name">Eversource Energy (Formerly NSTAR Electric Company)</div>
+            <div class="db-utility-name">${esc(customerUtility)}</div>
             <div class="db-utility-sub">R-1 (A1) Residential</div>
+            ${matchedTemplate ? `<a class="db-utility-template-link" href="/database/agreement-templates/${matchedTemplate.id}/editor" title="${esc(matchedTemplate.name)}">
+              <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              View agreement template
+            </a>` : ''}
           </div>
           <div class="db-energy-grid">
             <div class="db-field"><div class="db-fl">Avg. monthly bill</div><div class="db-fv">—</div></div>
@@ -3158,7 +3208,7 @@ app.get("/project/:id", (req, res) => {
   <title>${customerName} — Solar CRM</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111; background: #fff; }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111; background: #fff; overflow-x: hidden; }
     body { display: flex; flex-direction: column; }
 
     /* ── Top header ── */
@@ -3377,7 +3427,8 @@ app.get("/project/:id", (req, res) => {
     .nav-item svg { flex-shrink: 0; }
 
     /* ── Main content ── */
-    .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+    .main { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 28px 32px; }
+    .main-inner { max-width: 1200px; margin: 0 auto; }
 
     /* Tab title */
     .tab-title {
@@ -3640,6 +3691,14 @@ app.get("/project/:id", (req, res) => {
     .db-utility-block { margin-bottom: 18px; }
     .db-utility-name { font-size: 0.85rem; font-weight: 500; color: #111; margin: 4px 0 2px; }
     .db-utility-sub { font-size: 0.78rem; color: #6b7280; }
+    .db-utility-template-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-top: 8px; padding: 5px 10px; border: 1px solid #e5e7eb; border-radius: 6px;
+      font-size: 0.76rem; color: #2d9d8f; text-decoration: none; font-weight: 500;
+      max-width: 100%;
+    }
+    .db-utility-template-link:hover { background: #f0fdfa; border-color: #2d9d8f; }
+    .db-utility-template-link svg { color: #2d9d8f; flex-shrink: 0; }
     .db-energy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
 
     .db-section {
@@ -3984,7 +4043,9 @@ app.get("/project/:id", (req, res) => {
 
     <!-- Main -->
     <div class="main">
-      ${tabContent}
+      <div class="main-inner">
+        ${tabContent}
+      </div>
     </div>
 
   </div>
@@ -6090,9 +6151,104 @@ app.get("/design", (req, res) => {
     .save-modal-cancel:hover { background: #e5e7eb; }
     .save-modal-save { background: #111; color: #fff; flex: 1.5; }
     .save-modal-save:hover { background: #333; }
+
+    /* ── Design loading overlay (3D spinning sun) ── */
+    #designLoadingOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9000;
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.28s ease;
+    }
+    #designLoadingOverlay.dlo-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    body.app-loading .topbar,
+    body.app-loading .toolbar2 {
+      position: relative;
+      z-index: 9001;
+    }
+    .dlo-scene {
+      width: 200px;
+      height: 200px;
+      perspective: 600px;
+    }
+    .dlo-sun {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      animation: dloSunSpin 4.2s linear infinite;
+    }
+    @keyframes dloSunSpin {
+      from { transform: rotateX(22deg) rotateZ(0deg); }
+      to   { transform: rotateX(22deg) rotateZ(360deg); }
+    }
+    .dlo-sun-body {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 82px;
+      height: 82px;
+      margin: -41px 0 0 -41px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 34% 32%, #fff7cc 0%, #fde68a 18%, #fbbf24 48%, #d97706 88%, #b45309 100%);
+      box-shadow:
+        0 0 28px rgba(251, 191, 36, 0.55),
+        0 0 72px rgba(251, 191, 36, 0.28),
+        inset -6px -8px 14px rgba(180, 83, 9, 0.35);
+    }
+    .dlo-ray {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 7px;
+      height: 30px;
+      margin: -15px 0 0 -3.5px;
+      background: linear-gradient(to top, rgba(251, 191, 36, 0.0), #fbbf24 35%, #fcd34d 100%);
+      border-radius: 4px;
+      transform-origin: 50% 50%;
+    }
+    .dlo-ray.r0  { transform: rotate(0deg)   translateY(-72px); }
+    .dlo-ray.r1  { transform: rotate(30deg)  translateY(-72px); }
+    .dlo-ray.r2  { transform: rotate(60deg)  translateY(-72px); }
+    .dlo-ray.r3  { transform: rotate(90deg)  translateY(-72px); }
+    .dlo-ray.r4  { transform: rotate(120deg) translateY(-72px); }
+    .dlo-ray.r5  { transform: rotate(150deg) translateY(-72px); }
+    .dlo-ray.r6  { transform: rotate(180deg) translateY(-72px); }
+    .dlo-ray.r7  { transform: rotate(210deg) translateY(-72px); }
+    .dlo-ray.r8  { transform: rotate(240deg) translateY(-72px); }
+    .dlo-ray.r9  { transform: rotate(270deg) translateY(-72px); }
+    .dlo-ray.r10 { transform: rotate(300deg) translateY(-72px); }
+    .dlo-ray.r11 { transform: rotate(330deg) translateY(-72px); }
   </style>
 </head>
-<body>
+<body class="app-loading">
+
+  <!-- Design loading overlay: 3D spinning sun on white -->
+  <div id="designLoadingOverlay">
+    <div class="dlo-scene">
+      <div class="dlo-sun">
+        <div class="dlo-ray r0"></div>
+        <div class="dlo-ray r1"></div>
+        <div class="dlo-ray r2"></div>
+        <div class="dlo-ray r3"></div>
+        <div class="dlo-ray r4"></div>
+        <div class="dlo-ray r5"></div>
+        <div class="dlo-ray r6"></div>
+        <div class="dlo-ray r7"></div>
+        <div class="dlo-ray r8"></div>
+        <div class="dlo-ray r9"></div>
+        <div class="dlo-ray r10"></div>
+        <div class="dlo-ray r11"></div>
+        <div class="dlo-sun-body"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- TOP BAR -->
   <div class="topbar">
@@ -8026,7 +8182,7 @@ app.get("/design", (req, res) => {
 
     function loadDesign(designId) {
       /* Fetch design data */
-      fetch('/api/projects/' + projectId + '/designs/active', {
+      return fetch('/api/projects/' + projectId + '/designs/active', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ designId: designId })
@@ -8436,15 +8592,36 @@ app.get("/design", (req, res) => {
       animate3d();
     }
 
+    function dismissDesignLoadingOverlay() {
+      var overlay = document.getElementById('designLoadingOverlay');
+      if (!overlay || overlay.classList.contains('dlo-hidden')) return;
+      // Remove app-loading first so the scene is visible under the fading overlay
+      document.body.classList.remove('app-loading');
+      overlay.classList.add('dlo-hidden');
+      setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 320);
+    }
+
+    // Safety fallback: never let the overlay hang forever
+    setTimeout(dismissDesignLoadingOverlay, 12000);
+
     // Auto-init 3D viewer on page load
     setTimeout(function() {
       if (!scene3d) {
         init3dViewer();
-        setTimeout(function() { resize3d(); buildGroundPlane(); }, 60);
-      }
-      // Load initial design data (segments, trees, roof faces)
-      if (currentDesignId) {
-        setTimeout(function() { loadDesign(currentDesignId); }, 200);
+        setTimeout(function() {
+          resize3d();
+          // Chain: satellite texture → design geometry → dismiss overlay.
+          // Chaining (vs parallel) ensures roof faces are built with satTexture.
+          buildGroundPlane()
+            .then(function() {
+              if (currentDesignId) return loadDesign(currentDesignId);
+            })
+            .then(dismissDesignLoadingOverlay)
+            .catch(function(e) {
+              console.error('Design load failed:', e);
+              dismissDesignLoadingOverlay();
+            });
+        }, 60);
       }
     }, 100);
 
@@ -8730,8 +8907,8 @@ app.get("/design", (req, res) => {
 
     /* ── Build satellite ground plane (high-res Google Maps Static API) ── */
     function buildGroundPlane() {
-      if (groundPlane3d) return;
-      if (typeof designLat === 'undefined') return;
+      if (groundPlane3d) return Promise.resolve();
+      if (typeof designLat === 'undefined') return Promise.resolve();
 
       // Google Maps Static API: zoom=20, size=640, scale=2 → 1280px image
       // Geographic extent = 640 logical pixels at zoom 20 (scale only doubles resolution)
@@ -8757,28 +8934,32 @@ app.get("/design", (req, res) => {
         controls3d.update();
       }
 
-      img.onload = function() {
-        var texture = new THREE.Texture(img);
-        texture.needsUpdate = true;
-        satTexture = texture; // store for roof face overlays
-        var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-        groundPlane3d = new THREE.Mesh(geo, mat);
-        groundPlane3d.position.set(0, -0.5, 0);
-        scene3d.add(groundPlane3d);
-        frameCamera();
-      };
+      return new Promise(function(resolve) {
+        img.onload = function() {
+          var texture = new THREE.Texture(img);
+          texture.needsUpdate = true;
+          satTexture = texture; // store for roof face overlays
+          var mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+          groundPlane3d = new THREE.Mesh(geo, mat);
+          groundPlane3d.position.set(0, -0.5, 0);
+          scene3d.add(groundPlane3d);
+          frameCamera();
+          resolve();
+        };
 
-      img.onerror = function() {
-        // Fallback: render a gray ground plane so the scene isn't empty
-        var mat = new THREE.MeshBasicMaterial({ color: 0xd1d5db, side: THREE.DoubleSide });
-        groundPlane3d = new THREE.Mesh(geo, mat);
-        groundPlane3d.position.set(0, -0.5, 0);
-        scene3d.add(groundPlane3d);
-        frameCamera();
-        setStatus3d('Satellite imagery unavailable — showing placeholder');
-      };
+        img.onerror = function() {
+          // Fallback: render a gray ground plane so the scene isn't empty
+          var mat = new THREE.MeshBasicMaterial({ color: 0xd1d5db, side: THREE.DoubleSide });
+          groundPlane3d = new THREE.Mesh(geo, mat);
+          groundPlane3d.position.set(0, -0.5, 0);
+          scene3d.add(groundPlane3d);
+          frameCamera();
+          setStatus3d('Satellite imagery unavailable — showing placeholder');
+          resolve();
+        };
 
-      img.src = '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640';
+        img.src = '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640';
+      });
     }
 
     /* ── Toggle LiDAR point cloud on/off (3D viewer always visible) ── */
@@ -17634,11 +17815,11 @@ app.get("/database", (req, res) => {
         <div class="db-sidebar-group">
           <div class="db-sidebar-section">Quoting</div>
           <a class="db-sidebar-item">Proposal templates</a>
-          <a class="db-sidebar-item">Adders &amp; discounts</a>
-          <a class="db-sidebar-item">Financing products</a>
+          <a class="db-sidebar-item" href="/database/adders-discounts">Adders &amp; discounts</a>
+          <a class="db-sidebar-item" href="/database/financing-products">Financing products</a>
           <a class="db-sidebar-item">Incentives</a>
           <a class="db-sidebar-item">Utility rates</a>
-          <a class="db-sidebar-item">Agreement templates</a>
+          <a class="db-sidebar-item" href="/database/agreement-templates">Agreement templates</a>
           <a class="db-sidebar-item">Legacy agreement templates</a>
         </div>
         <div class="db-sidebar-group">
@@ -17669,6 +17850,2471 @@ app.get("/database", (req, res) => {
       </main>
     </div>
   </div>
+</body>
+</html>`);
+});
+
+// ── Adders & discounts ───────────────────────────────────────────────────────
+function loadAddersDiscounts() {
+  try { return JSON.parse(require('fs').readFileSync(__dirname + '/data/addersDiscounts.json', 'utf8')); }
+  catch(e) { return { items: [] }; }
+}
+function saveAddersDiscounts(data) {
+  require('fs').writeFileSync(__dirname + '/data/addersDiscounts.json', JSON.stringify(data, null, 2));
+}
+
+function renderDatabaseSidebar(activeKey) {
+  const componentDefs = [
+    { key: 'modules', label: 'Modules' },
+    { key: 'inverters', label: 'Inverters' },
+    { key: 'dc-optimizers', label: 'DC optimizers' },
+    { key: 'combiner-boxes', label: 'Combiner boxes' },
+    { key: 'load-centers', label: 'Load centers' },
+    { key: 'disconnects', label: 'Disconnects' },
+    { key: 'service-panels', label: 'Service panels' },
+    { key: 'meters', label: 'Meters' },
+    { key: 'batteries', label: 'Batteries' },
+    { key: 'energy-optimizations', label: 'Energy optimizations' },
+  ];
+  const components = componentDefs.map(d =>
+    '<a class="db-sidebar-item' + (d.key === activeKey ? ' active' : '') + '" href="/database?tab=' + d.key + '">' + d.label + '</a>'
+  ).join('\n          ');
+  const adActive = activeKey === 'adders-discounts' ? ' active' : '';
+  const fpActive = activeKey === 'financing-products' ? ' active' : '';
+  const atActive = activeKey === 'agreement-templates' ? ' active' : '';
+  return `
+        <div class="db-sidebar-toggle">
+          <div class="db-sidebar-toggle-label">Specify component<br/>availability</div>
+          <button class="db-toggle"></button>
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Components</div>
+          ${components}
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Quoting</div>
+          <a class="db-sidebar-item">Proposal templates</a>
+          <a class="db-sidebar-item${adActive}" href="/database/adders-discounts">Adders &amp; discounts</a>
+          <a class="db-sidebar-item${fpActive}" href="/database/financing-products">Financing products</a>
+          <a class="db-sidebar-item">Incentives</a>
+          <a class="db-sidebar-item">Utility rates</a>
+          <a class="db-sidebar-item${atActive}" href="/database/agreement-templates">Agreement templates</a>
+          <a class="db-sidebar-item">Legacy agreement templates</a>
+        </div>
+        <div class="db-sidebar-group">
+          <div class="db-sidebar-section">Operations</div>
+          <a class="db-sidebar-item">Jurisdictions</a>
+          <a class="db-sidebar-item">Suppliers</a>
+          <a class="db-sidebar-item">Manufacturers</a>
+          <a class="db-sidebar-item">AHJ</a>
+        </div>
+        <div class="db-sidebar-footer"><a href="#">Contact support</a></div>`;
+}
+
+function renderDatabaseShellHead(title) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${title} — Solar CRM</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow-x: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #fff; color: #111;
+      display: flex; height: 100vh; overflow: hidden;
+    }
+    .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+    .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0;cursor:pointer}
+    .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+    .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+    .db-topbar { height: 48px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #e5e7eb; padding: 0 20px; flex-shrink: 0; font-size: 0.9rem; font-weight: 600; color: #111; position: relative; }
+    .db-topbar-right { position: absolute; right: 20px; display: flex; align-items: center; gap: 14px; }
+    .db-topbar-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; transition: background 0.15s; }
+    .db-topbar-icon:hover { background: #f3f4f6; }
+    .db-topbar-avatar { width: 30px; height: 30px; border-radius: 50%; background: #7c3aed; color: #fff; font-size: 0.7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .db-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    .db-body { flex: 1; display: flex; overflow: hidden; min-width: 0; }
+    .db-sidebar { width: 185px; flex-shrink: 0; border-right: 1px solid #e5e7eb; overflow-y: auto; padding: 16px 0; background: #fafafa; display: flex; flex-direction: column; }
+    .db-sidebar-toggle { display: flex; align-items: center; justify-content: space-between; padding: 0 14px 14px; border-bottom: 1px solid #e5e7eb; margin-bottom: 6px; }
+    .db-sidebar-toggle-label { font-size: 0.72rem; color: #6b7280; line-height: 1.3; }
+    .db-toggle { width: 36px; height: 20px; background: #7c3aed; border-radius: 10px; position: relative; cursor: pointer; border: none; flex-shrink: 0; }
+    .db-toggle::after { content: ''; position: absolute; top: 2px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s; }
+    .db-sidebar-group { padding: 0 10px; margin-bottom: 2px; }
+    .db-sidebar-group + .db-sidebar-group { margin-top: 2px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
+    .db-sidebar-section { font-size: 0.65rem; font-weight: 700; color: #b0b7c3; text-transform: uppercase; letter-spacing: 0.6px; padding: 0 6px 5px; }
+    .db-sidebar-item { display: block; padding: 5px 8px; font-size: 0.82rem; color: #4b5563; text-decoration: none; border-radius: 6px; cursor: pointer; transition: background 0.1s, color 0.1s; margin-bottom: 1px; }
+    .db-sidebar-item:hover { background: #ede9f6; color: #1a0828; }
+    .db-sidebar-item.active { background: #ede9f6; color: #1a0828; font-weight: 600; position: relative; }
+    .db-sidebar-item.active::before { content: ''; position: absolute; left: -10px; top: 5px; bottom: 5px; width: 3px; background: #7c3aed; border-radius: 0 2px 2px 0; }
+    .db-sidebar-footer { padding: 12px 16px; border-top: 1px solid #e5e7eb; margin-top: auto; }
+    .db-sidebar-footer a { font-size: 0.8rem; color: #6b7280; text-decoration: none; }
+    .db-sidebar-footer a:hover { color: #7c3aed; }
+    .db-main { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 28px 36px; }
+    .db-main-inner { max-width: 1200px; margin: 0 auto; }
+  </style>`;
+}
+
+function renderDatabaseRail(active) {
+  const cls = (k) => 'rail-btn' + (active === k ? ' active' : '');
+  return `<nav class="rail">
+    <div class="rail-logo" onclick="location.href='/'"><svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></div>
+    <a class="${cls('projects')}" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+    <a class="${cls('database')}" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+    <a class="${cls('settings')}" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+    <a class="${cls('partners')}" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+  </nav>`;
+}
+
+app.get("/database/adders-discounts", (req, res) => {
+  const data = loadAddersDiscounts();
+  const allItems = data.items || [];
+  const search = (req.query.q || '').toLowerCase().trim();
+  const filtered = search
+    ? allItems.filter(it => (it.name || '').toLowerCase().includes(search))
+    : allItems;
+  const perPage = 20;
+  const page = parseInt(req.query.page) || 1;
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const startIdx = (page - 1) * perPage;
+  const pageItems = filtered.slice(startIdx, startIdx + perPage);
+
+  const fmtAmount = (it) => {
+    const n = Number(it.amount || 0);
+    const formatted = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return '$' + formatted;
+  };
+
+  let tableHTML;
+  if (pageItems.length === 0) {
+    tableHTML = '<div class="ad-empty"><div class="ad-empty-title">No adders or discounts yet</div><div class="ad-empty-sub">Click "+ New" to add your first one.</div></div>';
+  } else {
+    const rows = pageItems.map(it => {
+      const typeLabel = it.kind === 'discount' ? 'Discount' : 'Adder';
+      return `<tr>
+        <td class="ad-name-cell">${it.name || ''}</td>
+        <td>${it.partners || 'All'}</td>
+        <td>${typeLabel}</td>
+        <td>${fmtAmount(it)}</td>
+        <td>${it.rate || 'Flat'}</td>
+        <td>${it.conditions || 'Optional'}</td>
+        <td class="ad-actions-cell"><button class="ad-row-more">···</button></td>
+      </tr>`;
+    }).join('');
+    tableHTML = `<table class="ad-table">
+      <thead><tr>
+        <th>Name <span class="ad-sort-arrow">↑</span></th>
+        <th>Partners</th>
+        <th>Type</th>
+        <th>Amount</th>
+        <th>Rate</th>
+        <th>Conditions</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  let paginationHTML = '';
+  if (total > 0) {
+    const showStart = startIdx + 1;
+    const showEnd = Math.min(startIdx + perPage, total);
+    const qs = search ? '&q=' + encodeURIComponent(search) : '';
+    let pLinks = '';
+    if (page > 1) pLinks += '<a class="ad-page-btn" href="/database/adders-discounts?page=' + (page-1) + qs + '">&larr; Prev</a>';
+    else pLinks += '<span class="ad-page-btn disabled">&larr; Prev</span>';
+    for (let p = 1; p <= totalPages; p++) {
+      pLinks += '<a class="ad-page-btn' + (p === page ? ' active' : '') + '" href="/database/adders-discounts?page=' + p + qs + '">' + p + '</a>';
+    }
+    if (page < totalPages) pLinks += '<a class="ad-page-btn" href="/database/adders-discounts?page=' + (page+1) + qs + '">Next &rarr;</a>';
+    else pLinks += '<span class="ad-page-btn disabled">Next &rarr;</span>';
+    paginationHTML = '<div class="ad-pagination">' + pLinks + '<span class="ad-page-info">Showing ' + showStart + '-' + showEnd + ' of ' + total + ' results</span></div>';
+  }
+
+  res.send(`${renderDatabaseShellHead('Adders and discounts')}
+  <style>
+    .ad-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+    .ad-header h1 { font-size: 1.5rem; font-weight: 700; }
+    .ad-new-wrap { position: relative; }
+    .ad-new-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; background: #111; color: #fff; border: none; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+    .ad-new-btn:hover { background: #333; }
+    .ad-new-btn svg { color: #fff; }
+    .ad-new-menu { display: none; position: absolute; right: 0; top: calc(100% + 6px); background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); min-width: 180px; padding: 6px 0; z-index: 100; }
+    .ad-new-wrap.open .ad-new-menu { display: block; }
+    .ad-new-item { display: block; padding: 11px 18px; font-size: 0.9rem; color: #111; text-decoration: none; cursor: pointer; }
+    .ad-new-item:hover { background: #f9fafb; }
+    .ad-search-wrap { position: relative; margin-bottom: 18px; max-width: 320px; }
+    .ad-search-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; }
+    .ad-search { width: 100%; padding: 9px 12px 9px 36px; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: #fafafa; outline: none; }
+    .ad-search:focus { border-color: #7c3aed; background: #fff; }
+    .ad-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: auto; }
+    .ad-table thead th { text-align: left; padding: 10px 14px; font-size: 0.78rem; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb; background: #fff; white-space: nowrap; }
+    .ad-table tbody td { padding: 14px; border-bottom: 1px solid #f3f4f6; color: #111; vertical-align: middle; }
+    .ad-table tbody tr:hover { background: #fafafa; }
+    .ad-name-cell { font-weight: 500; }
+    .ad-sort-arrow { color: #9ca3af; margin-left: 2px; }
+    .ad-actions-cell { width: 40px; text-align: right; }
+    .ad-row-more { background: none; border: none; color: #9ca3af; font-size: 1.1rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; letter-spacing: 1px; }
+    .ad-row-more:hover { background: #f3f4f6; color: #374151; }
+    .ad-empty { text-align: center; padding: 60px 20px; color: #9ca3af; }
+    .ad-empty-title { font-size: 1rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
+    .ad-empty-sub { font-size: 0.85rem; }
+    .ad-pagination { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 20px 0; margin-top: 8px; }
+    .ad-page-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 8px; font-size: 0.82rem; color: #4b5563; text-decoration: none; border-radius: 6px; cursor: pointer; transition: background 0.1s; }
+    .ad-page-btn:hover { background: #f3f4f6; }
+    .ad-page-btn.active { background: #1a2332; color: #fff; font-weight: 700; }
+    .ad-page-btn.disabled { color: #d1d5db; cursor: default; pointer-events: none; }
+    .ad-page-info { font-size: 0.8rem; color: #9ca3af; margin-left: 12px; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    <div class="db-topbar">
+      Database
+      <div class="db-topbar-right">
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="db-topbar-avatar">AB</div>
+      </div>
+    </div>
+    <div class="db-body">
+      <aside class="db-sidebar">
+        ${renderDatabaseSidebar('adders-discounts')}
+      </aside>
+      <main class="db-main">
+        <div class="db-main-inner">
+          <div class="ad-header">
+            <h1>Adders and discounts</h1>
+            <div class="ad-new-wrap" id="adNewWrap">
+              <button class="ad-new-btn" onclick="document.getElementById('adNewWrap').classList.toggle('open'); event.stopPropagation();">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                New
+                <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="ad-new-menu">
+                <a class="ad-new-item" href="/database/adders-discounts/new?kind=adder">Adder</a>
+                <a class="ad-new-item" href="/database/adders-discounts/new?kind=discount">Discount</a>
+              </div>
+            </div>
+          </div>
+          <form class="ad-search-wrap" method="get" action="/database/adders-discounts">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input class="ad-search" name="q" type="text" placeholder="Search" value="${search.replace(/"/g, '&quot;')}"/>
+          </form>
+          ${tableHTML}
+          ${paginationHTML}
+        </div>
+      </main>
+    </div>
+  </div>
+  <script>
+    document.addEventListener('click', function(e) {
+      var w = document.getElementById('adNewWrap');
+      if (w && !w.contains(e.target)) w.classList.remove('open');
+    });
+  </script>
+</body>
+</html>`);
+});
+
+app.get("/database/adders-discounts/new", (req, res) => {
+  const kind = req.query.kind === 'discount' ? 'discount' : 'adder';
+  const label = kind === 'discount' ? 'discount' : 'adder';
+  const titleCap = 'New ' + label;
+
+  res.send(`${renderDatabaseShellHead(titleCap)}
+  <style>
+    .nf-topbar { height: 48px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #e5e7eb; padding: 0 20px; flex-shrink: 0; font-size: 0.9rem; font-weight: 600; color: #111; position: relative; }
+    .nf-topbar-right { position: absolute; right: 20px; display: flex; align-items: center; gap: 14px; }
+    .nf-topbar-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
+    .nf-topbar-icon:hover { background: #f3f4f6; }
+    .nf-topbar-avatar { width: 30px; height: 30px; border-radius: 50%; background: #7c3aed; color: #fff; font-size: 0.7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .nf-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    .nf-main { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 28px 36px 60px; }
+    .nf-inner { max-width: 760px; margin: 0 auto; }
+    .nf-actions { position: absolute; right: 20px; top: 8px; display: flex; gap: 8px; }
+    .nf-btn-cancel, .nf-btn-save { padding: 7px 18px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: 1px solid #e5e7eb; background: #fff; color: #374151; }
+    .nf-btn-cancel:hover { background: #f9fafb; }
+    .nf-btn-save { background: #111; color: #fff; border-color: #111; }
+    .nf-btn-save:hover { background: #333; }
+    .nf-title { font-size: 1.6rem; font-weight: 700; margin-bottom: 28px; }
+    .nf-section-title { font-size: 0.95rem; font-weight: 700; color: #111; padding-bottom: 10px; border-bottom: 1px solid #e5e7eb; margin-bottom: 18px; }
+    .nf-section { margin-bottom: 32px; }
+    .nf-row { display: flex; align-items: flex-start; gap: 24px; padding: 12px 0; }
+    .nf-row + .nf-row { border-top: 1px solid #f3f4f6; }
+    .nf-label-col { flex: 0 0 240px; }
+    .nf-label { font-size: 0.85rem; font-weight: 600; color: #111; }
+    .nf-help { font-size: 0.75rem; color: #6b7280; margin-top: 2px; line-height: 1.4; }
+    .nf-control-col { flex: 1; min-width: 0; }
+    .nf-input, .nf-select { width: 100%; padding: 9px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.88rem; color: #111; background: #fff; outline: none; }
+    .nf-input:focus, .nf-select:focus { border-color: #7c3aed; }
+    .nf-amount-wrap { display: flex; align-items: center; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; overflow: hidden; }
+    .nf-amount-wrap:focus-within { border-color: #7c3aed; }
+    .nf-amount-prefix { padding: 9px 4px 9px 12px; color: #6b7280; font-size: 0.88rem; }
+    .nf-amount-input { flex: 1; padding: 9px 12px 9px 4px; border: none; outline: none; background: transparent; font-size: 0.88rem; color: #111; min-width: 0; }
+    .nf-add-variant { margin-top: 8px; background: none; border: none; color: #2d9d8f; font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 4px 0; }
+    .nf-add-variant:hover { text-decoration: underline; }
+    .nf-toggle { position: relative; width: 36px; height: 20px; background: #d1d5db; border-radius: 10px; cursor: pointer; flex-shrink: 0; border: none; }
+    .nf-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.15); }
+    .nf-toggle.on { background: #1a2332; }
+    .nf-toggle.on::after { left: 18px; }
+    .nf-control-toggle { display: flex; justify-content: flex-end; }
+    .nf-radio-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 0.88rem; color: #111; cursor: pointer; }
+    .nf-radio-row input { margin: 0; accent-color: #2d9d8f; }
+    .nf-tags-wrap { position: relative; }
+    .nf-tags-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; }
+    .nf-tags-input { width: 100%; padding: 9px 12px 9px 36px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.88rem; background: #fff; outline: none; color: #9ca3af; }
+    .nf-help-icon { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: #e5e7eb; color: #6b7280; font-size: 0.65rem; font-weight: 700; text-align: center; line-height: 14px; margin-left: 4px; cursor: help; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="nf-shell">
+    <div class="nf-topbar">
+      Database
+      <div class="nf-topbar-right">
+        <div class="nf-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="nf-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="nf-topbar-avatar">AB</div>
+      </div>
+    </div>
+    <main class="nf-main">
+      <form class="nf-inner" method="post" action="/database/adders-discounts">
+        <input type="hidden" name="kind" value="${kind}"/>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;">
+          <div class="nf-title">${titleCap}</div>
+          <div style="display:flex;gap:8px;">
+            <a class="nf-btn-cancel" href="/database/adders-discounts" style="text-decoration:none;display:inline-block;">Cancel</a>
+            <button class="nf-btn-save" type="submit">Save</button>
+          </div>
+        </div>
+
+        <div class="nf-section">
+          <div class="nf-section-title">Partner assignment</div>
+          <div class="nf-row">
+            <div class="nf-label-col">
+              <div class="nf-label">Assign to...</div>
+            </div>
+            <div class="nf-control-col">
+              <select class="nf-select" name="partners">
+                <option value="All partners">All partners</option>
+              </select>
+              <div class="nf-help">This ${label} will appear for all partners.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="nf-section">
+          <div class="nf-section-title">Details</div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">Name</div></div>
+            <div class="nf-control-col"><input class="nf-input" name="name" type="text" required/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">Rate</div></div>
+            <div class="nf-control-col">
+              <select class="nf-select" name="rate">
+                <option value="Flat">Flat</option>
+                <option value="Per Watt">Per Watt</option>
+              </select>
+            </div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col">
+              <div class="nf-label">Default amount</div>
+              <div class="nf-help">This will be the amount for partners not specified in variants.</div>
+            </div>
+            <div class="nf-control-col">
+              <div class="nf-amount-wrap">
+                <span class="nf-amount-prefix">$</span>
+                <input class="nf-amount-input" name="amount" type="number" step="0.01" value="0"/>
+              </div>
+              <button type="button" class="nf-add-variant">+ Add amount variant</button>
+            </div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">Allow amount to be edited</div></div>
+            <div class="nf-control-col nf-control-toggle"><button type="button" class="nf-toggle on" data-name="allowAmountEdit"></button><input type="hidden" name="allowAmountEdit" value="true"/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">Allow quantity to be edited</div></div>
+            <div class="nf-control-col nf-control-toggle"><button type="button" class="nf-toggle on" data-name="allowQuantityEdit"></button><input type="hidden" name="allowQuantityEdit" value="true"/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col">
+              <div class="nf-label">Is homeowner facing</div>
+              <div class="nf-help">If on, this ${label} will be shown in Sales Mode, the web proposal, the proposal summary PDF, and the contract manager.</div>
+            </div>
+            <div class="nf-control-col nf-control-toggle"><button type="button" class="nf-toggle on" data-name="isHomeownerFacing"></button><input type="hidden" name="isHomeownerFacing" value="true"/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">Show ${label} total</div></div>
+            <div class="nf-control-col nf-control-toggle"><button type="button" class="nf-toggle on" data-name="showTotal"></button><input type="hidden" name="showTotal" value="true"/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col">
+              <div class="nf-label">CBIs can be applied</div>
+              <div class="nf-help">Toggle on if the amount associated with this ${label} can be included when calculating cost-based incentives like the Federal ITC.</div>
+            </div>
+            <div class="nf-control-col nf-control-toggle"><button type="button" class="nf-toggle on" data-name="cbiApplied"></button><input type="hidden" name="cbiApplied" value="true"/></div>
+          </div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">GoodLeap tags <span class="nf-help-icon" title="GoodLeap tag mapping">i</span></div></div>
+            <div class="nf-control-col">
+              <div class="nf-tags-wrap">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input class="nf-tags-input" name="goodleapTags" type="text" placeholder="Select an item"/>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="nf-section">
+          <div class="nf-section-title">Conditions</div>
+          <div class="nf-row">
+            <div class="nf-label-col"><div class="nf-label">How can this ${label} be applied</div></div>
+            <div class="nf-control-col">
+              <label class="nf-radio-row"><input type="radio" name="applyMode" value="manual" checked/> Users pick when to apply</label>
+              <label class="nf-radio-row"><input type="radio" name="applyMode" value="all-designs"/> Automatically apply to all designs</label>
+              <label class="nf-radio-row"><input type="radio" name="applyMode" value="conditions"/> Automatically apply based on conditions</label>
+            </div>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+  <script>
+    document.querySelectorAll('.nf-toggle').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        btn.classList.toggle('on');
+        var hidden = btn.parentElement.querySelector('input[type=hidden]');
+        if (hidden) hidden.value = btn.classList.contains('on') ? 'true' : 'false';
+      });
+    });
+  </script>
+</body>
+</html>`);
+});
+
+app.post("/database/adders-discounts", express.urlencoded({ extended: false }), (req, res) => {
+  const data = loadAddersDiscounts();
+  const items = data.items || [];
+  const body = req.body || {};
+  const kind = body.kind === 'discount' ? 'discount' : 'adder';
+  const name = (body.name || '').trim();
+  if (!name) return res.redirect('/database/adders-discounts/new?kind=' + kind);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const id = 'ad-' + slug + '-' + Date.now().toString(36);
+  items.push({
+    id: id,
+    kind: kind,
+    name: name,
+    partners: body.partners || 'All',
+    amount: parseFloat(body.amount) || 0,
+    rate: body.rate || 'Flat',
+    conditions: 'Optional',
+    allowAmountEdit: body.allowAmountEdit === 'true',
+    allowQuantityEdit: body.allowQuantityEdit === 'true',
+    isHomeownerFacing: body.isHomeownerFacing === 'true',
+    showTotal: body.showTotal === 'true',
+    cbiApplied: body.cbiApplied === 'true',
+    goodleapTags: body.goodleapTags ? [body.goodleapTags] : [],
+    applyMode: body.applyMode || 'manual',
+    createdAt: new Date().toISOString()
+  });
+  data.items = items;
+  saveAddersDiscounts(data);
+  res.redirect('/database/adders-discounts');
+});
+
+// ── Financing products ──────────────────────────────────────────────────────
+function financingProductDefaults(type) {
+  const defaults = {
+    ppa: { escalationRate: 2.9, upfrontPayment: 0, solarRateMode: "single", solarRate: 0.15 },
+    levelizedPpa: { solarRate: 0.15, durationMonths: 240, upfrontPayment: 0 },
+    loan: { loanType: "Mortgage-Style or Incentive-Prepayment", principal: 100, flatFee: 0, dealerFee: 0, incentivesApplyToDealerFee: true, interestIsTaxDeductible: true, interestRate: 2.99, durationMonths: 60, hasPrepayment: false, prepaymentMonth: 18 },
+    lease: { monthlyPayment: 89, escalationRate: 2.5, durationMonths: 120, buyoutMonth: 84, buyoutPrice: 1200 }
+  };
+  return defaults[type] || {};
+}
+
+function renderFpTopbar(backLabel) {
+  const back = backLabel
+    ? `<a href="/database/financing-products" style="position:absolute;left:20px;display:flex;align-items:center;gap:6px;color:#6b7280;text-decoration:none;font-weight:500;font-size:0.88rem"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>${backLabel}</a>`
+    : '';
+  return `<div class="db-topbar">
+      ${back}
+      Database
+      <div class="db-topbar-right">
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="db-topbar-avatar">AB</div>
+      </div>
+    </div>`;
+}
+
+app.get("/database/financing-products", (req, res) => {
+  const all = loadFinancingProducts();
+  const search = (req.query.q || '').toLowerCase().trim();
+  const tab = req.query.tab === 'enabled' ? 'enabled' : 'all';
+  let filtered = all;
+  if (tab === 'enabled') filtered = filtered.filter(p => p.enabled);
+  if (search) filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(search));
+  const perPage = 20;
+  const page = parseInt(req.query.page) || 1;
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const startIdx = (page - 1) * perPage;
+  const pageItems = filtered.slice(startIdx, startIdx + perPage);
+
+  let rowsHTML;
+  if (pageItems.length === 0) {
+    rowsHTML = `<tr><td colspan="5" style="text-align:center;padding:60px 20px;color:#9ca3af">No financing products found</td></tr>`;
+  } else {
+    rowsHTML = pageItems.map(p => {
+      const meta = FINANCING_TYPE_META[p.financingType] || { label: '—' };
+      const toggleCls = p.enabled ? 'fp-row-toggle on' : 'fp-row-toggle';
+      const tags = (p.tags || []).map(t => `<span class="fp-tag">${t}</span>`).join(' ');
+      const projectType = (p.projectType === 'commercial') ? 'Commercial' : 'Residential';
+      const partners = p.partners === 'all' ? 'All' : (p.partners || 'All');
+      return `<tr class="fp-row" data-href="/database/financing-products/${p.id}">
+        <td style="width:60px"><button class="${toggleCls}" data-id="${p.id}"></button></td>
+        <td class="fp-name-cell">${p.name} ${tags}</td>
+        <td>${partners}</td>
+        <td>${projectType}</td>
+        <td>${meta.label}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  let paginationHTML = '';
+  if (total > 0) {
+    const showStart = startIdx + 1;
+    const showEnd = Math.min(startIdx + perPage, total);
+    const qs = (search ? '&q=' + encodeURIComponent(search) : '') + (tab === 'enabled' ? '&tab=enabled' : '');
+    let pLinks = '';
+    if (page > 1) pLinks += `<a class="fp-page-btn" href="/database/financing-products?page=${page - 1}${qs}">&larr; Prev</a>`;
+    else pLinks += `<span class="fp-page-btn disabled">&larr; Prev</span>`;
+    for (let p = 1; p <= totalPages; p++) {
+      pLinks += `<a class="fp-page-btn${p === page ? ' active' : ''}" href="/database/financing-products?page=${p}${qs}">${p}</a>`;
+    }
+    if (page < totalPages) pLinks += `<a class="fp-page-btn" href="/database/financing-products?page=${page + 1}${qs}">Next &rarr;</a>`;
+    else pLinks += `<span class="fp-page-btn disabled">Next &rarr;</span>`;
+    paginationHTML = `<div class="fp-pagination">${pLinks}<span class="fp-page-info">Showing ${showStart}-${showEnd} of ${total} results</span></div>`;
+  }
+
+  const allTabCls = 'fp-tab' + (tab === 'all' ? ' active' : '');
+  const enabledTabCls = 'fp-tab' + (tab === 'enabled' ? ' active' : '');
+
+  res.send(`${renderDatabaseShellHead('Financing products')}
+  <style>
+    .fp-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; }
+    .fp-header h1 { font-size:1.5rem; font-weight:700; }
+    .fp-add-btn { padding:9px 18px; background:#1a2332; color:#fff; border:none; border-radius:8px; font-size:0.85rem; font-weight:600; cursor:pointer; }
+    .fp-add-btn:hover { background:#111; }
+    .fp-search-wrap { position:relative; max-width:320px; margin-bottom:18px; }
+    .fp-search-wrap svg { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#9ca3af; pointer-events:none; }
+    .fp-search { width:100%; padding:9px 12px 9px 36px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:0.85rem; background:#fafafa; outline:none; }
+    .fp-search:focus { border-color:#7c3aed; background:#fff; }
+    .fp-tabs { display:flex; gap:0; border-bottom:1px solid #e5e7eb; margin-bottom:4px; }
+    .fp-tab { padding:10px 18px; font-size:0.85rem; color:#6b7280; cursor:pointer; border:none; background:none; font-weight:500; border-bottom:2px solid transparent; text-decoration:none; }
+    .fp-tab:hover { color:#111; }
+    .fp-tab.active { color:#111; font-weight:700; border-bottom-color:#111; }
+    .fp-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+    .fp-table thead th { text-align:left; padding:10px 14px; font-size:0.78rem; font-weight:600; color:#6b7280; border-bottom:1px solid #e5e7eb; }
+    .fp-table tbody td { padding:14px; border-bottom:1px solid #f3f4f6; color:#111; vertical-align:middle; }
+    .fp-table tbody tr.fp-row { cursor:pointer; }
+    .fp-table tbody tr.fp-row:hover { background:#fafafa; }
+    .fp-name-cell { font-weight:500; }
+    .fp-tag { display:inline-block; padding:2px 8px; font-size:0.7rem; font-weight:600; background:#fde68a; color:#8b6914; border-radius:4px; margin-left:4px; vertical-align:middle; }
+    .fp-row-toggle { width:38px; height:20px; border-radius:10px; border:none; background:#d1d5db; position:relative; cursor:pointer; transition:background 0.15s; }
+    .fp-row-toggle::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left 0.15s; box-shadow:0 1px 2px rgba(0,0,0,0.15); }
+    .fp-row-toggle.on { background:#1a2332; }
+    .fp-row-toggle.on::after { left:20px; }
+    .fp-pagination { display:flex; align-items:center; justify-content:center; gap:4px; padding:20px 0; margin-top:8px; }
+    .fp-page-btn { display:inline-flex; align-items:center; justify-content:center; min-width:32px; height:32px; padding:0 8px; font-size:0.82rem; color:#4b5563; text-decoration:none; border-radius:6px; cursor:pointer; }
+    .fp-page-btn:hover { background:#f3f4f6; }
+    .fp-page-btn.active { background:#1a2332; color:#fff; font-weight:700; }
+    .fp-page-btn.disabled { color:#d1d5db; cursor:default; pointer-events:none; }
+    .fp-page-info { font-size:0.8rem; color:#9ca3af; margin-left:12px; }
+    .fp-modal-backdrop { display:none; position:fixed; inset:0; background:rgba(17,24,39,0.45); z-index:1000; align-items:center; justify-content:center; }
+    .fp-modal-backdrop.open { display:flex; }
+    .fp-modal { background:#fff; width:440px; max-width:92vw; border-radius:14px; padding:26px 28px 22px; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    .fp-modal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; }
+    .fp-modal-title { font-size:1.05rem; font-weight:700; }
+    .fp-modal-close { background:none; border:none; cursor:pointer; color:#6b7280; padding:4px; display:flex; }
+    .fp-modal-close:hover { color:#111; }
+    .fp-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
+    .fp-field { display:flex; flex-direction:column; }
+    .fp-field label { font-size:0.78rem; font-weight:600; color:#374151; margin-bottom:5px; }
+    .fp-field label .req { color:#ef4444; margin-right:2px; }
+    .fp-input, .fp-select { width:100%; padding:9px 12px; border:1.5px solid #d1d5db; border-radius:8px; font-size:0.88rem; background:#fff; outline:none; transition:border-color 0.15s; font-family:inherit; color:#111; }
+    .fp-input:focus, .fp-select:focus { border-color:#7c3aed; }
+    .fp-select { appearance:none; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'><polyline points='6 9 12 15 18 9'/></svg>"); background-repeat:no-repeat; background-position:right 12px center; padding-right:32px; }
+    .fp-type-full { grid-column: 1 / -1; }
+    .fp-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
+    .fp-btn-secondary { background:#fff; color:#4b5563; border:none; padding:9px 16px; border-radius:8px; font-size:0.87rem; font-weight:600; cursor:pointer; }
+    .fp-btn-secondary:hover { background:#f3f4f6; }
+    .fp-btn-primary { background:#1a2332; color:#fff; border:none; padding:9px 22px; border-radius:8px; font-size:0.87rem; font-weight:600; cursor:pointer; }
+    .fp-btn-primary:hover { background:#111; }
+    .fp-select-custom { position:relative; }
+    .fp-select-custom-btn { width:100%; padding:9px 12px; border:1.5px solid #d1d5db; border-radius:8px; font-size:0.88rem; background:#fff; text-align:left; cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-family:inherit; color:#111; }
+    .fp-select-custom-btn:focus { border-color:#7c3aed; outline:none; }
+    .fp-select-custom-btn svg { color:#6b7280; flex-shrink:0; transition:transform 0.15s; }
+    .fp-select-custom.open .fp-select-custom-btn svg { transform:rotate(180deg); }
+    .fp-select-custom-menu { display:none; position:absolute; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.12); z-index:20; padding:4px 0; }
+    .fp-select-custom.open .fp-select-custom-menu { display:block; }
+    .fp-select-option { padding:10px 14px; cursor:pointer; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .fp-select-option:hover { background:#f9fafb; }
+    .fp-select-option-text { flex:1; min-width:0; }
+    .fp-select-option-title { font-size:0.88rem; font-weight:600; color:#111; }
+    .fp-select-option-desc { font-size:0.73rem; color:#6b7280; margin-top:2px; line-height:1.35; }
+    .fp-select-option-check { color:#7c3aed; flex-shrink:0; margin-top:3px; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    ${renderFpTopbar('')}
+    <div class="db-body">
+      <aside class="db-sidebar">${renderDatabaseSidebar('financing-products')}</aside>
+      <main class="db-main">
+        <div class="db-main-inner">
+          <div class="fp-header">
+            <h1>Financing products</h1>
+            <button class="fp-add-btn" onclick="document.getElementById('fpModal').classList.add('open')">Add financing product</button>
+          </div>
+          <form class="fp-search-wrap" method="get" action="/database/financing-products">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input class="fp-search" name="q" type="text" placeholder="Search" value="${search.replace(/"/g, '&quot;')}"/>
+          </form>
+          <div class="fp-tabs">
+            <a class="${allTabCls}" href="/database/financing-products">All financing products</a>
+            <a class="${enabledTabCls}" href="/database/financing-products?tab=enabled">Enabled financing products</a>
+          </div>
+          <table class="fp-table">
+            <thead><tr><th></th><th>Name</th><th>Partners</th><th>Project type</th><th>Product type</th></tr></thead>
+            <tbody>${rowsHTML}</tbody>
+          </table>
+          ${paginationHTML}
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="fp-modal-backdrop" id="fpModal">
+    <div class="fp-modal">
+      <div class="fp-modal-header">
+        <div class="fp-modal-title">New financing product</div>
+        <button class="fp-modal-close" onclick="document.getElementById('fpModal').classList.remove('open')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form method="post" action="/api/financing-products">
+        <div class="fp-modal-grid">
+          <div class="fp-field">
+            <label><span class="req">*</span>Name</label>
+            <input class="fp-input" name="name" type="text" required autocomplete="off"/>
+          </div>
+          <div class="fp-field">
+            <label>Project type</label>
+            <select class="fp-select" name="projectType">
+              <option value="residential">Residential</option>
+              <option value="commercial">Commercial</option>
+            </select>
+          </div>
+          <div class="fp-field fp-type-full">
+            <label>Financing type</label>
+            <div class="fp-select-custom" id="fpTypeWrap">
+              <button type="button" class="fp-select-custom-btn" onclick="document.getElementById('fpTypeWrap').classList.toggle('open'); event.stopPropagation()">
+                <span id="fpTypeLabel">Loan</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="fp-select-custom-menu">
+                <div class="fp-select-option" data-value="lease" data-label="Lease">
+                  <div class="fp-select-option-text"><div class="fp-select-option-title">Lease</div></div>
+                </div>
+                <div class="fp-select-option" data-value="levelizedPpa" data-label="Levelized PPA">
+                  <div class="fp-select-option-text"><div class="fp-select-option-title">Levelized PPA</div><div class="fp-select-option-desc">Payments stay the same month-to-month</div></div>
+                </div>
+                <div class="fp-select-option" data-value="loan" data-label="Loan">
+                  <div class="fp-select-option-text"><div class="fp-select-option-title">Loan</div></div>
+                  <svg class="fp-select-option-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <div class="fp-select-option" data-value="ppa" data-label="PPA">
+                  <div class="fp-select-option-text"><div class="fp-select-option-title">PPA</div><div class="fp-select-option-desc">Payments change month-to-month based on system performance and degradation</div></div>
+                </div>
+              </div>
+              <input type="hidden" name="financingType" id="fpTypeInput" value="loan"/>
+            </div>
+          </div>
+        </div>
+        <div class="fp-modal-actions">
+          <button type="button" class="fp-btn-secondary" onclick="document.getElementById('fpModal').classList.remove('open')">Cancel</button>
+          <button type="submit" class="fp-btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var wrap = document.getElementById('fpTypeWrap');
+      var label = document.getElementById('fpTypeLabel');
+      var input = document.getElementById('fpTypeInput');
+      wrap.querySelectorAll('.fp-select-option').forEach(function(opt) {
+        opt.addEventListener('click', function(e) {
+          e.stopPropagation();
+          input.value = opt.getAttribute('data-value');
+          label.textContent = opt.getAttribute('data-label');
+          wrap.querySelectorAll('.fp-select-option-check').forEach(function(c) { c.remove(); });
+          opt.insertAdjacentHTML('beforeend', '<svg class="fp-select-option-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>');
+          wrap.classList.remove('open');
+        });
+      });
+      document.addEventListener('click', function(e) {
+        if (!wrap.contains(e.target)) wrap.classList.remove('open');
+      });
+    })();
+
+    document.querySelectorAll('tr.fp-row').forEach(function(tr) {
+      tr.addEventListener('click', function(e) {
+        if (e.target.closest('.fp-row-toggle')) return;
+        location.href = tr.getAttribute('data-href');
+      });
+    });
+    document.querySelectorAll('.fp-row-toggle').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        fetch('/api/financing-products/' + btn.getAttribute('data-id') + '/toggle', { method: 'PATCH' })
+          .then(function(r) { return r.json(); })
+          .then(function(data) { btn.classList.toggle('on', !!data.enabled); });
+      });
+    });
+  </script>
+</body>
+</html>`);
+});
+
+app.get("/database/financing-products/:id", (req, res) => {
+  const all = loadFinancingProducts();
+  const fp = all.find(p => p.id === req.params.id);
+  if (!fp) return res.redirect('/database/financing-products');
+  const meta = FINANCING_TYPE_META[fp.financingType] || FINANCING_TYPE_META.loan;
+  const projLabel = fp.projectType === 'commercial' ? 'Commercial' : 'Residential';
+  const fpDataJSON = JSON.stringify(fp).replace(/</g, '\\u003c');
+
+  if (fp.financingType === 'ppa') {
+    return res.send(`${renderDatabaseShellHead(fp.name)}
+  <style>
+    .fpv-main { max-width:920px; margin:0 auto; padding:28px 40px 80px; }
+    .fpv-title { font-size:1.85rem; font-weight:700; color:#111; }
+    .fpv-subtitle { font-size:0.9rem; color:#6b7280; margin-top:4px; }
+    .fpv-edit-btn { padding:8px 20px; background:#1a2332; color:#fff; border:none; border-radius:7px; font-size:0.85rem; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; }
+    .fpv-edit-btn:hover { background:#111; }
+    .fpv-section-title { font-size:1rem; font-weight:700; margin:34px 0 4px; color:#111; }
+    .fpv-row { display:grid; grid-template-columns:280px 1fr; gap:24px; align-items:center; padding:20px 0; border-bottom:1px solid #f3f4f6; }
+    .fpv-label { font-size:0.88rem; color:#6b7280; display:flex; align-items:center; gap:6px; }
+    .fpv-info { color:#d1d5db; font-size:0.8rem; cursor:help; }
+    .fpv-val { font-size:0.92rem; color:#111; text-align:right; }
+    .fpv-val-sub { font-size:0.75rem; color:#9ca3af; margin-top:2px; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    ${renderFpTopbar('Financing products')}
+    <div class="db-body">
+      <aside class="db-sidebar">${renderDatabaseSidebar('financing-products')}</aside>
+      <main class="db-main" style="padding:0">
+        <div class="fpv-main">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px">
+            <div>
+              <div class="fpv-title">${meta.title}</div>
+              <div class="fpv-subtitle">${meta.subtitle}</div>
+            </div>
+            <a href="/database/financing-products/${fp.id}/edit" class="fpv-edit-btn">Edit</a>
+          </div>
+          <div class="fpv-section-title">Partner assignment</div>
+          <div class="fpv-row">
+            <div class="fpv-label">Assign to... <span class="fpv-info">&#9432;</span></div>
+            <div class="fpv-val">All partners<div class="fpv-val-sub">This PPA will appear for all partners</div></div>
+          </div>
+          <div class="fpv-section-title">Details</div>
+          <div class="fpv-row"><div class="fpv-label">Name</div><div class="fpv-val">${fp.name}</div></div>
+          <div class="fpv-row"><div class="fpv-label">Project type</div><div class="fpv-val">${projLabel}</div></div>
+          <div class="fpv-row"><div class="fpv-label">Escalation rate <span class="fpv-info">&#9432;</span></div><div class="fpv-val">${Number(fp.escalationRate || 0).toFixed(2)}% per year</div></div>
+          <div class="fpv-row"><div class="fpv-label">Upfront payment <span class="fpv-info">&#9432;</span></div><div class="fpv-val">$${Number(fp.upfrontPayment || 0).toFixed(2)}</div></div>
+          <div class="fpv-row"><div class="fpv-label">Solar rate selection</div><div class="fpv-val">${fp.solarRateMode === 'matrix' ? 'Define a pricing matrix based on solar rate, yield, and EPC rate' : 'Define a single solar rate'}</div></div>
+          <div class="fpv-row"><div class="fpv-label">Solar rate <span class="fpv-info">&#9432;</span></div><div class="fpv-val">$${Number(fp.solarRate || 0).toFixed(3)} per kWh</div></div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>`);
+  }
+
+  let tableCols, tableRow;
+  if (fp.financingType === 'loan') {
+    tableCols = `<th>Name</th><th>Principal</th><th style="width:40px"></th>`;
+    tableRow = `<td>${fp.name}</td><td>${Number(fp.principal || 0).toFixed(2)}% of financed amount</td>`;
+  } else if (fp.financingType === 'lease') {
+    tableCols = `<th>Name</th><th>Monthly payment</th><th style="width:40px"></th>`;
+    tableRow = `<td>${fp.name}</td><td>$${Number(fp.monthlyPayment || 0).toFixed(2)}/mo</td>`;
+  } else {
+    tableCols = `<th>Name</th><th>Solar rate</th><th style="width:40px"></th>`;
+    tableRow = `<td>${fp.name}</td><td>$${Number(fp.solarRate || 0).toFixed(3)} per kWh</td>`;
+  }
+
+  function row(label, viewVal, editHTML, hasInfo) {
+    const info = hasInfo ? ' <span class="fps-info">&#9432;</span>' : '';
+    return `<div class="fps-row">
+      <div class="fps-label">${label}${info}</div>
+      <div class="fps-val"><span class="fps-view">${viewVal}</span><span class="fps-edit">${editHTML}</span></div>
+    </div>`;
+  }
+  function toggleHTML(name, on) {
+    return `<button type="button" class="fps-toggle${on ? ' on' : ''}" data-field="${name}" onclick="this.classList.toggle('on')"></button>`;
+  }
+  function pctInput(name, val) {
+    return `<div class="fps-input-group"><input class="fps-input" type="number" step="0.01" name="${name}" value="${val}"/><span class="fps-suffix">%</span></div>`;
+  }
+  function dollarInput(name, val) {
+    return `<div class="fps-input-group"><span class="fps-prefix">$</span><input class="fps-input" type="number" step="0.01" name="${name}" value="${val}"/></div>`;
+  }
+  function numInput(name, val, suffix) {
+    return `<div class="fps-input-group"><input class="fps-input" type="number" name="${name}" value="${val}"/>${suffix ? '<span class="fps-suffix">' + suffix + '</span>' : ''}</div>`;
+  }
+  function textInput(name, val) {
+    return `<input class="fps-input fps-input-full" type="text" name="${name}" value="${(val || '').toString().replace(/"/g, '&quot;')}"/>`;
+  }
+  function selectInput(name, val, options) {
+    const opts = options.map(o => `<option value="${o.v}"${o.v === val ? ' selected' : ''}>${o.l}</option>`).join('');
+    return `<select class="fps-input fps-input-full" name="${name}">${opts}</select>`;
+  }
+
+  let slideRows = '';
+  slideRows += row('Name', fp.name || '', textInput('name', fp.name || ''), false);
+  if (fp.financingType === 'loan') {
+    slideRows += row('Loan type', fp.loanType || '', selectInput('loanType', fp.loanType || 'Mortgage-Style or Incentive-Prepayment', [{ v: 'Mortgage-Style or Incentive-Prepayment', l: 'Mortgage-Style or Incentive-Prepayment' }, { v: 'Simple Interest', l: 'Simple Interest' }]), false);
+    slideRows += row('Principal', `${Number(fp.principal || 0).toFixed(2)}%`, pctInput('principal', fp.principal || 0), true);
+    slideRows += row('Flat fee', fp.flatFee ? `$${Number(fp.flatFee).toFixed(2)}` : '$ -', dollarInput('flatFee', fp.flatFee || 0), true);
+    slideRows += row('Dealer fee', `${Number(fp.dealerFee || 0).toFixed(2)}%`, pctInput('dealerFee', fp.dealerFee || 0), true);
+    slideRows += row('Incentives apply to dealer fee', fp.incentivesApplyToDealerFee ? 'On' : 'Off', toggleHTML('incentivesApplyToDealerFee', fp.incentivesApplyToDealerFee), false);
+    slideRows += row('Interest is tax deductible', fp.interestIsTaxDeductible ? 'On' : 'Off', toggleHTML('interestIsTaxDeductible', fp.interestIsTaxDeductible), true);
+    slideRows += row('Interest rate', `${Number(fp.interestRate || 0).toFixed(2)}%`, pctInput('interestRate', fp.interestRate || 0), true);
+    slideRows += row('Duration', `${fp.durationMonths || 0} months`, numInput('durationMonths', fp.durationMonths || 0, 'months'), true);
+    slideRows += row('Loan can have a prepayment', fp.hasPrepayment ? 'On' : 'Off', toggleHTML('hasPrepayment', fp.hasPrepayment), true);
+    slideRows += row('Month', String(fp.prepaymentMonth || 0), numInput('prepaymentMonth', fp.prepaymentMonth || 0, ''), true);
+  } else if (fp.financingType === 'lease') {
+    slideRows += row('Monthly payment', `$${Number(fp.monthlyPayment || 0).toFixed(2)}`, dollarInput('monthlyPayment', fp.monthlyPayment || 0), false);
+    slideRows += row('Escalation rate', `${Number(fp.escalationRate || 0).toFixed(2)}%`, pctInput('escalationRate', fp.escalationRate || 0), true);
+    slideRows += row('Duration', `${fp.durationMonths || 0} months`, numInput('durationMonths', fp.durationMonths || 0, 'months'), false);
+    slideRows += row('Buyout month', String(fp.buyoutMonth || 0), numInput('buyoutMonth', fp.buyoutMonth || 0, ''), false);
+    slideRows += row('Buyout price', `$${Number(fp.buyoutPrice || 0).toFixed(2)}`, dollarInput('buyoutPrice', fp.buyoutPrice || 0), false);
+  } else {
+    slideRows += row('Solar rate', `$${Number(fp.solarRate || 0).toFixed(3)} per kWh`, dollarInput('solarRate', fp.solarRate || 0), true);
+    slideRows += row('Duration', `${fp.durationMonths || 0} months`, numInput('durationMonths', fp.durationMonths || 0, 'months'), false);
+    slideRows += row('Upfront payment', `$${Number(fp.upfrontPayment || 0).toFixed(2)}`, dollarInput('upfrontPayment', fp.upfrontPayment || 0), true);
+  }
+
+  res.send(`${renderDatabaseShellHead(fp.name)}
+  <style>
+    .fpv-main { max-width:920px; margin:0 auto; padding:28px 40px 80px; }
+    .fpv-title { font-size:1.85rem; font-weight:700; color:#111; }
+    .fpv-subtitle { font-size:0.88rem; color:#6b7280; margin-top:4px; }
+    .fpv-actions { display:flex; gap:10px; }
+    .fpv-btn { padding:8px 18px; font-size:0.85rem; font-weight:600; border-radius:7px; cursor:pointer; border:none; }
+    .fpv-btn-secondary { background:#fff; color:#111; border:1.5px solid #d1d5db; }
+    .fpv-btn-secondary:hover { background:#f9fafb; }
+    .fpv-btn-primary { background:#1a2332; color:#fff; }
+    .fpv-btn-primary:hover { background:#111; }
+    .fpl-table { width:100%; border-collapse:collapse; font-size:0.88rem; margin-top:24px; }
+    .fpl-table thead th { text-align:left; padding:10px 14px; font-size:0.78rem; font-weight:600; color:#6b7280; border-bottom:1px solid #e5e7eb; }
+    .fpl-table tbody td { padding:16px 14px; border-bottom:1px solid #f3f4f6; color:#111; vertical-align:middle; }
+    .fpl-table tbody tr { cursor:pointer; }
+    .fpl-table tbody tr:hover { background:#fafafa; }
+    .fpl-row-more-wrap { position:relative; display:inline-block; }
+    .fpl-row-more { background:none; border:none; color:#6b7280; font-size:1.1rem; cursor:pointer; padding:4px 8px; border-radius:4px; letter-spacing:1px; }
+    .fpl-row-more:hover { background:#f3f4f6; color:#111; }
+    .fpl-row-menu { display:none; position:absolute; right:0; top:calc(100% + 4px); background:#fff; border:1px solid #e5e7eb; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12); min-width:120px; padding:4px 0; z-index:50; }
+    .fpl-row-menu.open { display:block; }
+    .fpl-row-menu-item { padding:9px 14px; font-size:0.85rem; color:#111; cursor:pointer; text-align:left; }
+    .fpl-row-menu-item:hover { background:#f9fafb; }
+    .fpl-row-menu-item.danger { color:#ef4444; }
+
+    .fps-backdrop { display:none; position:fixed; inset:0; background:rgba(17,24,39,0.35); z-index:900; }
+    .fps-backdrop.open { display:block; }
+    .fps-panel { position:fixed; top:0; right:0; bottom:0; width:500px; max-width:100vw; background:#fff; box-shadow:-8px 0 24px rgba(0,0,0,0.08); z-index:901; display:flex; flex-direction:column; transform:translateX(100%); transition:transform 0.22s ease; }
+    .fps-panel.open { transform:translateX(0); }
+    .fps-head { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; border-bottom:1px solid #e5e7eb; }
+    .fps-head-title { font-size:0.9rem; font-weight:600; color:#111; }
+    .fps-close { background:none; border:none; cursor:pointer; color:#6b7280; padding:4px; display:flex; }
+    .fps-close:hover { color:#111; }
+    .fps-body { flex:1; overflow-y:auto; padding:22px 24px 20px; }
+    .fps-title { font-size:1.35rem; font-weight:700; color:#111; }
+    .fps-subtitle { font-size:0.82rem; color:#6b7280; margin-top:2px; margin-bottom:22px; }
+    .fps-section { font-size:0.88rem; font-weight:700; color:#111; margin:18px 0 6px; }
+    .fps-row { display:grid; grid-template-columns:1fr 180px; gap:14px; align-items:center; padding:12px 0; border-bottom:1px solid #f3f4f6; min-height:44px; }
+    .fps-label { font-size:0.85rem; color:#374151; display:flex; align-items:center; gap:6px; }
+    .fps-info { color:#d1d5db; font-size:0.78rem; cursor:help; }
+    .fps-val { font-size:0.86rem; color:#111; text-align:right; justify-self:end; width:100%; }
+    .fps-val .fps-view { color:#111; }
+    .fps-val .fps-edit { display:none; }
+    .fps-panel.edit-mode .fps-val .fps-view { display:none; }
+    .fps-panel.edit-mode .fps-val .fps-edit { display:inline-block; width:100%; }
+    .fps-input-group { display:flex; align-items:center; gap:6px; justify-content:flex-end; }
+    .fps-input-group .fps-input { width:110px; text-align:right; }
+    .fps-input { padding:7px 10px; border:1.5px solid #d1d5db; border-radius:6px; font-size:0.85rem; outline:none; font-family:inherit; color:#111; background:#fff; }
+    .fps-input:focus { border-color:#7c3aed; }
+    .fps-input-full { width:100%; text-align:left; }
+    .fps-prefix, .fps-suffix { font-size:0.85rem; color:#6b7280; }
+    .fps-toggle { width:36px; height:20px; border-radius:10px; border:none; background:#d1d5db; position:relative; cursor:pointer; transition:background 0.15s; }
+    .fps-toggle::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left 0.15s; box-shadow:0 1px 2px rgba(0,0,0,0.15); }
+    .fps-toggle.on { background:#1a2332; }
+    .fps-toggle.on::after { left:18px; }
+    .fps-description { font-size:0.78rem; color:#6b7280; line-height:1.55; margin-top:18px; padding-top:16px; border-top:1px solid #f3f4f6; }
+    .fps-description b { color:#111; font-weight:600; }
+    .fps-foot { display:flex; justify-content:flex-end; gap:10px; padding:14px 24px; border-top:1px solid #e5e7eb; background:#fff; }
+    .fps-btn-secondary { background:#fff; color:#4b5563; border:none; padding:8px 16px; border-radius:7px; font-size:0.85rem; font-weight:600; cursor:pointer; }
+    .fps-btn-secondary:hover { background:#f3f4f6; }
+    .fps-btn-primary { background:#1a2332; color:#fff; border:none; padding:8px 22px; border-radius:7px; font-size:0.85rem; font-weight:600; cursor:pointer; }
+    .fps-btn-primary:hover { background:#111; }
+    .fps-view-only { display:inline-block; }
+    .fps-edit-only { display:none; }
+    .fps-panel.edit-mode .fps-view-only { display:none; }
+    .fps-panel.edit-mode .fps-edit-only { display:inline-block; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    ${renderFpTopbar('Financing products')}
+    <div class="db-body">
+      <aside class="db-sidebar">${renderDatabaseSidebar('financing-products')}</aside>
+      <main class="db-main" style="padding:0">
+        <div class="fpv-main">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
+            <div>
+              <div class="fpv-title">${fp.name}</div>
+              <div class="fpv-subtitle">${projLabel} ${meta.label.toLowerCase()} financing product</div>
+            </div>
+            <div class="fpv-actions">
+              <button class="fpv-btn fpv-btn-secondary" onclick="openSlide('edit')">${meta.addLabel}</button>
+              <button class="fpv-btn fpv-btn-primary" onclick="openSlide('edit')">Edit</button>
+            </div>
+          </div>
+          <table class="fpl-table">
+            <thead><tr>${tableCols}</tr></thead>
+            <tbody>
+              <tr onclick="openSlide('view')">
+                ${tableRow}
+                <td onclick="event.stopPropagation()">
+                  <div class="fpl-row-more-wrap">
+                    <button class="fpl-row-more" onclick="toggleRowMenu(this, event)">&#8942;</button>
+                    <div class="fpl-row-menu">
+                      <div class="fpl-row-menu-item">Lock</div>
+                      <div class="fpl-row-menu-item danger" onclick="deleteProduct('${fp.id}')">Delete</div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="fps-backdrop" id="fpsBackdrop" onclick="closeSlide()"></div>
+  <div class="fps-panel" id="fpsPanel">
+    <div class="fps-head">
+      <div class="fps-head-title" id="fpsHeadTitle">View component</div>
+      <button class="fps-close" onclick="closeSlide()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="fps-body">
+      <div class="fps-title">${fp.name}</div>
+      <div class="fps-subtitle">${meta.label}</div>
+      <div class="fps-section">Partner assignment</div>
+      <div class="fps-row">
+        <div class="fps-label">Assign to... <span class="fps-info">&#9432;</span></div>
+        <div class="fps-val"><span class="fps-view">All partners<div style="font-size:0.72rem;color:#9ca3af;margin-top:2px">This ${meta.label.toLowerCase()} will appear for all partners</div></span><span class="fps-edit">All partners</span></div>
+      </div>
+      ${slideRows}
+      ${fp.financingType === 'loan' ? `<div class="fps-description">
+        The system owner will receive a <b>${fp.loanType || 'Mortgage-Style'}</b> loan for the <b>${Number(fp.principal || 0).toFixed(2)}%</b> of the project cost with an interest rate of <b>${Number(fp.interestRate || 0).toFixed(2)}%</b> over <b>${Math.round((fp.durationMonths || 0) / 12)} years</b>. The dealer fees for this loan will be added to the system costs for incentive and tax calculations. The interest from this loan is ${fp.interestIsTaxDeductible ? '' : 'not '}tax deductible.
+      </div>` : ''}
+    </div>
+    <div class="fps-foot">
+      <button class="fps-btn-primary fps-view-only" onclick="setEditMode(true)">Edit</button>
+      <button class="fps-btn-secondary fps-edit-only" onclick="setEditMode(false)">Cancel</button>
+      <button class="fps-btn-primary fps-edit-only" onclick="saveSlide()">Save</button>
+    </div>
+  </div>
+
+  <script>
+    var FP_ID = ${JSON.stringify(fp.id)};
+    function openSlide(mode) {
+      document.getElementById('fpsBackdrop').classList.add('open');
+      document.getElementById('fpsPanel').classList.add('open');
+      setEditMode(mode === 'edit');
+    }
+    function closeSlide() {
+      document.getElementById('fpsBackdrop').classList.remove('open');
+      document.getElementById('fpsPanel').classList.remove('open');
+    }
+    function setEditMode(edit) {
+      var p = document.getElementById('fpsPanel');
+      var h = document.getElementById('fpsHeadTitle');
+      if (edit) { p.classList.add('edit-mode'); h.textContent = 'Edit component'; }
+      else { p.classList.remove('edit-mode'); h.textContent = 'View component'; }
+    }
+    function saveSlide() {
+      var panel = document.getElementById('fpsPanel');
+      var payload = {};
+      panel.querySelectorAll('.fps-edit input.fps-input, .fps-edit select.fps-input').forEach(function(el) {
+        var name = el.getAttribute('name');
+        if (!name) return;
+        var v = el.value;
+        if (el.type === 'number') { v = parseFloat(v); if (isNaN(v)) v = 0; }
+        payload[name] = v;
+      });
+      panel.querySelectorAll('.fps-toggle').forEach(function(el) {
+        var name = el.getAttribute('data-field');
+        if (name) payload[name] = el.classList.contains('on');
+      });
+      fetch('/api/financing-products/' + FP_ID, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(r) { return r.json(); })
+        .then(function() { location.reload(); })
+        .catch(function(e) { alert('Save failed: ' + e.message); });
+    }
+    function toggleRowMenu(btn, e) {
+      e.stopPropagation();
+      var menu = btn.nextElementSibling;
+      menu.classList.toggle('open');
+      document.addEventListener('click', function close(ev) {
+        if (!menu.contains(ev.target) && ev.target !== btn) {
+          menu.classList.remove('open');
+          document.removeEventListener('click', close);
+        }
+      });
+    }
+    function deleteProduct(id) {
+      if (!confirm('Delete this financing product?')) return;
+      fetch('/api/financing-products/' + id, { method: 'DELETE' })
+        .then(function() { location.href = '/database/financing-products'; });
+    }
+  </script>
+</body>
+</html>`);
+});
+
+app.get("/database/financing-products/:id/edit", (req, res) => {
+  const all = loadFinancingProducts();
+  const fp = all.find(p => p.id === req.params.id);
+  if (!fp) return res.redirect('/database/financing-products');
+  if (fp.financingType !== 'ppa') return res.redirect('/database/financing-products/' + fp.id);
+  const meta = FINANCING_TYPE_META.ppa;
+
+  res.send(`${renderDatabaseShellHead(fp.name + ' — Edit')}
+  <style>
+    .fpv-main { max-width:920px; margin:0 auto; padding:28px 40px 100px; }
+    .fpv-title { font-size:1.85rem; font-weight:700; color:#111; }
+    .fpv-subtitle { font-size:0.9rem; color:#6b7280; margin-top:4px; margin-bottom:30px; }
+    .fpe-section { font-size:1rem; font-weight:700; margin:28px 0 4px; color:#111; }
+    .fpe-row { display:grid; grid-template-columns:280px 1fr; gap:24px; align-items:center; padding:16px 0; border-bottom:1px solid #f3f4f6; }
+    .fpe-label { font-size:0.88rem; color:#6b7280; display:flex; align-items:center; gap:6px; }
+    .fpe-info { color:#d1d5db; font-size:0.8rem; cursor:help; }
+    .fpe-val { display:flex; justify-content:flex-end; }
+    .fpe-input { width:100%; padding:9px 12px; border:1.5px solid #d1d5db; border-radius:8px; font-size:0.88rem; background:#f9fafb; outline:none; color:#111; font-family:inherit; }
+    .fpe-input:focus { border-color:#7c3aed; background:#fff; }
+    .fpe-group { display:flex; align-items:center; gap:8px; width:100%; max-width:460px; }
+    .fpe-prefix { font-size:0.9rem; color:#6b7280; }
+    .fpe-unit { padding:9px 12px; border:1.5px solid #d1d5db; border-radius:8px; background:#fff; font-size:0.85rem; color:#111; min-width:120px; appearance:none; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'><polyline points='6 9 12 15 18 9'/></svg>"); background-repeat:no-repeat; background-position:right 10px center; padding-right:28px; }
+    .fpe-radio-group { display:flex; flex-direction:column; gap:10px; align-items:flex-start; width:100%; max-width:460px; }
+    .fpe-radio { display:flex; align-items:center; gap:8px; font-size:0.88rem; color:#111; cursor:pointer; }
+    .fpe-radio input { accent-color:#7c3aed; width:15px; height:15px; }
+    .fpe-radio-sub { font-size:0.72rem; color:#9ca3af; margin-top:2px; margin-left:23px; max-width:400px; }
+    .fpe-save-bar { position:sticky; bottom:0; background:#fff; border-top:1px solid #e5e7eb; padding:14px 40px; display:flex; justify-content:flex-end; gap:10px; margin:30px -40px 0; }
+    .fpe-btn { padding:9px 22px; font-size:0.87rem; font-weight:600; border-radius:8px; cursor:pointer; border:none; text-decoration:none; display:inline-flex; align-items:center; }
+    .fpe-btn-secondary { background:#fff; color:#111; border:1.5px solid #d1d5db; }
+    .fpe-btn-secondary:hover { background:#f9fafb; }
+    .fpe-btn-primary { background:#1a2332; color:#fff; }
+    .fpe-btn-primary:hover { background:#111; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    ${renderFpTopbar('Financing products')}
+    <div class="db-body">
+      <aside class="db-sidebar">${renderDatabaseSidebar('financing-products')}</aside>
+      <main class="db-main" style="padding:0">
+        <form class="fpv-main" id="fpeForm">
+          <div class="fpv-title">${meta.title}</div>
+          <div class="fpv-subtitle">${meta.subtitle}</div>
+          <div class="fpe-section">Partner assignment</div>
+          <div class="fpe-row">
+            <div class="fpe-label">Assign to... <span class="fpe-info">&#9432;</span></div>
+            <div class="fpe-val" style="flex-direction:column;align-items:flex-end">
+              <select class="fpe-input" style="max-width:460px;background:#fff" name="partners"><option>All partners</option></select>
+              <div style="font-size:0.72rem;color:#9ca3af;margin-top:4px;text-align:right">This PPA will appear for all partners</div>
+            </div>
+          </div>
+          <div class="fpe-section">Details</div>
+          <div class="fpe-row">
+            <div class="fpe-label">Name</div>
+            <div class="fpe-val"><input class="fpe-input" style="max-width:460px" name="name" type="text" value="${(fp.name || '').replace(/"/g, '&quot;')}"/></div>
+          </div>
+          <div class="fpe-row">
+            <div class="fpe-label">Project type</div>
+            <div class="fpe-val">
+              <div class="fpe-radio-group">
+                <label class="fpe-radio"><input type="radio" name="projectType" value="residential" ${fp.projectType !== 'commercial' ? 'checked' : ''}/> Residential</label>
+                <label class="fpe-radio"><input type="radio" name="projectType" value="commercial" ${fp.projectType === 'commercial' ? 'checked' : ''}/> Commercial</label>
+              </div>
+            </div>
+          </div>
+          <div class="fpe-row">
+            <div class="fpe-label">Escalation rate <span class="fpe-info">&#9432;</span></div>
+            <div class="fpe-val">
+              <div class="fpe-group">
+                <input class="fpe-input" name="escalationRate" type="number" step="0.01" value="${fp.escalationRate || 0}"/>
+                <select class="fpe-unit" name="escalationUnit"><option>% per year</option></select>
+              </div>
+            </div>
+          </div>
+          <div class="fpe-row">
+            <div class="fpe-label">Upfront payment <span class="fpe-info">&#9432;</span></div>
+            <div class="fpe-val">
+              <div class="fpe-group">
+                <span class="fpe-prefix">$</span>
+                <input class="fpe-input" name="upfrontPayment" type="number" step="0.01" value="${fp.upfrontPayment || 0}"/>
+              </div>
+            </div>
+          </div>
+          <div class="fpe-row">
+            <div class="fpe-label">Solar rate selection</div>
+            <div class="fpe-val">
+              <div class="fpe-radio-group">
+                <label class="fpe-radio"><input type="radio" name="solarRateMode" value="single" ${fp.solarRateMode !== 'matrix' ? 'checked' : ''}/> Define a single solar rate</label>
+                <label class="fpe-radio"><input type="radio" name="solarRateMode" value="matrix" ${fp.solarRateMode === 'matrix' ? 'checked' : ''}/> Define a pricing matrix based on solar rate, yield, and EPC rate</label>
+                <div class="fpe-radio-sub">Users can choose from different solar rates based on a design's yield</div>
+              </div>
+            </div>
+          </div>
+          <div class="fpe-row">
+            <div class="fpe-label">Solar rate <span class="fpe-info">&#9432;</span></div>
+            <div class="fpe-val">
+              <div class="fpe-group">
+                <span class="fpe-prefix">$</span>
+                <input class="fpe-input" name="solarRate" type="number" step="0.001" value="${fp.solarRate || 0}"/>
+                <span class="fpe-prefix">per kWh</span>
+              </div>
+            </div>
+          </div>
+          <div class="fpe-save-bar">
+            <a class="fpe-btn fpe-btn-secondary" href="/database/financing-products/${fp.id}">Cancel</a>
+            <button class="fpe-btn fpe-btn-primary" type="button" onclick="saveFpe()">Save</button>
+          </div>
+        </form>
+      </main>
+    </div>
+  </div>
+  <script>
+    var FP_ID = ${JSON.stringify(fp.id)};
+    function saveFpe() {
+      var form = document.getElementById('fpeForm');
+      var fd = new FormData(form);
+      var payload = {};
+      fd.forEach(function(v, k) {
+        if (k === 'partners' || k === 'escalationUnit') return;
+        if (k === 'escalationRate' || k === 'upfrontPayment' || k === 'solarRate') v = parseFloat(v) || 0;
+        payload[k] = v;
+      });
+      fetch('/api/financing-products/' + FP_ID, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(r) { return r.json(); })
+        .then(function() { location.href = '/database/financing-products/' + FP_ID; })
+        .catch(function(e) { alert('Save failed: ' + e.message); });
+    }
+  </script>
+</body>
+</html>`);
+});
+
+app.post("/api/financing-products", express.urlencoded({ extended: false }), (req, res) => {
+  const all = loadFinancingProducts();
+  const name = (req.body.name || '').toString().trim();
+  const projectType = req.body.projectType === 'commercial' ? 'commercial' : 'residential';
+  const financingType = ['ppa', 'loan', 'lease', 'levelizedPpa'].includes(req.body.financingType) ? req.body.financingType : 'loan';
+  if (!name) return res.redirect('/database/financing-products');
+  const id = 'fp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const fp = Object.assign({
+    id,
+    name,
+    financingType,
+    projectType,
+    enabled: false,
+    partners: 'all',
+    tags: ['Custom']
+  }, financingProductDefaults(financingType));
+  all.push(fp);
+  saveFinancingProducts(all);
+  res.redirect('/database/financing-products/' + id);
+});
+
+app.patch("/api/financing-products/:id", (req, res) => {
+  const all = loadFinancingProducts();
+  const idx = all.findIndex(p => p.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  const patch = req.body || {};
+  const current = all[idx];
+  const allowed = ['name', 'projectType', 'partners', 'escalationRate', 'upfrontPayment', 'solarRateMode', 'solarRate',
+    'loanType', 'principal', 'flatFee', 'dealerFee', 'incentivesApplyToDealerFee', 'interestIsTaxDeductible',
+    'interestRate', 'durationMonths', 'hasPrepayment', 'prepaymentMonth',
+    'monthlyPayment', 'buyoutMonth', 'buyoutPrice'];
+  allowed.forEach(k => { if (k in patch) current[k] = patch[k]; });
+  all[idx] = current;
+  saveFinancingProducts(all);
+  res.json({ ok: true, product: current });
+});
+
+app.delete("/api/financing-products/:id", (req, res) => {
+  const all = loadFinancingProducts();
+  const next = all.filter(p => p.id !== req.params.id);
+  saveFinancingProducts(next);
+  res.json({ ok: true });
+});
+
+app.patch("/api/financing-products/:id/toggle", (req, res) => {
+  const all = loadFinancingProducts();
+  const idx = all.findIndex(p => p.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  all[idx].enabled = !all[idx].enabled;
+  saveFinancingProducts(all);
+  res.json({ ok: true, enabled: all[idx].enabled });
+});
+
+// ── Agreement templates ─────────────────────────────────────────────────────
+function loadAgreementTemplates() {
+  try { return JSON.parse(require('fs').readFileSync(__dirname + '/data/agreementTemplates.json', 'utf8')); }
+  catch(e) { return { items: [] }; }
+}
+
+app.get("/database/agreement-templates", (req, res) => {
+  const data = loadAgreementTemplates();
+  const allItems = data.items || [];
+  const perPage = 10;
+  const page = parseInt(req.query.page) || 1;
+  const total = allItems.length;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const startIdx = (page - 1) * perPage;
+  const pageItems = allItems.slice(startIdx, startIdx + perPage);
+
+  const fmtDate = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+  };
+
+  let tableHTML;
+  if (pageItems.length === 0) {
+    tableHTML = '<div class="at-empty"><div class="at-empty-title">No agreement templates yet</div><div class="at-empty-sub">Click "+ New" to add your first one.</div></div>';
+  } else {
+    const rows = pageItems.map(it => `<tr class="at-row" data-id="${it.id || ''}" data-name="${(it.name || '').replace(/"/g, '&quot;')}">
+        <td class="at-name-cell">${it.name || ''}</td>
+        <td class="at-date-cell">${fmtDate(it.createdAt)}</td>
+      </tr>`).join('');
+    tableHTML = `<table class="at-table">
+      <thead><tr>
+        <th>Name</th>
+        <th>Created at</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  let paginationHTML = '';
+  if (total > 0) {
+    const showStart = startIdx + 1;
+    const showEnd = Math.min(startIdx + perPage, total);
+    let pLinks = '';
+    if (page > 1) pLinks += '<a class="at-page-btn" href="/database/agreement-templates?page=' + (page-1) + '">&larr; Prev</a>';
+    else pLinks += '<span class="at-page-btn disabled">&larr; Prev</span>';
+    for (let p = 1; p <= totalPages; p++) {
+      pLinks += '<a class="at-page-btn' + (p === page ? ' active' : '') + '" href="/database/agreement-templates?page=' + p + '">' + p + '</a>';
+    }
+    if (page < totalPages) pLinks += '<a class="at-page-btn" href="/database/agreement-templates?page=' + (page+1) + '">Next &rarr;</a>';
+    else pLinks += '<span class="at-page-btn disabled">Next &rarr;</span>';
+    paginationHTML = '<div class="at-pagination">' + pLinks + '<span class="at-page-info">Showing ' + showStart + '-' + showEnd + '</span></div>';
+  }
+
+  res.send(`${renderDatabaseShellHead('Agreement templates')}
+  <style>
+    .at-header { margin-bottom: 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .at-header-left { flex: 1; min-width: 0; }
+    .at-title-row { display: flex; align-items: center; gap: 8px; }
+    .at-header h1 { font-size: 1.5rem; font-weight: 700; }
+    .at-info-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #e5e7eb; color: #6b7280; font-size: 0.7rem; font-weight: 700; cursor: help; }
+    .at-subtitle { font-size: 0.82rem; color: #9ca3af; margin-top: 4px; }
+    .at-new-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; background: #111; color: #fff; border: none; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+    .at-new-btn:hover { background: #333; }
+    .at-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .at-table thead th { text-align: left; padding: 12px 14px; font-size: 0.78rem; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb; background: #fff; white-space: nowrap; }
+    .at-table tbody td { padding: 16px 14px; border-bottom: 1px solid #f3f4f6; color: #111; vertical-align: middle; }
+    .at-table tbody tr.at-row { cursor: pointer; }
+    .at-table tbody tr:hover { background: #fafafa; }
+    .at-name-cell { font-weight: 400; color: #374151; }
+    .at-date-cell { color: #6b7280; white-space: nowrap; width: 160px; }
+    /* ── Row drawer ── */
+    .at-drawer-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); z-index: 500; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .at-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+    .at-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 100vw; background: #fff; box-shadow: -8px 0 24px rgba(0,0,0,0.12); z-index: 501; transform: translateX(100%); transition: transform 0.25s ease; display: flex; flex-direction: column; }
+    .at-drawer.open { transform: translateX(0); }
+    .at-drawer-head { padding: 22px 24px 18px; border-bottom: 1px solid #f3f4f6; display: flex; align-items: flex-start; gap: 12px; }
+    .at-drawer-title { flex: 1; font-size: 0.92rem; font-weight: 600; color: #111; line-height: 1.5; }
+    .at-drawer-close { background: none; border: none; color: #9ca3af; cursor: pointer; padding: 2px 4px; font-size: 1.3rem; line-height: 1; flex-shrink: 0; }
+    .at-drawer-close:hover { color: #111; }
+    .at-drawer-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
+    .at-drawer-section-title { font-size: 0.92rem; font-weight: 700; color: #111; margin-bottom: 16px; }
+    .at-drawer-field-label { font-size: 0.82rem; font-weight: 600; color: #111; margin-bottom: 6px; }
+    .at-drawer-state { position: relative; margin-bottom: 24px; }
+    .at-drawer-state-input { width: 100%; padding: 9px 12px 9px 34px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: #fafafa; outline: none; cursor: pointer; }
+    .at-drawer-state svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; }
+    .at-drawer-attach-help { font-size: 0.75rem; color: #6b7280; margin-bottom: 12px; line-height: 1.4; }
+    .at-drawer-check-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; font-size: 0.88rem; color: #111; cursor: pointer; }
+    .at-drawer-check-row + .at-drawer-check-row { border-top: 1px solid #f3f4f6; }
+    .at-drawer-check-row input { accent-color: #2d9d8f; width: 16px; height: 16px; }
+    .at-drawer-foot { padding: 16px 24px 22px; border-top: 1px solid #f3f4f6; }
+    .at-drawer-open-editor { width: 100%; padding: 12px; background: #1a2332; color: #fff; border: none; border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer; }
+    .at-drawer-open-editor:hover { background: #111; }
+    .at-empty { text-align: center; padding: 60px 20px; color: #9ca3af; }
+    .at-empty-title { font-size: 1rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
+    .at-empty-sub { font-size: 0.85rem; }
+    .at-pagination { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 20px 0; margin-top: 8px; }
+    .at-page-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 8px; font-size: 0.82rem; color: #4b5563; text-decoration: none; border-radius: 6px; cursor: pointer; transition: background 0.1s; }
+    .at-page-btn:hover { background: #f3f4f6; }
+    .at-page-btn.active { background: #1a2332; color: #fff; font-weight: 700; }
+    .at-page-btn.disabled { color: #d1d5db; cursor: default; pointer-events: none; }
+    .at-page-info { font-size: 0.8rem; color: #9ca3af; margin-left: 12px; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    <div class="db-topbar">
+      Database
+      <div class="db-topbar-right">
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="db-topbar-avatar">AB</div>
+      </div>
+    </div>
+    <div class="db-body">
+      <aside class="db-sidebar">
+        ${renderDatabaseSidebar('agreement-templates')}
+      </aside>
+      <main class="db-main">
+        <div class="db-main-inner">
+          <div class="at-header">
+            <div class="at-header-left">
+              <div class="at-title-row">
+                <h1>Agreement templates</h1>
+                <span class="at-info-icon" title="Agreement template info">i</span>
+              </div>
+              <div class="at-subtitle">Powered by DocuSign</div>
+            </div>
+            <a class="at-new-btn" href="/database/agreement-templates/new" style="text-decoration:none;">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New
+              <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </a>
+          </div>
+          ${tableHTML}
+          ${paginationHTML}
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="at-drawer-overlay" id="atDrawerOverlay"></div>
+  <aside class="at-drawer" id="atDrawer" aria-hidden="true">
+    <div class="at-drawer-head">
+      <div class="at-drawer-title" id="atDrawerTitle"></div>
+      <button class="at-drawer-close" id="atDrawerClose" type="button">×</button>
+    </div>
+    <div class="at-drawer-body">
+      <div class="at-drawer-section-title">Template Settings</div>
+      <div class="at-drawer-field-label">Restrict visibility by state</div>
+      <div class="at-drawer-state">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="at-drawer-state-input" type="text" placeholder="Choose state" readonly/>
+      </div>
+      <div class="at-drawer-field-label">Attachments</div>
+      <div class="at-drawer-attach-help">Design specific documents that are generated and appended to an agreement.</div>
+      <label class="at-drawer-check-row"><span>PDF proposal</span><input type="checkbox"/></label>
+      <label class="at-drawer-check-row"><span>Equipment spec sheets</span><input type="checkbox"/></label>
+      <label class="at-drawer-check-row"><span>System design</span><input type="checkbox"/></label>
+    </div>
+    <div class="at-drawer-foot">
+      <button class="at-drawer-open-editor" type="button" id="atOpenEditor">Open template editor</button>
+    </div>
+  </aside>
+
+  <script>
+    (function() {
+      var overlay = document.getElementById('atDrawerOverlay');
+      var drawer = document.getElementById('atDrawer');
+      var title = document.getElementById('atDrawerTitle');
+      var closeBtn = document.getElementById('atDrawerClose');
+      var openEditor = document.getElementById('atOpenEditor');
+      var currentId = null;
+      function openDrawer(id, name) {
+        currentId = id;
+        title.textContent = name || '';
+        drawer.classList.add('open');
+        overlay.classList.add('open');
+        drawer.setAttribute('aria-hidden', 'false');
+      }
+      function closeDrawer() {
+        drawer.classList.remove('open');
+        overlay.classList.remove('open');
+        drawer.setAttribute('aria-hidden', 'true');
+        currentId = null;
+      }
+      document.querySelectorAll('.at-row').forEach(function(row) {
+        row.addEventListener('click', function() {
+          openDrawer(row.dataset.id, row.dataset.name);
+        });
+      });
+      closeBtn.addEventListener('click', closeDrawer);
+      overlay.addEventListener('click', closeDrawer);
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeDrawer();
+      });
+      openEditor.addEventListener('click', function() {
+        if (currentId) location.href = '/database/agreement-templates/' + encodeURIComponent(currentId) + '/editor';
+      });
+    })();
+  </script>
+</body>
+</html>`);
+});
+
+app.get("/database/agreement-templates/new", (req, res) => {
+  const states = ['Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia','Wisconsin','Wyoming'];
+  const stateOptionsHTML = states.map(s => '<div class="wstate-option" data-value="' + s + '">' + s + '</div>').join('');
+
+  res.send(`${renderDatabaseShellHead('New proposal agreement template')}
+  <style>
+    .wz-topbar { height: 56px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #e5e7eb; padding: 0 20px; flex-shrink: 0; font-size: 0.9rem; font-weight: 600; color: #111; position: relative; background: #fff; }
+    .wz-topbar-right { position: absolute; right: 20px; display: flex; align-items: center; gap: 14px; }
+    .wz-topbar-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
+    .wz-topbar-icon:hover { background: #f3f4f6; }
+    .wz-topbar-avatar { width: 30px; height: 30px; border-radius: 50%; background: #7c3aed; color: #fff; font-size: 0.7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+    .wz-page-header { display: flex; align-items: center; justify-content: space-between; padding: 24px 36px 18px; border-bottom: 1px solid #e5e7eb; flex-shrink: 0; background: #fff; }
+    .wz-page-title { font-size: 1.5rem; font-weight: 700; color: #111; }
+    .wz-page-actions { display: flex; align-items: center; gap: 14px; }
+    .wz-cancel { color: #6b7280; font-size: 0.88rem; text-decoration: none; cursor: pointer; padding: 4px 8px; }
+    .wz-cancel:hover { color: #111; }
+    .wz-prev-btn { width: 36px; height: 36px; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; color: #9ca3af; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .wz-prev-btn:hover:not(:disabled) { color: #111; border-color: #d1d5db; }
+    .wz-prev-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+    .wz-next-btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 20px; background: #111; color: #fff; border: none; border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer; }
+    .wz-next-btn:hover { background: #333; }
+
+    .wz-main { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 32px 36px 60px; background: #fafafa; }
+    .wz-inner { max-width: 720px; margin: 0 auto; }
+    .wstep { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+    .wstep-header { display: flex; align-items: center; gap: 14px; width: 100%; padding: 18px 24px; background: #fff; border: none; cursor: pointer; text-align: left; font-size: 0.95rem; font-weight: 600; color: #111; }
+    .wstep-header:hover { background: #fafafa; }
+    .wstep-num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid #d1d5db; color: #9ca3af; font-size: 0.78rem; font-weight: 700; flex-shrink: 0; }
+    .wstep.complete .wstep-num { background: #2d9d8f; border-color: #2d9d8f; color: #fff; }
+    .wstep.complete .wstep-num::before { content: '✓'; }
+    .wstep.complete .wstep-num span { display: none; }
+    .wstep-title { flex: 1; }
+    .wstep-body { display: none; padding: 0 24px 24px 60px; }
+    .wstep.open .wstep-body { display: block; }
+    .wstep-help { font-size: 0.82rem; color: #6b7280; line-height: 1.55; margin-bottom: 16px; }
+    .wstep-input { width: 100%; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.88rem; background: #f3f4f6; outline: none; color: #111; }
+    .wstep-input:focus { border-color: #7c3aed; background: #fff; }
+    .wfield-label { font-size: 0.82rem; font-weight: 600; color: #111; margin-bottom: 6px; }
+    .wfield-help { font-size: 0.75rem; color: #6b7280; margin-bottom: 10px; line-height: 1.4; }
+    .wsection-gap { margin-top: 20px; }
+
+    .wstate-wrap { position: relative; margin-bottom: 4px; }
+    .wstate-input { width: 100%; padding: 9px 12px 9px 34px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: #fafafa; outline: none; cursor: pointer; }
+    .wstate-input:focus { border-color: #7c3aed; background: #fff; }
+    .wstate-wrap > svg { position: absolute; left: 12px; top: 12px; color: #9ca3af; pointer-events: none; }
+    .wstate-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); max-height: 240px; overflow-y: auto; z-index: 50; }
+    .wstate-wrap.open .wstate-menu { display: block; }
+    .wstate-option { padding: 9px 14px; font-size: 0.85rem; color: #111; cursor: pointer; }
+    .wstate-option:hover { background: #f3f4f6; }
+    .wstate-option.selected { background: #ede9f6; color: #7c3aed; font-weight: 600; }
+
+    .wcheck { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 0.88rem; color: #111; cursor: pointer; }
+    .wcheck input { accent-color: #2d9d8f; width: 16px; height: 16px; }
+
+    .wupload { border: 1.5px dashed #d1d5db; border-radius: 12px; padding: 48px 24px; text-align: center; background: #fafafa; cursor: pointer; transition: all 0.15s; }
+    .wupload:hover, .wupload.drag { border-color: #7c3aed; background: #f5f3ff; }
+    .wupload-icon { display: inline-flex; align-items: center; justify-content: center; margin-bottom: 12px; color: #6b7280; }
+    .wupload-title { font-size: 1.05rem; font-weight: 600; color: #111; margin-bottom: 6px; }
+    .wupload-sub { font-size: 0.85rem; color: #6b7280; }
+    .wupload-sub a { color: #2d9d8f; text-decoration: underline; cursor: pointer; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    <div class="wz-topbar">
+      Database
+      <div class="wz-topbar-right">
+        <div class="wz-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="wz-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="wz-topbar-avatar">AB</div>
+      </div>
+    </div>
+    <div class="wz-page-header">
+      <div class="wz-page-title">New proposal agreement template</div>
+      <div class="wz-page-actions">
+        <a class="wz-cancel" href="/database/agreement-templates">Cancel</a>
+        <button class="wz-prev-btn" id="wzPrev" type="button" disabled>
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <button class="wz-next-btn" id="wzNext" type="button">
+          Next
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+    </div>
+    <main class="wz-main">
+      <form class="wz-inner" id="wzForm" method="post" action="/database/agreement-templates">
+        <div class="wstep open" id="wstep1" data-step="1">
+          <button class="wstep-header" type="button">
+            <span class="wstep-num"><span>1</span></span>
+            <span class="wstep-title">Name template</span>
+          </button>
+          <div class="wstep-body">
+            <p class="wstep-help">Please name your agreement template here. This name will be used to identify your agreement in the list of all agreements by the sales representative. It will also be seen by the prospect once you've sent your agreement out to be signed. Please be advised that you cannot change the name of this agreement once you have created a template.</p>
+            <input class="wstep-input" type="text" name="name" placeholder="e.g. Agreement Template 1"/>
+          </div>
+        </div>
+
+        <div class="wstep" id="wstep2" data-step="2">
+          <button class="wstep-header" type="button">
+            <span class="wstep-num"><span>2</span></span>
+            <span class="wstep-title">Template Settings</span>
+          </button>
+          <div class="wstep-body">
+            <div class="wfield-label">Restrict visibility by state</div>
+            <div class="wstate-wrap" id="wstateWrap">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input class="wstate-input" id="wstateInput" type="text" placeholder="Choose state" readonly/>
+              <input type="hidden" name="state" id="wstateHidden"/>
+              <div class="wstate-menu">
+                ${stateOptionsHTML}
+              </div>
+            </div>
+            <div class="wsection-gap"></div>
+            <div class="wfield-label">Attachments</div>
+            <div class="wfield-help">Design specific documents that are generated and appended to an agreement.</div>
+            <label class="wcheck"><input type="checkbox" name="attachments" value="pdf-proposal"/> PDF proposal</label>
+            <label class="wcheck"><input type="checkbox" name="attachments" value="equipment-specs"/> Equipment spec sheets</label>
+            <label class="wcheck"><input type="checkbox" name="attachments" value="system-design"/> System design</label>
+          </div>
+        </div>
+
+        <div class="wstep" id="wstep3" data-step="3">
+          <button class="wstep-header" type="button">
+            <span class="wstep-num"><span>3</span></span>
+            <span class="wstep-title">Upload agreements</span>
+          </button>
+          <div class="wstep-body">
+            <div class="wupload" id="wupload">
+              <div class="wupload-icon">
+                <svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+              <div class="wupload-title">Upload PDF documents</div>
+              <div class="wupload-sub">Drag and drop or <a id="wuploadBrowse">browse pdf files</a> on your computer</div>
+            </div>
+            <input type="file" id="wfile" accept=".pdf" hidden multiple/>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script>
+    (function() {
+      var totalSteps = 3;
+      var currentStep = 1;
+      var prevBtn = document.getElementById('wzPrev');
+      var nextBtn = document.getElementById('wzNext');
+      var steps = [];
+      for (var i = 1; i <= totalSteps; i++) steps.push(document.getElementById('wstep' + i));
+
+      function openStep(n) {
+        if (n < 1 || n > totalSteps) return;
+        currentStep = n;
+        steps.forEach(function(el, idx) {
+          el.classList.toggle('open', (idx + 1) === n);
+          el.classList.toggle('complete', (idx + 1) < n);
+        });
+        prevBtn.disabled = (n === 1);
+        nextBtn.innerHTML = (n === totalSteps)
+          ? 'Save <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>'
+          : 'Next <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+      }
+
+      steps.forEach(function(el) {
+        el.querySelector('.wstep-header').addEventListener('click', function() {
+          openStep(parseInt(el.dataset.step));
+        });
+      });
+      prevBtn.addEventListener('click', function() { openStep(currentStep - 1); });
+      nextBtn.addEventListener('click', function() {
+        if (currentStep < totalSteps) openStep(currentStep + 1);
+        else document.getElementById('wzForm').submit();
+      });
+
+      // State dropdown
+      var stateWrap = document.getElementById('wstateWrap');
+      var stateInput = document.getElementById('wstateInput');
+      var stateHidden = document.getElementById('wstateHidden');
+      stateInput.addEventListener('click', function(e) {
+        e.stopPropagation();
+        stateWrap.classList.toggle('open');
+      });
+      stateWrap.querySelectorAll('.wstate-option').forEach(function(opt) {
+        opt.addEventListener('click', function() {
+          stateWrap.querySelectorAll('.wstate-option').forEach(function(o) { o.classList.remove('selected'); });
+          opt.classList.add('selected');
+          stateInput.value = opt.dataset.value;
+          stateHidden.value = opt.dataset.value;
+          stateWrap.classList.remove('open');
+        });
+      });
+      document.addEventListener('click', function(e) {
+        if (!stateWrap.contains(e.target)) stateWrap.classList.remove('open');
+      });
+
+      // Upload zone
+      var wupload = document.getElementById('wupload');
+      var wfile = document.getElementById('wfile');
+      var wuploadBrowse = document.getElementById('wuploadBrowse');
+      function pickFile() { wfile.click(); }
+      wupload.addEventListener('click', pickFile);
+      wuploadBrowse.addEventListener('click', function(e) { e.stopPropagation(); pickFile(); });
+      wupload.addEventListener('dragover', function(e) { e.preventDefault(); wupload.classList.add('drag'); });
+      wupload.addEventListener('dragleave', function() { wupload.classList.remove('drag'); });
+      wupload.addEventListener('drop', function(e) {
+        e.preventDefault();
+        wupload.classList.remove('drag');
+        if (e.dataTransfer.files.length) {
+          wfile.files = e.dataTransfer.files;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>`);
+});
+
+app.post("/database/agreement-templates", express.urlencoded({ extended: false }), (req, res) => {
+  const data = loadAgreementTemplates();
+  const items = data.items || [];
+  const body = req.body || {};
+  const name = (body.name || '').trim();
+  if (!name) return res.redirect('/database/agreement-templates/new');
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+  const id = 'at-' + slug + '-' + Date.now().toString(36);
+  const attachments = Array.isArray(body.attachments) ? body.attachments : (body.attachments ? [body.attachments] : []);
+  items.unshift({
+    id: id,
+    name: name,
+    state: body.state || '',
+    attachments: attachments,
+    createdAt: new Date().toISOString()
+  });
+  data.items = items;
+  require('fs').writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  res.redirect('/database/agreement-templates');
+});
+
+app.post("/database/agreement-templates/:id/save", express.urlencoded({ extended: false }), (req, res) => {
+  const data = loadAgreementTemplates();
+  const items = data.items || [];
+  const idx = items.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).end();
+  const body = req.body || {};
+  items[idx] = Object.assign(items[idx], {
+    name: (body.name || items[idx].name).trim(),
+    description: body.description || '',
+    utility: body.utility || items[idx].utility || ''
+  });
+  data.items = items;
+  require('fs').writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  res.json({ success: true });
+});
+
+app.get("/database/agreement-templates/:id/editor", (req, res) => {
+  const data = loadAgreementTemplates();
+  const template = (data.items || []).find(t => t.id === req.params.id);
+  if (!template) return res.status(404).send('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>Template not found</h2><p><a href="/database/agreement-templates">← Back</a></p></body></html>');
+
+  const docName = 'Docusign_' + (template.utility || 'Template').replace(/\s+/g, '_') + '.pdf';
+  const utilityUpper = (template.utility || 'AGREEMENT').toUpperCase();
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${esc(template.name)} — Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111; }
+    body { display: flex; flex-direction: column; background: #f3f4f6; }
+
+    /* Top bar */
+    .ed-topbar { background: #6e3bf5; color: #fff; padding: 0 16px; height: 56px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .ed-topbar-title { font-size: 0.85rem; font-weight: 600; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ed-topbar-tabs { display: flex; gap: 4px; margin-left: 12px; }
+    .ed-tab { padding: 7px 14px; border-radius: 6px; cursor: pointer; background: none; border: none; color: rgba(255,255,255,0.75); font-size: 0.83rem; font-weight: 600; }
+    .ed-tab.active { background: rgba(255,255,255,0.22); color: #fff; }
+    .ed-topbar-spacer { flex: 1; }
+    .ed-topbar-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.3); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+    .ed-topbar-btn:hover { background: rgba(255,255,255,0.22); }
+    .ed-topbar-btn-light { background: #fff; color: #6e3bf5; border-color: #fff; }
+    .ed-topbar-btn-light:hover { background: #f3f4f6; }
+    .ed-actions-wrap { position: relative; }
+    .ed-actions-menu { display: none; position: absolute; top: calc(100% + 6px); right: 0; background: #fff; color: #111; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); min-width: 180px; padding: 4px 0; z-index: 200; }
+    .ed-actions-wrap.open .ed-actions-menu { display: block; }
+    .ed-actions-item { display: block; padding: 10px 16px; font-size: 0.85rem; color: #111; cursor: pointer; text-decoration: none; }
+    .ed-actions-item:hover { background: #f9fafb; }
+    .ed-actions-item.danger { color: #dc2626; }
+    .ed-close { width: 32px; height: 32px; border-radius: 6px; background: rgba(255,255,255,0.12); border: none; color: #fff; font-size: 1.2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .ed-close:hover { background: rgba(255,255,255,0.22); }
+
+    /* Body 3-col */
+    .ed-body { flex: 1; display: flex; min-height: 0; }
+    .ed-left { width: 240px; flex-shrink: 0; background: #fff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .ed-left-tab-content { flex: 1; overflow-y: auto; padding: 18px 16px; }
+    .ed-section-label { font-size: 0.7rem; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .ed-signer-select { width: 100%; padding: 8px 12px; background: #ecfeff; border: 1px solid #67e8f9; border-radius: 6px; color: #0e7490; font-weight: 600; font-size: 0.85rem; outline: none; }
+    .ed-section-gap { height: 18px; }
+    .ed-field-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: grab; font-size: 0.85rem; color: #374151; user-select: none; }
+    .ed-field-item:hover { background: #f0fdfa; color: #111; }
+    .ed-field-item:active { cursor: grabbing; }
+    .ed-field-item svg { color: #14b8a6; flex-shrink: 0; }
+
+    /* Center PDF */
+    .ed-center { flex: 1; min-width: 0; overflow-y: auto; padding: 32px; display: flex; flex-direction: column; align-items: center; gap: 24px; }
+    .ed-page { background: #fff; border: 1px solid #e5e7eb; box-shadow: 0 2px 12px rgba(0,0,0,0.08); width: 612px; height: 792px; position: relative; padding: 60px; font-family: Georgia, serif; color: #1f2937; font-size: 0.85rem; line-height: 1.6; flex-shrink: 0; }
+    .ed-page.drag-over { border-color: #6e3bf5; background: #faf5ff; }
+    .ed-page-header { text-align: center; font-weight: 700; font-size: 0.95rem; margin-bottom: 18px; line-height: 1.4; }
+    .ed-page-num { position: absolute; top: 8px; right: 12px; font-size: 0.7rem; color: #9ca3af; }
+    .ed-placed { position: absolute; background: rgba(245, 158, 11, 0.25); border: 1.5px solid #f59e0b; border-radius: 3px; padding: 4px 6px; font-size: 0.7rem; color: #78350f; font-weight: 600; cursor: grab; user-select: none; min-width: 80px; min-height: 24px; display: flex; align-items: center; gap: 4px; font-family: -apple-system, sans-serif; }
+    .ed-placed:hover { background: rgba(245, 158, 11, 0.4); }
+    .ed-placed.selected { border-color: #6e3bf5; background: rgba(110, 59, 245, 0.18); color: #4c1d95; box-shadow: 0 0 0 2px rgba(110, 59, 245, 0.3); z-index: 5; }
+    .ed-placed.dragging { opacity: 0.6; cursor: grabbing; }
+
+    /* Right panel */
+    .ed-right { width: 280px; flex-shrink: 0; background: #fff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .ed-right-content { flex: 1; overflow-y: auto; padding: 18px 16px; }
+    .ed-right-section-title { font-size: 0.82rem; font-weight: 700; color: #111; margin-bottom: 12px; }
+    .ed-right-field-label { font-size: 0.72rem; font-weight: 600; color: #6b7280; margin-bottom: 5px; }
+    .ed-right-input, .ed-right-select { width: 100%; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.83rem; color: #111; outline: none; background: #fff; font-family: inherit; }
+    .ed-right-input:focus, .ed-right-select:focus { border-color: #6e3bf5; }
+    .ed-right-textarea { width: 100%; min-height: 70px; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.83rem; color: #111; outline: none; resize: vertical; font-family: inherit; }
+    .ed-right-textarea:focus { border-color: #6e3bf5; }
+    .ed-right-row { margin-bottom: 14px; }
+    .ed-right-divider { height: 1px; background: #f3f4f6; margin: 18px 0; }
+    .ed-empty { padding: 16px 0; text-align: center; color: #9ca3af; font-size: 0.78rem; line-height: 1.5; }
+
+    /* Documents tab */
+    .ed-doc-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 8px; position: relative; }
+    .ed-doc-card:hover { background: #fafafa; }
+    .ed-doc-thumb { width: 36px; height: 48px; background: #f3f4f6; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #9ca3af; }
+    .ed-doc-info { flex: 1; min-width: 0; }
+    .ed-doc-name { font-size: 0.78rem; font-weight: 500; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ed-doc-pages { font-size: 0.7rem; color: #6b7280; margin-top: 2px; }
+    .ed-doc-menu-btn { background: none; border: none; color: #9ca3af; cursor: pointer; padding: 4px 6px; border-radius: 4px; font-size: 1rem; line-height: 1; }
+    .ed-doc-menu-btn:hover { background: #f3f4f6; color: #111; }
+    .ed-doc-menu { display: none; position: absolute; top: 100%; right: 8px; z-index: 100; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); min-width: 180px; padding: 4px 0; }
+    .ed-doc-card.menu-open .ed-doc-menu { display: block; }
+    .ed-doc-menu-item { display: block; padding: 9px 16px; font-size: 0.82rem; color: #111; cursor: pointer; text-decoration: none; }
+    .ed-doc-menu-item:hover { background: #f9fafb; }
+    .ed-doc-menu-item.danger { color: #dc2626; }
+
+    /* Drawers */
+    .ed-drawer-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); z-index: 500; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .ed-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+    .ed-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 460px; max-width: 100vw; background: #fff; box-shadow: -8px 0 24px rgba(0,0,0,0.12); z-index: 501; transform: translateX(100%); transition: transform 0.25s ease; display: flex; flex-direction: column; }
+    .ed-drawer.open { transform: translateX(0); }
+    .ed-drawer-head { padding: 20px 24px 18px; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; justify-content: space-between; }
+    .ed-drawer-title { font-size: 1rem; font-weight: 700; color: #111; }
+    .ed-drawer-close { background: none; border: none; color: #9ca3af; cursor: pointer; padding: 2px 4px; font-size: 1.4rem; line-height: 1; }
+    .ed-drawer-close:hover { color: #111; }
+    .ed-drawer-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
+    .ed-drawer-foot { padding: 16px 24px; border-top: 1px solid #f3f4f6; display: flex; justify-content: flex-end; gap: 10px; }
+    .ed-recipient-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; margin-bottom: 12px; border-left: 4px solid #06b6d4; }
+    .ed-recipient-row { margin-bottom: 12px; }
+    .ed-recipient-row:last-child { margin-bottom: 0; }
+    .ed-recipient-label { font-size: 0.74rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
+    .ed-recipient-input { width: 100%; padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.85rem; color: #111; outline: none; font-family: inherit; }
+    .ed-recipient-input:focus { border-color: #6e3bf5; }
+    .ed-add-recipient-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.83rem; font-weight: 500; color: #374151; cursor: pointer; }
+    .ed-add-recipient-btn:hover { background: #f9fafb; border-color: #d1d5db; }
+    .ed-btn-cancel, .ed-btn-save { padding: 8px 18px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: 1px solid #e5e7eb; background: #fff; color: #374151; }
+    .ed-btn-cancel:hover { background: #f9fafb; }
+    .ed-btn-save { background: #6e3bf5; color: #fff; border-color: #6e3bf5; }
+    .ed-btn-save:hover { background: #5a2dd6; }
+
+    /* Modals */
+    .ed-modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); z-index: 600; display: none; align-items: center; justify-content: center; }
+    .ed-modal-overlay.open { display: flex; }
+    .ed-modal { background: #fff; border-radius: 12px; box-shadow: 0 24px 60px rgba(0,0,0,0.25); display: flex; flex-direction: column; overflow: hidden; }
+    .ed-modal-head { padding: 18px 28px; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .ed-modal-title { font-size: 1.05rem; font-weight: 700; color: #111; }
+    .ed-modal-close { background: none; border: none; color: #9ca3af; cursor: pointer; padding: 4px 6px; font-size: 1.3rem; line-height: 1; }
+    .ed-modal-close:hover { color: #111; }
+    .ed-modal-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+    .ed-modal-foot { padding: 14px 28px; border-top: 1px solid #f3f4f6; display: flex; justify-content: flex-end; flex-shrink: 0; }
+
+    .ed-adv-nav { width: 200px; flex-shrink: 0; padding: 22px 14px; border-right: 1px solid #f3f4f6; overflow-y: auto; }
+    .ed-adv-nav-item { display: block; padding: 8px 12px; font-size: 0.83rem; color: #6b7280; text-decoration: none; cursor: pointer; border-radius: 6px; }
+    .ed-adv-nav-item:hover { background: #f9fafb; color: #111; }
+    .ed-adv-nav-item.active { background: #ede9f6; color: #6e3bf5; font-weight: 600; }
+    .ed-adv-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
+    .ed-adv-section { margin-bottom: 36px; }
+    .ed-adv-section-title { font-size: 1rem; font-weight: 700; color: #111; margin-bottom: 6px; }
+    .ed-adv-section-desc { font-size: 0.83rem; color: #6b7280; margin-bottom: 14px; line-height: 1.5; }
+    .ed-adv-check { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #111; cursor: pointer; padding: 6px 0; }
+    .ed-adv-check input { accent-color: #6e3bf5; width: 16px; height: 16px; }
+    .ed-adv-toggle { width: 36px; height: 20px; background: #d1d5db; border-radius: 10px; position: relative; cursor: pointer; border: none; flex-shrink: 0; }
+    .ed-adv-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s; }
+    .ed-adv-toggle.on { background: #6e3bf5; }
+    .ed-adv-toggle.on::after { left: 18px; }
+    .ed-adv-toggle-row { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; color: #111; }
+    .ed-adv-input-row { display: flex; gap: 16px; margin-top: 14px; }
+    .ed-adv-input-col { flex: 1; }
+    .ed-adv-input { width: 100%; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.85rem; outline: none; background: #fff; font-family: inherit; }
+    .ed-adv-radio { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 0.85rem; cursor: pointer; }
+    .ed-adv-radio input { accent-color: #6e3bf5; }
+
+    .ed-docprev-body { padding: 28px; overflow-y: auto; flex: 1; background: #f9fafb; }
+    .ed-docprev-page { background: #fff; border: 1px solid #e5e7eb; padding: 50px 60px; max-width: 612px; margin: 0 auto 16px; font-family: Georgia, serif; line-height: 1.6; font-size: 0.85rem; color: #1f2937; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .ed-docprev-page-header { text-align: center; font-weight: 700; margin-bottom: 18px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div class="ed-topbar">
+    <div class="ed-topbar-title">${esc(template.name)}</div>
+    <div class="ed-topbar-tabs">
+      <button class="ed-tab active" data-leftab="fields">Fields</button>
+      <button class="ed-tab" data-leftab="documents">Documents</button>
+    </div>
+    <div class="ed-topbar-spacer"></div>
+    <button class="ed-topbar-btn" id="edRecipBtn">Recipients</button>
+    <button class="ed-topbar-btn" id="edMsgBtn">Message</button>
+    <div class="ed-actions-wrap" id="edActionsWrap">
+      <button class="ed-topbar-btn" id="edActionsBtn">Actions ▾</button>
+      <div class="ed-actions-menu">
+        <a class="ed-actions-item" id="edSaveCloseBtn">Save and Close</a>
+        <a class="ed-actions-item" href="/database/agreement-templates">Discard Changes</a>
+        <a class="ed-actions-item danger" href="/database/agreement-templates">Delete</a>
+      </div>
+    </div>
+    <button class="ed-topbar-btn" id="edAdvBtn">Advanced Options</button>
+    <button class="ed-topbar-btn ed-topbar-btn-light" id="edSaveBtn">Save template</button>
+    <button class="ed-close" onclick="location.href='/database/agreement-templates'">×</button>
+  </div>
+
+  <div class="ed-body">
+    <aside class="ed-left">
+      <div class="ed-left-tab-content" id="edTabFields">
+        <div class="ed-section-label">Signer</div>
+        <select class="ed-signer-select"><option>Customer</option></select>
+        <div class="ed-section-gap"></div>
+        <div class="ed-section-label">Signature fields</div>
+        <div class="ed-field-item" draggable="true" data-field-type="signature">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z"/><path d="M14.06 6.19l3.75 3.75"/></svg>
+          Signature
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="initials">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 4 L5 20 M5 4 L9 4 M5 12 L8 12 M5 20 L9 20"/><path d="M14 4 L14 20 M14 12 L19 12 M14 4 L19 4 M14 20 L19 20"/></svg>
+          Initials
+        </div>
+        <div class="ed-section-gap"></div>
+        <div class="ed-section-label">Auto-fill fields</div>
+        <div class="ed-field-item" draggable="true" data-field-type="dateSigned">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Date signed
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="fullName">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Full name
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="email">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22 6 12 13 2 6"/></svg>
+          Email address
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="title">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 7h-3V5a2 2 0 00-2-2H9a2 2 0 00-2 2v2H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
+          Title
+        </div>
+        <div class="ed-section-gap"></div>
+        <div class="ed-section-label">Standard fields</div>
+        <div class="ed-field-item" draggable="true" data-field-type="textbox">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+          Textbox
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="checkbox">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          Checkbox
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="dropdown">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><polyline points="9 11 12 14 15 11"/></svg>
+          Dropdown
+        </div>
+        <div class="ed-field-item" draggable="true" data-field-type="radio">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>
+          Radio group
+        </div>
+      </div>
+
+      <div class="ed-left-tab-content" id="edTabDocuments" style="display:none">
+        <div class="ed-section-label" style="margin-bottom:12px">Documents (1)</div>
+        <div class="ed-doc-card" id="edDocCard1">
+          <div class="ed-doc-thumb"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+          <div class="ed-doc-info">
+            <div class="ed-doc-name">${esc(docName)}</div>
+            <div class="ed-doc-pages">3 pages</div>
+          </div>
+          <button class="ed-doc-menu-btn">⋮</button>
+          <div class="ed-doc-menu">
+            <a class="ed-doc-menu-item">Set as Supplement</a>
+            <a class="ed-doc-menu-item">Replace</a>
+            <a class="ed-doc-menu-item">Download Document</a>
+            <a class="ed-doc-menu-item">Rename Document</a>
+            <a class="ed-doc-menu-item danger">Delete Document</a>
+            <a class="ed-doc-menu-item" id="edViewDocBtn">View Document</a>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="ed-center" id="edCenter">
+      <div class="ed-page" data-page="1">
+        <span class="ed-page-num">Page 1</span>
+        <div class="ed-page-header">${esc(utilityUpper)}<br/>STANDARD INTERCONNECTION AGREEMENT<br/>FOR CUSTOMER-OWNED RENEWABLE GENERATION SYSTEMS<br/>10 KW AC OR LESS — TIER 1</div>
+        <p style="margin-bottom:14px">This Interconnection Agreement ("Interconnection Agreement") is made this ___ day of ____, 20___, by and between Customer and Utility, hereinafter referred to as the "Parties."</p>
+        <p style="margin-bottom:14px"><strong>RECITALS</strong></p>
+        <p style="margin-bottom:14px"><em>Whereas</em>, a Renewable Generation System ("RGS") is an electric generating system that uses one or more of the following fuels or energy sources: hydrogen, biomass, solar energy, geothermal energy, wind energy, ocean energy, waste heat, or hydroelectric power.</p>
+        <p style="margin-bottom:14px"><em>Whereas</em>, the Customer has requested to interconnect its Renewable Generation System with the Utility's electrical service grid at the Customer's presently metered location.</p>
+        <p style="margin-bottom:14px"><em>Now, Therefore</em>, in consideration of the mutual covenants and agreements herein set forth, the Parties do hereby agree as follows:</p>
+      </div>
+      <div class="ed-page" data-page="2">
+        <span class="ed-page-num">Page 2</span>
+        <p style="margin-bottom:14px">2) Customer-owned RGS shall be considered certified for interconnected operation if it has been submitted by a manufacturer to a nationally recognized testing and certification laboratory, and has been tested and listed by the laboratory for continuous interactive operation with an electric distribution system in compliance with applicable codes and standards of IEEE 1547, IEEE 1547.1 and UL 1741.</p>
+        <p style="margin-bottom:14px">3) Customer-owned RGS shall include a utility-interactive inverter, or other device certified pursuant to item 2 listed above, that performs the function of automatically isolating the Customer-owned RGS equipment from the electric grid in the event the electric grid loses power.</p>
+        <p style="margin-bottom:14px">4) The Customer is responsible for the inspection, maintenance, and testing in accordance with the manufacturer's instructions and applicable codes, standards, and regulations to ensure that the RGS and associated equipment are operated correctly and safely, and are in compliance.</p>
+      </div>
+      <div class="ed-page" data-page="3">
+        <span class="ed-page-num">Page 3</span>
+        <p style="margin-bottom:14px"><strong>IN WITNESS WHEREOF</strong>, the parties hereto have caused this Interconnection Agreement to be duly executed by their respective authorized representatives.</p>
+        <p style="margin-top:60px"><strong>Customer Signature:</strong></p>
+        <p style="margin-top:60px"><strong>Printed Name:</strong></p>
+        <p style="margin-top:60px"><strong>Date:</strong></p>
+      </div>
+    </main>
+
+    <aside class="ed-right">
+      <div class="ed-right-content">
+        <div id="edRightDefault">
+          <div class="ed-right-section-title">Template details</div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Template name</div>
+            <input class="ed-right-input" id="edTplName" type="text" value="${esc(template.name)}"/>
+          </div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Description</div>
+            <textarea class="ed-right-textarea" id="edTplDesc" placeholder="Description (optional)">${esc(template.description || '')}</textarea>
+          </div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Linked utility provider</div>
+            <input class="ed-right-input" id="edTplUtility" type="text" value="${esc(template.utility || '')}" placeholder="e.g. Eversource Energy"/>
+          </div>
+          <div class="ed-right-divider"></div>
+          <div class="ed-empty">Drag a field from the left onto the document, then click it to edit its properties here.</div>
+        </div>
+
+        <div id="edRightField" style="display:none">
+          <div class="ed-right-section-title" id="edFieldTitle">Field properties</div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Assigned to</div>
+            <select class="ed-right-select"><option>Customer</option></select>
+          </div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Type</div>
+            <input class="ed-right-input" id="edFieldTypeInput" type="text" readonly/>
+          </div>
+          <div class="ed-right-row">
+            <div class="ed-right-field-label">Label</div>
+            <input class="ed-right-input" id="edFieldLabel" type="text" placeholder="Field label"/>
+          </div>
+          <div class="ed-right-row">
+            <label style="display:flex;align-items:center;gap:8px;font-size:0.83rem;color:#111;cursor:pointer;">
+              <input type="checkbox" id="edFieldRequired" checked/> Field is required
+            </label>
+          </div>
+          <div class="ed-right-divider"></div>
+          <button class="ed-btn-cancel" id="edFieldDelete" style="width:100%;color:#dc2626;border-color:#fecaca;">Delete field</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="ed-drawer-overlay" id="edRecipOverlay"></div>
+  <aside class="ed-drawer" id="edRecipDrawer">
+    <div class="ed-drawer-head">
+      <div class="ed-drawer-title">Recipients</div>
+      <button class="ed-drawer-close" id="edRecipClose">×</button>
+    </div>
+    <div class="ed-drawer-body">
+      <div id="edRecipList">
+        <div class="ed-recipient-card">
+          <div class="ed-recipient-row">
+            <div class="ed-recipient-label">Role</div>
+            <input class="ed-recipient-input" type="text" value="Customer"/>
+          </div>
+          <div class="ed-recipient-row">
+            <div class="ed-recipient-label">Name</div>
+            <input class="ed-recipient-input" type="text" placeholder="Recipient name"/>
+          </div>
+          <div class="ed-recipient-row">
+            <div class="ed-recipient-label">Email</div>
+            <input class="ed-recipient-input" type="email" placeholder="email@example.com"/>
+          </div>
+        </div>
+      </div>
+      <button class="ed-add-recipient-btn" id="edAddRecipBtn">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+        Add Recipient
+      </button>
+    </div>
+    <div class="ed-drawer-foot">
+      <button class="ed-btn-cancel" id="edRecipCancel">Cancel</button>
+      <button class="ed-btn-save" id="edRecipSave">Save</button>
+    </div>
+  </aside>
+
+  <div class="ed-drawer-overlay" id="edMsgOverlay"></div>
+  <aside class="ed-drawer" id="edMsgDrawer">
+    <div class="ed-drawer-head">
+      <div class="ed-drawer-title">Message</div>
+      <button class="ed-drawer-close" id="edMsgClose">×</button>
+    </div>
+    <div class="ed-drawer-body">
+      <div class="ed-recipient-row">
+        <div class="ed-recipient-label">Subject</div>
+        <input class="ed-recipient-input" id="edMsgSubject" type="text" placeholder="Complete with Docusign:"/>
+      </div>
+      <div class="ed-recipient-row">
+        <div class="ed-recipient-label">Message</div>
+        <textarea class="ed-recipient-input" id="edMsgBody" rows="6" placeholder="Enter Message"></textarea>
+      </div>
+      <div class="ed-recipient-row">
+        <div class="ed-recipient-label">Frequency of reminders</div>
+        <select class="ed-recipient-input" id="edMsgFreq">
+          <option>Every 2 days</option>
+          <option>Every 3 days</option>
+          <option>Every week</option>
+        </select>
+      </div>
+    </div>
+    <div class="ed-drawer-foot">
+      <button class="ed-btn-cancel" id="edMsgCancel">Cancel</button>
+      <button class="ed-btn-save" id="edMsgSaveBtn">Save</button>
+    </div>
+  </aside>
+
+  <div class="ed-modal-overlay" id="edAdvOverlay">
+    <div class="ed-modal" style="max-width:980px;width:92vw;height:88vh;">
+      <div class="ed-modal-head">
+        <div class="ed-modal-title">Advanced Options</div>
+        <button class="ed-modal-close" id="edAdvClose">×</button>
+      </div>
+      <div class="ed-modal-body">
+        <nav class="ed-adv-nav">
+          <a class="ed-adv-nav-item active" data-section="recipPriv">Recipient Privileges</a>
+          <a class="ed-adv-nav-item" data-section="reminders">Reminders</a>
+          <a class="ed-adv-nav-item" data-section="expiration">Expiration</a>
+          <a class="ed-adv-nav-item" data-section="mobile">Mobile-Friendly</a>
+          <a class="ed-adv-nav-item" data-section="tplPwd">Template Password</a>
+          <a class="ed-adv-nav-item" data-section="tplMod">Template Modification</a>
+          <a class="ed-adv-nav-item" data-section="tplUsage">Template Usage</a>
+        </nav>
+        <div class="ed-adv-content" id="edAdvContent">
+          <div class="ed-adv-section" data-section="recipPriv">
+            <div class="ed-adv-section-title">Recipient Privileges</div>
+            <div class="ed-adv-section-desc">Give recipients options for how they sign.</div>
+            <label class="ed-adv-check"><input type="checkbox" disabled/> Recipients can sign on paper</label>
+            <label class="ed-adv-check"><input type="checkbox" disabled/> Recipients can change signing responsibility or assign a designee</label>
+          </div>
+          <div class="ed-adv-section" data-section="reminders">
+            <div class="ed-adv-section-title">Reminders</div>
+            <div class="ed-adv-section-desc">Follow up with automatic reminders. Signers will receive emails until they sign or decline the envelope.</div>
+            <div class="ed-adv-toggle-row"><button class="ed-adv-toggle" type="button"></button> Turn on auto reminders</div>
+          </div>
+          <div class="ed-adv-section" data-section="expiration">
+            <div class="ed-adv-section-title">Expiration</div>
+            <div class="ed-adv-section-desc">By default, envelopes expire after 120 days. Recipients can no longer view or sign an envelope after it expires.</div>
+            <div class="ed-adv-input-row">
+              <div class="ed-adv-input-col">
+                <div class="ed-right-field-label">Days until envelope expires</div>
+                <select class="ed-adv-input"><option>Custom days</option></select>
+              </div>
+              <div class="ed-adv-input-col">
+                <div class="ed-right-field-label">Custom number of days *</div>
+                <input class="ed-adv-input" type="number" placeholder="120"/>
+              </div>
+            </div>
+            <div class="ed-adv-input-row">
+              <div class="ed-adv-input-col">
+                <div class="ed-right-field-label">Send alert</div>
+                <select class="ed-adv-input"><option>Custom days</option></select>
+              </div>
+              <div class="ed-adv-input-col">
+                <div class="ed-right-field-label">Custom number of days *</div>
+                <input class="ed-adv-input" type="number" placeholder="14"/>
+              </div>
+            </div>
+          </div>
+          <div class="ed-adv-section" data-section="mobile">
+            <div class="ed-adv-section-title">Mobile-Friendly Viewing with Responsive Signing</div>
+            <div class="ed-adv-section-desc">View your document in preview mode to see how it looks on a mobile device.</div>
+            <label class="ed-adv-check"><input type="checkbox" checked/> Enable Responsive Signing for this envelope</label>
+          </div>
+          <div class="ed-adv-section" data-section="tplPwd">
+            <div class="ed-adv-section-title">Template Password</div>
+            <div class="ed-adv-section-desc">Use a password to protect this template from being edited.</div>
+            <div class="ed-adv-toggle-row"><button class="ed-adv-toggle" type="button"></button> Turn on password protection</div>
+          </div>
+          <div class="ed-adv-section" data-section="tplMod">
+            <div class="ed-adv-section-title">Template Modification</div>
+            <div class="ed-adv-section-desc">Limit the changes someone can make when they use this template.</div>
+            <label class="ed-adv-check"><input type="checkbox" checked/> Allow senders to edit, add, or remove recipients</label>
+            <label class="ed-adv-check"><input type="checkbox" checked/> Allow senders to edit the subject, email, or private messages</label>
+          </div>
+          <div class="ed-adv-section" data-section="tplUsage">
+            <div class="ed-adv-section-title">Template Usage</div>
+            <div class="ed-adv-section-desc">Control how the template is used to create an envelope.</div>
+            <label class="ed-adv-radio"><input type="radio" name="tplUsage" checked/> Quick send with advanced edit option (default)</label>
+            <label class="ed-adv-radio"><input type="radio" name="tplUsage"/> Quick send only</label>
+            <label class="ed-adv-radio"><input type="radio" name="tplUsage"/> Advanced edit only</label>
+          </div>
+        </div>
+      </div>
+      <div class="ed-modal-foot">
+        <button class="ed-btn-save" id="edAdvSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ed-modal-overlay" id="edDocPrevOverlay">
+    <div class="ed-modal" style="max-width:760px;width:90vw;height:85vh;">
+      <div class="ed-modal-head">
+        <div class="ed-modal-title">Document Preview</div>
+        <button class="ed-modal-close" id="edDocPrevClose">×</button>
+      </div>
+      <div class="ed-docprev-body">
+        <div class="ed-docprev-page">
+          <div class="ed-docprev-page-header">${esc(utilityUpper)}<br/>STANDARD INTERCONNECTION AGREEMENT<br/>FOR CUSTOMER-OWNED RENEWABLE GENERATION SYSTEMS<br/>10 KW AC OR LESS — TIER 1</div>
+          <p>This Interconnection Agreement is entered into on this ___ day of ____, 20___, by and between Customer and Utility, hereinafter referred to as the "Parties."</p>
+          <p style="margin-top:14px"><strong>RECITALS</strong></p>
+          <p style="margin-top:8px"><em>Whereas</em>, a Renewable Generation System ("RGS") is an electric generating system that uses one or more of the following fuels or energy sources...</p>
+        </div>
+        <div class="ed-docprev-page">
+          <p>2) Customer-owned RGS shall be considered certified for interconnected operation if it has been submitted by a manufacturer to a nationally recognized testing and certification laboratory.</p>
+          <p style="margin-top:14px">3) Customer-owned RGS shall include a utility-interactive inverter, or other device certified pursuant to item 2 listed above.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var TEMPLATE_ID = '${template.id}';
+      var fieldTypeLabels = {
+        signature: 'Signature', initials: 'Initials',
+        dateSigned: 'Date signed', fullName: 'Full name', email: 'Email address', title: 'Title',
+        textbox: 'Textbox', checkbox: 'Checkbox', dropdown: 'Dropdown', radio: 'Radio group'
+      };
+
+      // Tab switching
+      var tabBtns = document.querySelectorAll('.ed-tab');
+      tabBtns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          tabBtns.forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          var tab = btn.dataset.leftab;
+          document.getElementById('edTabFields').style.display = (tab === 'fields') ? '' : 'none';
+          document.getElementById('edTabDocuments').style.display = (tab === 'documents') ? '' : 'none';
+        });
+      });
+
+      // Drag-drop
+      var draggingType = null;
+      var nextFieldId = 1;
+      var selectedField = null;
+
+      document.querySelectorAll('.ed-field-item').forEach(function(item) {
+        item.addEventListener('dragstart', function(e) {
+          draggingType = item.dataset.fieldType;
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setData('text/plain', draggingType);
+        });
+      });
+
+      document.querySelectorAll('.ed-page').forEach(function(page) {
+        page.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          page.classList.add('drag-over');
+        });
+        page.addEventListener('dragleave', function(e) {
+          if (!page.contains(e.relatedTarget)) page.classList.remove('drag-over');
+        });
+        page.addEventListener('drop', function(e) {
+          e.preventDefault();
+          page.classList.remove('drag-over');
+          var type = e.dataTransfer.getData('text/plain') || draggingType;
+          if (!type) return;
+          var rect = page.getBoundingClientRect();
+          var x = e.clientX - rect.left;
+          var y = e.clientY - rect.top;
+          createPlacedField(page, type, x - 50, y - 12);
+          draggingType = null;
+        });
+      });
+
+      function createPlacedField(page, type, x, y) {
+        var div = document.createElement('div');
+        div.className = 'ed-placed';
+        div.dataset.fieldId = String(nextFieldId++);
+        div.dataset.fieldType = type;
+        div.style.left = Math.max(0, Math.min(page.offsetWidth - 100, x)) + 'px';
+        div.style.top = Math.max(0, Math.min(page.offsetHeight - 24, y)) + 'px';
+        var w = (type === 'signature' || type === 'fullName' || type === 'email') ? 160 : 100;
+        div.style.width = w + 'px';
+        div.style.height = '24px';
+        div.textContent = fieldTypeLabels[type] || type;
+        page.appendChild(div);
+        attachFieldHandlers(div);
+        selectField(div);
+      }
+
+      function attachFieldHandlers(div) {
+        var dragState = null;
+        div.addEventListener('mousedown', function(e) {
+          if (e.button !== 0) return;
+          var rect = div.getBoundingClientRect();
+          dragState = { offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top, moved: false };
+          div.classList.add('dragging');
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        function onMove(e) {
+          if (!dragState) return;
+          dragState.moved = true;
+          var page = div.parentElement;
+          var pageRect = page.getBoundingClientRect();
+          var newX = e.clientX - pageRect.left - dragState.offsetX;
+          var newY = e.clientY - pageRect.top - dragState.offsetY;
+          newX = Math.max(0, Math.min(pageRect.width - div.offsetWidth, newX));
+          newY = Math.max(0, Math.min(pageRect.height - div.offsetHeight, newY));
+          div.style.left = newX + 'px';
+          div.style.top = newY + 'px';
+        }
+        function onUp(e) {
+          if (!dragState) return;
+          var wasMoved = dragState.moved;
+          dragState = null;
+          div.classList.remove('dragging');
+          if (!wasMoved) selectField(div);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      }
+
+      function selectField(div) {
+        if (selectedField && selectedField !== div) selectedField.classList.remove('selected');
+        selectedField = div;
+        div.classList.add('selected');
+        var type = div.dataset.fieldType;
+        document.getElementById('edRightDefault').style.display = 'none';
+        document.getElementById('edRightField').style.display = '';
+        document.getElementById('edFieldTitle').textContent = (fieldTypeLabels[type] || type) + ' field';
+        document.getElementById('edFieldTypeInput').value = fieldTypeLabels[type] || type;
+        document.getElementById('edFieldLabel').value = fieldTypeLabels[type] || type;
+      }
+
+      function deselectField() {
+        if (selectedField) selectedField.classList.remove('selected');
+        selectedField = null;
+        document.getElementById('edRightDefault').style.display = '';
+        document.getElementById('edRightField').style.display = 'none';
+      }
+
+      document.getElementById('edCenter').addEventListener('click', function(e) {
+        if (!e.target.closest('.ed-placed')) deselectField();
+      });
+
+      document.getElementById('edFieldDelete').addEventListener('click', function() {
+        if (selectedField) {
+          selectedField.remove();
+          deselectField();
+        }
+      });
+
+      // Actions dropdown
+      var actionsWrap = document.getElementById('edActionsWrap');
+      document.getElementById('edActionsBtn').addEventListener('click', function(e) {
+        e.stopPropagation();
+        actionsWrap.classList.toggle('open');
+      });
+      document.addEventListener('click', function(e) {
+        if (!actionsWrap.contains(e.target)) actionsWrap.classList.remove('open');
+      });
+
+      // Drawers
+      function openDrawer(name) {
+        document.getElementById('ed' + name + 'Drawer').classList.add('open');
+        document.getElementById('ed' + name + 'Overlay').classList.add('open');
+      }
+      function closeDrawer(name) {
+        document.getElementById('ed' + name + 'Drawer').classList.remove('open');
+        document.getElementById('ed' + name + 'Overlay').classList.remove('open');
+      }
+      document.getElementById('edRecipBtn').addEventListener('click', function() { openDrawer('Recip'); });
+      document.getElementById('edRecipClose').addEventListener('click', function() { closeDrawer('Recip'); });
+      document.getElementById('edRecipCancel').addEventListener('click', function() { closeDrawer('Recip'); });
+      document.getElementById('edRecipSave').addEventListener('click', function() { closeDrawer('Recip'); });
+      document.getElementById('edRecipOverlay').addEventListener('click', function() { closeDrawer('Recip'); });
+      document.getElementById('edAddRecipBtn').addEventListener('click', function() {
+        var card = document.querySelector('.ed-recipient-card').cloneNode(true);
+        card.querySelectorAll('input').forEach(function(i) {
+          if (i.placeholder) i.value = '';
+        });
+        document.getElementById('edRecipList').appendChild(card);
+      });
+      document.getElementById('edMsgBtn').addEventListener('click', function() { openDrawer('Msg'); });
+      document.getElementById('edMsgClose').addEventListener('click', function() { closeDrawer('Msg'); });
+      document.getElementById('edMsgCancel').addEventListener('click', function() { closeDrawer('Msg'); });
+      document.getElementById('edMsgSaveBtn').addEventListener('click', function() { closeDrawer('Msg'); });
+      document.getElementById('edMsgOverlay').addEventListener('click', function() { closeDrawer('Msg'); });
+
+      // Advanced Options modal
+      var advOverlay = document.getElementById('edAdvOverlay');
+      document.getElementById('edAdvBtn').addEventListener('click', function() { advOverlay.classList.add('open'); });
+      document.getElementById('edAdvClose').addEventListener('click', function() { advOverlay.classList.remove('open'); });
+      document.getElementById('edAdvSave').addEventListener('click', function() { advOverlay.classList.remove('open'); });
+
+      // Adv nav clicks + scroll spy
+      var advContent = document.getElementById('edAdvContent');
+      document.querySelectorAll('.ed-adv-nav-item').forEach(function(item) {
+        item.addEventListener('click', function() {
+          var sect = item.dataset.section;
+          var target = advContent.querySelector('.ed-adv-section[data-section="' + sect + '"]');
+          if (target) {
+            advContent.scrollTo({ top: target.offsetTop - 16, behavior: 'smooth' });
+          }
+        });
+      });
+      advContent.addEventListener('scroll', function() {
+        var sections = advContent.querySelectorAll('.ed-adv-section');
+        var topThreshold = advContent.scrollTop + 80;
+        var activeId = null;
+        sections.forEach(function(s) {
+          if (s.offsetTop <= topThreshold) activeId = s.dataset.section;
+        });
+        if (activeId) {
+          document.querySelectorAll('.ed-adv-nav-item').forEach(function(n) {
+            n.classList.toggle('active', n.dataset.section === activeId);
+          });
+        }
+      });
+
+      // Adv toggles
+      document.querySelectorAll('.ed-adv-toggle').forEach(function(t) {
+        t.addEventListener('click', function() { t.classList.toggle('on'); });
+      });
+
+      // Document preview modal
+      var docPrevOverlay = document.getElementById('edDocPrevOverlay');
+      document.getElementById('edViewDocBtn').addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        docPrevOverlay.classList.add('open');
+        document.getElementById('edDocCard1').classList.remove('menu-open');
+      });
+      document.getElementById('edDocPrevClose').addEventListener('click', function() { docPrevOverlay.classList.remove('open'); });
+
+      // Doc card menu
+      var docCard = document.getElementById('edDocCard1');
+      docCard.querySelector('.ed-doc-menu-btn').addEventListener('click', function(e) {
+        e.stopPropagation();
+        docCard.classList.toggle('menu-open');
+      });
+      document.addEventListener('click', function(e) {
+        if (!docCard.contains(e.target)) docCard.classList.remove('menu-open');
+      });
+
+      // Save template
+      function saveTemplate(redirect) {
+        var formData = new URLSearchParams();
+        formData.set('name', document.getElementById('edTplName').value);
+        formData.set('description', document.getElementById('edTplDesc').value);
+        formData.set('utility', document.getElementById('edTplUtility').value);
+        return fetch('/database/agreement-templates/' + TEMPLATE_ID + '/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData.toString()
+        }).then(function() {
+          if (redirect) location.href = '/database/agreement-templates';
+        });
+      }
+      document.getElementById('edSaveBtn').addEventListener('click', function() { saveTemplate(true); });
+      document.getElementById('edSaveCloseBtn').addEventListener('click', function(e) { e.preventDefault(); saveTemplate(true); });
+
+      // Escape closes drawers/modals
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          closeDrawer('Recip'); closeDrawer('Msg');
+          advOverlay.classList.remove('open');
+          docPrevOverlay.classList.remove('open');
+          actionsWrap.classList.remove('open');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>`);
 });

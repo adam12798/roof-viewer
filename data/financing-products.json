@@ -1,0 +1,167 @@
+[
+  {
+    "id": "fp_ppa_29_023",
+    "name": "PPA ME 2.9%, 0.23",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 2.9,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.23
+  },
+  {
+    "id": "fp_ppa_0_023",
+    "name": "PPA ME 0%, 0.23",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 0,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.23
+  },
+  {
+    "id": "fp_ppa_0_0225",
+    "name": "PPA ME 0%, 0.225",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 0,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.225
+  },
+  {
+    "id": "fp_ppa_29_0225",
+    "name": "PPA ME 2.9%, 0.225",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 2.9,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.225
+  },
+  {
+    "id": "fp_ppa_0_022",
+    "name": "PPA ME 0%, 0.22",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 0,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.22
+  },
+  {
+    "id": "fp_ppa_29_022",
+    "name": "PPA ME 2.9%, 0.22",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 2.9,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.22
+  },
+  {
+    "id": "fp_ppa_0_0215",
+    "name": "PPA ME 0%, 0.215",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 0,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.215
+  },
+  {
+    "id": "fp_ppa_29_0215",
+    "name": "PPA ME 2.9%, 0.215",
+    "financingType": "ppa",
+    "projectType": "residential",
+    "enabled": false,
+    "partners": "all",
+    "tags": [
+      "Custom"
+    ],
+    "escalationRate": 2.9,
+    "upfrontPayment": 0,
+    "solarRateMode": "single",
+    "solarRate": 0.215
+  },
+  {
+    "id": "fp_loan_sunstone_5yr",
+    "name": "Sunstone - 5yr 2.99%",
+    "financingType": "loan",
+    "projectType": "commercial",
+    "enabled": true,
+    "partners": "all",
+    "tags": [],
+    "loanType": "Mortgage-Style or Incentive-Prepayment",
+    "principal": 100,
+    "flatFee": 0,
+    "dealerFee": 13.25,
+    "incentivesApplyToDealerFee": true,
+    "interestIsTaxDeductible": true,
+    "interestRate": 2.99,
+    "durationMonths": 60,
+    "hasPrepayment": true,
+    "prepaymentMonth": 18
+  },
+  {
+    "id": "fp_lease_green_10yr",
+    "name": "GreenLease 10yr",
+    "financingType": "lease",
+    "projectType": "residential",
+    "enabled": true,
+    "partners": "all",
+    "tags": [],
+    "monthlyPayment": 89,
+    "escalationRate": 2.5,
+    "durationMonths": 120,
+    "buyoutMonth": 84,
+    "buyoutPrice": 1200
+  },
+  {
+    "id": "fp_lppa_sun_25",
+    "name": "Sunpath Levelized 25yr",
+    "financingType": "levelizedPpa",
+    "projectType": "residential",
+    "enabled": true,
+    "partners": "all",
+    "tags": [],
+    "solarRate": 0.19,
+    "durationMonths": 300,
+    "upfrontPayment": 0
+  }
+]
