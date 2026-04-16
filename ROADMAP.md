@@ -119,6 +119,75 @@ Phase 1 (Catalog) → Phase 2 (Modules) → Phase 3 (Stringing) → Phase 6 (BOM
                                        → Phase 5 (Roof Modeling) — independent
 ```
 
+### Document Routing Rules Engine (6 phases) ✅ v1 Shipped (2026-04-16)
+
+Surfaces the right agreement templates on each project's Documents tab based on project/design signals, so sales reps don't hunt through the full template library. Evaluator is pure and CRM-side; it never touches ML/CAD internals.
+
+**Phase 1 — Template routing schema + editor UI** ✅ Shipped (2026-04-15)
+- ✅ Optional `routing` block on every template in `data/agreementTemplates.json` (category, requirement, lifecycle, sequence, triggers)
+- ✅ "Document routing" panel in the template editor right sidebar; persists through save/load
+- ✅ No regression to existing document/signing flow
+
+**Phase 2 — Evaluator + grouped Documents tab** ✅ Shipped (2026-04-15)
+- ✅ Pure server helpers `extractSignalsFromProject`, `templateMatchesSignals`, `evaluateDocumentsForProject`
+- ✅ Documents tab groups routed templates into Required / Recommended / Optional
+- ✅ "Why is this showing?" popover per row exposes matched trigger reasons
+- ✅ Unrouted templates remain available through "Browse all templates"
+- ✅ "Other agreements" section preserves visibility of legacy/manual instances
+- ✅ Existing agreement create/send/sign flow unchanged
+
+**Phase 3 — Project signal capture** ✅ Shipped (2026-04-15)
+- ✅ Project-level signals persisted: `utility, state, financing, lenderId, hoa, ahj, incentives, nmProgram, partnerId`
+- ✅ Active-design metadata persisted: `hasBattery, batteryKwh, panelUpgradeNeeded, roofType`
+- ✅ `PATCH /api/projects/:id/signals` + `PATCH /api/projects/:id/designs/:designId/metadata`
+- ✅ "Project signals" editor card on CRM dashboard (positioned under Designs table)
+- ✅ Evaluator extended with triggers: `financingMethod, lender, partnerId, ahj, netMeteringProgram, roofType, hasBattery, hoaApplicable, incentivePrograms`
+- Deferred: in-design-mode mirror UI for these metadata fields (persistence + dashboard-side editing cover the routing use case)
+
+**Phase 4 — Mismatch detection** ✅ Shipped (2026-04-15)
+- ✅ `detectAgreementRoutingMismatches` runs on every project render; reuses Phase 2 matcher — no parallel engine
+- ✅ "Needs review" section + amber warning banner when existing agreements no longer match current signals or their template was removed
+- ✅ Readable reason hints (e.g. "financing changed", "system size exceeds maximum", "Template no longer exists")
+- ✅ Derived only — never auto-deletes, auto-replaces, or persists mismatch state
+- ✅ Signed agreements are intentionally excluded from mismatch surfacing (done is done)
+
+**Phase 5 — Admin coverage / observability** ✅ Shipped (2026-04-16)
+- ✅ `/database/agreement-templates/coverage` admin page, read-only
+- ✅ Summary counts (total / routed / unrouted / required / recommended / optional / globally required / combos / gaps)
+- ✅ Global templates panel lists routed templates with no meaningful triggers
+- ✅ Coverage matrix across synthetic `utility × state × customerType` baseline combos (reuses `templateMatchesSignals`)
+- ✅ Gap list for combos with no required template; click-to-expand per-combo template detail
+- Limitation: baseline combos assume no battery / no HOA / kW=0 etc., so templates that require those extras intentionally don't appear in the baseline matrix
+
+**Phase 6 — Editor guardrails / validation** ✅ Shipped (2026-04-16)
+- ✅ Pure `analyzeTemplateRoutingWarnings(template)` helper
+- ✅ Routing checks box in the editor (errors / warnings / info), live-updated as routing fields change
+- ✅ Rules: unrouted info · globally required warning · conditional-acts-as-optional warning · missing category/lifecycle warnings · kW min > max error · conflicting top-level vs routing utility/state warnings · empty routing shell info
+- ✅ Client-side save-block only for the kW min > max error; warnings/infos never block save
+- ✅ "Templates needing attention" section on the coverage page lists any template with errors or warnings
+
+**Design constraints (intentional)**
+- Routing logic is isolated from ML/CAD internals — reads only CRM/project-level fields plus safe design metadata scalars (e.g. `design.stats.kw`, `design.hasBattery`).
+- Live evaluator semantics are frozen as of Phase 2. Phase 6 adds warnings *about* routing configs but does not change how matching works.
+- `conditional` currently behaves like `optional` in the evaluator; the guardrail warns about this rather than changing semantics.
+- Save-blocking is deliberately client-side only (admin-only route; low-risk integration).
+- Coverage matrix scope is limited to three dimensions in v1 by design.
+
+**Activity & signed-state visibility** (ride-along with Phase 6, 2026-04-16)
+- ✅ First-view timestamps (`openedBySalesRepAt`, `openedByCustomerAt`) recorded by `GET /sign/:token`
+- ✅ Per-row hover popover on Documents tab shows full chronological timeline: Created → Sent → Opened → Signed
+- ✅ Signed rows get a distinct green treatment with checkmark, signed-at timestamp, and signer name
+
+**Deferred / future work**
+- Permit or document-bundle primitive: a single Documents-tab row that represents a group of templates sent together
+- Coverage page filters and drill-down improvements (by category / requirement / state / utility)
+- In-design-mode mirror UI for routing-relevant design metadata (battery, roof type, etc.)
+- Stronger server-side enforcement for the editor validation rules (currently client-side only)
+- Dedicated cleanup/merge UX for duplicate stale agreement instances on a single project
+- Broader multi-dimension coverage analysis beyond `utility × state × customerType` (include battery/HOA/financing combinations where practical)
+- "Conditional" semantics: if/when we give conditional a distinct runtime behavior, retire the guardrail warning
+- Customer-page field types in the PDF editor sidebar (Address, Utility, System kW, etc.) as auto-fill field categories
+
 ### Other CAD Features
 - **3D panel placement** — Place solar panels on the 3D roof model with snap-to-ridge alignment
 - **Export measurements** — Export roof dimensions and CAD data for permit drawings

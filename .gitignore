@@ -7,3 +7,16 @@ __pycache__/
 *.pyc
 venv/
 *.pt
+
+# Runtime user data / auth state / PII — never commit.
+# Code runs fine without these on a fresh clone; the app populates them
+# at runtime or they are provisioned out-of-band. See PROJECT_HANDOFF.md.
+data/sessions.json
+data/users.json
+data/projects.json
+data/organization.json
+data/ml-drafts.json
+data/uploads/
+
+# Claude Code local config
+.claude/

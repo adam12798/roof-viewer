@@ -9,7 +9,9 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "geotiff": "^3.0.5",
+    "multer": "^2.1.1",
     "node-fetch": "^2.7.0",
+    "nodemailer": "^8.0.5",
     "pngjs": "^7.0.0"
   }
 }

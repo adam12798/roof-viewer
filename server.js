@@ -3,8 +3,25 @@ const express = require("express");
 const fetch = require("node-fetch");
 const fs = require("fs");
 const path = require("path");
+const multer = require("multer");
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
 
 const app = express();
+
+// ── PDF upload storage ─────────────────────────────────────────────────────
+const agreementUpload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, 'data/uploads/agreements'),
+    filename: function(req, file, cb) {
+      cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_'));
+    }
+  }),
+  fileFilter: function(req, file, cb) {
+    cb(null, file.mimetype === 'application/pdf');
+  },
+  limits: { fileSize: 50 * 1024 * 1024 }
+});
 const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.GOOGLE_API_KEY;
 const BUILD_VERSION = Date.now();
@@ -25,6 +42,28 @@ function saveProjects(projects) {
   fs.writeFileSync(path.join(__dirname, "data/projects.json"), JSON.stringify(projects, null, 2));
 }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+
+// ── ML draft helpers (append-only audit log of ML auto-build handler responses)
+// Drafts are persisted here so the CRM can surface staged_for_review and
+// deferred_manual_exists cases without ever mutating a design.
+function loadMlDrafts() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/ml-drafts.json"), "utf8")); }
+  catch { return []; }
+}
+function saveMlDrafts(drafts) {
+  fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, "data/ml-drafts.json"), JSON.stringify(drafts, null, 2));
+}
+
+// ── Organization helpers ──────────────────────────────────────────────────────
+function loadOrganization() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/organization.json"), "utf8")); }
+  catch { return {}; }
+}
+function saveOrganization(org) {
+  fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, "data/organization.json"), JSON.stringify(org, null, 2));
+}
 
 // ── User helpers ──────────────────────────────────────────────────────────────
 function loadUsers() {
@@ -133,9 +172,10 @@ app.get("/logout", (req, res) => {
   res.redirect("/login");
 });
 
-// Protect all routes except login and static assets
+// Protect all routes except login and public signing endpoints
 app.use((req, res, next) => {
   if (req.path === "/login" || req.path === "/logout" || req.path === "/favicon.ico") return next();
+  if (req.path.startsWith("/sign/")) return next();
   const user = getSession(req);
   if (!user) {
     if (req.path.startsWith("/api/")) return res.status(401).json({ error: "Not authenticated" });
@@ -1755,6 +1795,53 @@ app.patch("/api/projects/:id/notes", (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Phase 3: project-level routing signals ──────────────────────────────────
+// PATCH semantics. Omitted keys are untouched. Empty-string strings clear a field.
+app.patch("/api/projects/:id/signals", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  const body = req.body || {};
+
+  const stringFields = ['state','utility','financing','lenderId','ahj','nmProgram','partnerId'];
+  stringFields.forEach(k => {
+    if (body[k] === undefined) return;
+    const v = body[k];
+    if (v === null) { delete project[k]; return; }
+    if (typeof v !== 'string') return;
+    const trimmed = v.trim();
+    if (trimmed) project[k] = trimmed;
+    else delete project[k];
+  });
+
+  if (body.hoa !== undefined) {
+    if (body.hoa === null || body.hoa === '') delete project.hoa;
+    else project.hoa = !!body.hoa;
+  }
+
+  if (body.incentives !== undefined) {
+    let arr = [];
+    if (Array.isArray(body.incentives)) arr = body.incentives;
+    else if (typeof body.incentives === 'string') arr = body.incentives.split(',');
+    const cleaned = arr.map(s => String(s || '').trim()).filter(s => s.length > 0);
+    if (cleaned.length) project.incentives = cleaned;
+    else delete project.incentives;
+  }
+
+  saveProjects(projects);
+  res.json({ ok: true, project: {
+    state: project.state || null,
+    utility: project.utility || null,
+    financing: project.financing || null,
+    lenderId: project.lenderId || null,
+    hoa: (typeof project.hoa === 'boolean') ? project.hoa : null,
+    ahj: project.ahj || null,
+    nmProgram: project.nmProgram || null,
+    partnerId: project.partnerId || null,
+    incentives: project.incentives || []
+  }});
+});
+
 // ── Equipment API ─────────────────────────────────────────────────────────
 function loadEquipment() {
   try { return JSON.parse(fs.readFileSync(path.join(__dirname, "data/equipment.json"), "utf8")); }
@@ -1805,7 +1892,16 @@ app.get("/api/equipment", (req, res) => {
 
 // List modules
 app.get("/api/equipment/modules", (req, res) => {
-  res.json(loadEquipment().modules);
+  const all = loadEquipment().modules || [];
+  const list = req.query.enabled === "true" ? all.filter(m => m.enabled) : all;
+  res.json(list);
+});
+
+// List inverters
+app.get("/api/equipment/inverters", (req, res) => {
+  const all = loadEquipment().inverters || [];
+  const list = req.query.enabled === "true" ? all.filter(m => m.enabled) : all;
+  res.json(list);
 });
 
 // Add a module
@@ -1873,10 +1969,20 @@ app.put("/api/projects/:id/calibration", express.json(), (req, res) => {
 
 // ── Design CRUD API ──────────────────────────────────────────────────────────
 // Ensure project has designs array (migration for old projects)
+function defaultEquipmentIds() {
+  const eq = loadEquipment();
+  const firstEnabled = (arr) => (arr || []).find(x => x.enabled);
+  return {
+    moduleId: firstEnabled(eq.modules)?.id || null,
+    inverterId: firstEnabled(eq.inverters)?.id || null
+  };
+}
+
 function ensureDesigns(project) {
   if (!project.designs) {
     const did = newId();
-    project.designs = [{ id: did, name: "Design 1", createdAt: new Date().toISOString(), segments: [], stats: { cost: 0, offset: 0, kw: 0 } }];
+    const defs = defaultEquipmentIds();
+    project.designs = [{ id: did, name: "Design 1", createdAt: new Date().toISOString(), segments: [], stats: { cost: 0, offset: 0, kw: 0 }, moduleId: defs.moduleId, inverterId: defs.inverterId }];
     project.activeDesignId = did;
   }
   return project;
@@ -1905,6 +2011,37 @@ app.put("/api/projects/:id/designs/:designId", (req, res) => {
   if (req.body.trees !== undefined) design.trees = req.body.trees;
   if (req.body.roofFaces !== undefined) design.roofFaces = req.body.roofFaces;
   if (req.body.name) design.name = req.body.name;
+  if (req.body.moduleId !== undefined) design.moduleId = req.body.moduleId;
+  if (req.body.inverterId !== undefined) design.inverterId = req.body.inverterId;
+  // Phase 3: additive routing metadata (backward-compatible; only set when explicitly sent)
+  if (req.body.hasBattery !== undefined) design.hasBattery = !!req.body.hasBattery;
+  if (req.body.batteryKwh !== undefined) design.batteryKwh = (req.body.batteryKwh === null || req.body.batteryKwh === '') ? null : Number(req.body.batteryKwh);
+  if (req.body.panelUpgradeNeeded !== undefined) design.panelUpgradeNeeded = !!req.body.panelUpgradeNeeded;
+  if (req.body.roofType !== undefined) design.roofType = (typeof req.body.roofType === 'string') ? req.body.roofType.trim() || null : null;
+  design.updatedAt = new Date().toISOString();
+  saveProjects(projects);
+  res.json({ ok: true });
+});
+
+// Phase 3: surgical PATCH for design-level routing metadata (used by dashboard signals card)
+app.patch("/api/projects/:id/designs/:designId/metadata", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  ensureDesigns(project);
+  const design = project.designs.find(d => d.id === req.params.designId);
+  if (!design) return res.status(404).json({ error: "Design not found" });
+  const body = req.body || {};
+  if (body.hasBattery !== undefined) design.hasBattery = !!body.hasBattery;
+  if (body.batteryKwh !== undefined) {
+    const v = body.batteryKwh;
+    design.batteryKwh = (v === null || v === '' || v === undefined) ? null : (isNaN(parseFloat(v)) ? null : parseFloat(v));
+  }
+  if (body.panelUpgradeNeeded !== undefined) design.panelUpgradeNeeded = !!body.panelUpgradeNeeded;
+  if (body.roofType !== undefined) {
+    const s = (typeof body.roofType === 'string') ? body.roofType.trim() : '';
+    design.roofType = s || null;
+  }
   design.updatedAt = new Date().toISOString();
   saveProjects(projects);
   res.json({ ok: true });
@@ -1917,12 +2054,15 @@ app.post("/api/projects/:id/designs", (req, res) => {
   if (!project) return res.status(404).json({ error: "Not found" });
   ensureDesigns(project);
   const num = project.designs.length + 1;
+  const defs = defaultEquipmentIds();
   const design = {
     id: newId(),
     name: req.body.name || ("Design " + num),
     createdAt: new Date().toISOString(),
     segments: [],
-    stats: { cost: 0, offset: 0, kw: 0 }
+    stats: { cost: 0, offset: 0, kw: 0 },
+    moduleId: defs.moduleId,
+    inverterId: defs.inverterId
   };
   project.designs.push(design);
   project.activeDesignId = design.id;
@@ -2345,23 +2485,162 @@ app.get("/api/lidar/points", async (req, res) => {
   }
 });
 
+// ── Project agreement APIs ─────────────────────────────────────────────────────
+app.post("/api/projects/:id/agreements", (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  const body = req.body || {};
+  const tplData = loadAgreementTemplates();
+  const template = (tplData.items || []).find(t => t.id === body.templateId);
+  if (!project.agreements) project.agreements = [];
+  const salesRep = req.user || {};
+  project.agreements.push({
+    templateId: body.templateId,
+    templateName: template ? template.name : body.templateId,
+    customerName: body.customerName || '',
+    customerEmail: body.customerEmail || '',
+    sentTo: body.customerEmail || '',
+    salesRepName: [salesRep.firstName, salesRep.lastName].filter(Boolean).join(' ').trim() || salesRep.email || '',
+    salesRepEmail: salesRep.email || '',
+    salesRepToken: crypto.randomBytes(16).toString('hex'),
+    customerToken: (function() { var t = crypto.randomBytes(16).toString('hex'); return t; })(),
+    stage: 'draft',
+    status: 'draft',
+    createdAt: new Date().toISOString()
+  });
+  saveProjects(projects);
+  res.json({ success: true });
+});
+
+async function sendAgreementEmail(agreement, template, recipient) {
+  // recipient: 'salesRep' | 'customer'
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpFrom = process.env.SMTP_FROM || smtpUser;
+  const baseUrl = process.env.APP_URL || ('http://localhost:' + PORT);
+  const pdfPath = template && template.pdfFile ? path.join(__dirname, 'data/uploads/agreements', template.pdfFile) : null;
+
+  let toEmail, toName, token, subject, intro, cta;
+  if (recipient === 'salesRep') {
+    toEmail = agreement.salesRepEmail;
+    toName = agreement.salesRepName || 'Sales rep';
+    token = agreement.salesRepToken;
+    subject = 'Review & sign: ' + (agreement.templateName || 'Agreement');
+    intro = 'An agreement is ready for your review and sign-off before being sent to the customer.';
+    cta = 'Review agreement';
+  } else {
+    toEmail = agreement.customerEmail;
+    toName = agreement.customerName || '';
+    token = agreement.customerToken || agreement.signToken;
+    subject = 'Agreement for signing: ' + (agreement.templateName || 'Document');
+    intro = 'Please review and sign your agreement by clicking the button below:';
+    cta = 'Review & Sign';
+  }
+  const url = baseUrl + '/sign/' + token;
+
+  if (!toEmail) throw new Error('No ' + recipient + ' email on file');
+  if (!smtpHost || !smtpUser || !smtpPass) {
+    return { skipped: true, note: 'Email not configured — marked as sent. Add SMTP_HOST, SMTP_USER, SMTP_PASS to .env.', url: url };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: parseInt(process.env.SMTP_PORT || '587'),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: { user: smtpUser, pass: smtpPass }
+  });
+  const mailOptions = {
+    from: smtpFrom, to: toEmail, subject: subject,
+    text: 'Hello ' + (toName || '') + ',\n\n' + intro + '\n\n' + url + '\n\nThank you.',
+    html: '<p>Hello ' + (toName || '') + ',</p><p>' + intro + '</p>' +
+          '<p style="margin:24px 0;"><a href="' + url + '" style="display:inline-block;padding:12px 28px;background:#6e3bf5;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">' + cta + '</a></p>' +
+          '<p style="color:#6b7280;font-size:0.85em;">Or copy this link: <a href="' + url + '">' + url + '</a></p><p>Thank you.</p>'
+  };
+  if (pdfPath && fs.existsSync(pdfPath)) {
+    mailOptions.attachments = [{ filename: template.pdfOriginalName || 'agreement.pdf', path: pdfPath }];
+  }
+  await transporter.sendMail(mailOptions);
+  return { sent: true, url: url };
+}
+
+app.post("/api/projects/:id/agreements/:idx/send", async (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Not found" });
+  const idx = parseInt(req.params.idx);
+  if (!project.agreements || !project.agreements[idx]) return res.status(404).json({ error: "Agreement not found" });
+  const agreement = project.agreements[idx];
+
+  // If no sales rep email on record, use the current user (sender is the sales rep)
+  if (!agreement.salesRepEmail && req.user) {
+    agreement.salesRepEmail = req.user.email || '';
+    agreement.salesRepName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ').trim() || req.user.email || '';
+  }
+  if (!agreement.salesRepToken) agreement.salesRepToken = crypto.randomBytes(16).toString('hex');
+  if (!agreement.customerToken) agreement.customerToken = agreement.signToken || crypto.randomBytes(16).toString('hex');
+
+  // Decide recipient based on current stage
+  const stage = agreement.stage || agreement.status || 'draft';
+  const recipient = (stage === 'sales-rep-signed') ? 'customer' : 'salesRep';
+
+  const tplData = loadAgreementTemplates();
+  const template = (tplData.items || []).find(t => t.id === agreement.templateId);
+
+  try {
+    const result = await sendAgreementEmail(agreement, template, recipient);
+    if (recipient === 'salesRep') {
+      agreement.stage = 'sent-to-sales-rep';
+      agreement.status = 'sent';
+      agreement.sentToSalesRepAt = new Date().toISOString();
+      agreement.sentTo = agreement.salesRepEmail;
+    } else {
+      agreement.stage = 'sent-to-customer';
+      agreement.status = 'sent';
+      agreement.sentToCustomerAt = new Date().toISOString();
+      agreement.sentTo = agreement.customerEmail;
+    }
+    saveProjects(projects);
+    res.json({
+      success: true,
+      recipient: recipient,
+      sentTo: (recipient === 'salesRep' ? agreement.salesRepEmail : agreement.customerEmail),
+      note: result.skipped ? result.note : null,
+      signUrl: result.url
+    });
+  } catch(err) {
+    res.json({ success: false, error: 'Email failed: ' + err.message });
+  }
+});
+
 // ── Project detail page ────────────────────────────────────────────────────────
 app.get("/project/:id", (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.id === req.params.id);
   if (!project) return res.status(404).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>Project not found</h2><p><a href="/">← Back</a></p></body></html>`);
 
-  // Cross-reference: find agreement template matching customer's utility provider
+  // Cross-reference: find agreement templates for this customer's utility provider
   const customerUtility = project.utility || 'Eversource Energy';
   let matchedTemplate = null;
+  let allAgreementTemplates = [];
+  let utilityTemplates = [];
   try {
     const tplData = JSON.parse(require('fs').readFileSync(__dirname + '/data/agreementTemplates.json', 'utf8'));
+    allAgreementTemplates = tplData.items || [];
     const u = customerUtility.toLowerCase();
-    matchedTemplate = (tplData.items || []).find(t => {
+    utilityTemplates = allAgreementTemplates.filter(t => {
       const tu = (t.utility || '').toLowerCase();
       return tu && (tu === u || u.includes(tu) || tu.includes(u));
     });
+    matchedTemplate = utilityTemplates[0] || null;
   } catch(e) {}
+  const projectAgreements = project.agreements || [];
+
+  // Phase 2: route templates into Required/Recommended/Optional buckets for Documents tab
+  const routedDocs = evaluateDocumentsForProject(project, allAgreementTemplates);
+  // Phase 4: derive mismatches vs existing agreement instances (non-destructive, render-time only)
+  const routingMismatches = detectAgreementRoutingMismatches(project, allAgreementTemplates, routedDocs);
 
   const tab = req.query.tab || "dashboard";
   ensureDesigns(project);
@@ -2793,10 +3072,10 @@ app.get("/project/:id", (req, res) => {
             <div class="db-fl">Utility provider</div>
             <div class="db-utility-name">${esc(customerUtility)}</div>
             <div class="db-utility-sub">R-1 (A1) Residential</div>
-            ${matchedTemplate ? `<a class="db-utility-template-link" href="/database/agreement-templates/${matchedTemplate.id}/editor" title="${esc(matchedTemplate.name)}">
+            <a class="db-utility-template-link" href="/project/${project.id}?tab=documents" title="Open Documents tab">
               <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              View agreement template
-            </a>` : ''}
+              View Agreement page
+            </a>
           </div>
           <div class="db-energy-grid">
             <div class="db-field"><div class="db-fl">Avg. monthly bill</div><div class="db-fv">—</div></div>
@@ -2862,6 +3141,118 @@ app.get("/project/:id", (req, res) => {
             `).join('')}
           </tbody>
         </table>
+      </div>
+
+      <!-- Phase 3: Project routing signals -->
+      <div class="db-section sig-section">
+        <div class="db-section-head">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
+          Project signals <span class="sig-sub">— used by document routing</span>
+        </div>
+        <div class="sig-grid">
+          <div class="sig-field">
+            <label class="sig-label">Utility provider</label>
+            <input class="sig-input" id="sigUtility" type="text" value="${esc(project.utility || '')}" placeholder="e.g. Eversource Energy"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">State</label>
+            <input class="sig-input" id="sigState" type="text" maxlength="40" value="${esc(project.state || '')}" placeholder="e.g. MA or Massachusetts"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Financing method</label>
+            <select class="sig-input" id="sigFinancing">
+              <option value="">—</option>
+              <option value="cash">Cash</option>
+              <option value="loan">Loan</option>
+              <option value="PPA">PPA</option>
+              <option value="lease">Lease</option>
+              <option value="PACE">PACE</option>
+            </select>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Lender</label>
+            <input class="sig-input" id="sigLender" type="text" value="${esc(project.lenderId || '')}" placeholder="e.g. GoodLeap"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">HOA applicable</label>
+            <select class="sig-input" id="sigHoa">
+              <option value="">—</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">AHJ</label>
+            <input class="sig-input" id="sigAhj" type="text" value="${esc(project.ahj || '')}" placeholder="e.g. City of Lowell"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Net metering program</label>
+            <input class="sig-input" id="sigNm" type="text" value="${esc(project.nmProgram || '')}" placeholder="e.g. NEM 3.0"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Partner ID</label>
+            <input class="sig-input" id="sigPartner" type="text" value="${esc(project.partnerId || '')}" placeholder="e.g. partner-abc"/>
+          </div>
+          <div class="sig-field sig-full">
+            <label class="sig-label">Incentives (comma-separated)</label>
+            <input class="sig-input" id="sigIncentives" type="text" value="${esc((project.incentives || []).join(', '))}" placeholder="e.g. SREC, MassSave, ITC"/>
+          </div>
+        </div>
+        <div class="sig-subhead">Active design metadata</div>
+        <div class="sig-grid">
+          <div class="sig-field">
+            <label class="sig-label">Has battery</label>
+            <select class="sig-input" id="sigHasBattery">
+              <option value="">—</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Battery size (kWh)</label>
+            <input class="sig-input" id="sigBatteryKwh" type="number" step="0.1" placeholder="e.g. 13.5"/>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Panel upgrade needed</label>
+            <select class="sig-input" id="sigPanelUpgrade">
+              <option value="">—</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+          <div class="sig-field">
+            <label class="sig-label">Roof type</label>
+            <input class="sig-input" id="sigRoofType" type="text" placeholder="e.g. asphalt, tile, metal, ballast"/>
+          </div>
+        </div>
+        <div class="sig-footer">
+          <span class="sig-status" id="sigStatus"></span>
+          <button class="sig-save-btn" id="sigSaveBtn" onclick="saveProjectSignals()">Save signals</button>
+        </div>
+        <script>
+          (function() {
+            // Hydrate select-typed signals (HTML value attr doesn't work on <select>)
+            var PROJ_FIN = ${JSON.stringify(project.financing || '')};
+            var PROJ_HOA = ${JSON.stringify((typeof project.hoa === 'boolean') ? String(project.hoa) : '')};
+            var ACTIVE_DESIGN = ${JSON.stringify((() => {
+              const d = (project.designs || []).find(x => x.id === project.activeDesignId) || (project.designs || [])[0] || {};
+              return {
+                id: d.id || '',
+                hasBattery: (typeof d.hasBattery === 'boolean') ? String(d.hasBattery) : '',
+                batteryKwh: (typeof d.batteryKwh === 'number') ? d.batteryKwh : '',
+                panelUpgradeNeeded: (typeof d.panelUpgradeNeeded === 'boolean') ? String(d.panelUpgradeNeeded) : '',
+                roofType: d.roofType || ''
+              };
+            })())};
+            window.SIG_ACTIVE_DESIGN_ID = ACTIVE_DESIGN.id;
+            var f = document.getElementById('sigFinancing'); if (f) f.value = PROJ_FIN;
+            var h = document.getElementById('sigHoa'); if (h) h.value = PROJ_HOA;
+            var b = document.getElementById('sigHasBattery'); if (b) b.value = ACTIVE_DESIGN.hasBattery;
+            var bk = document.getElementById('sigBatteryKwh'); if (bk) bk.value = ACTIVE_DESIGN.batteryKwh;
+            var pu = document.getElementById('sigPanelUpgrade'); if (pu) pu.value = ACTIVE_DESIGN.panelUpgradeNeeded;
+            var rt = document.getElementById('sigRoofType'); if (rt) rt.value = ACTIVE_DESIGN.roofType;
+          })();
+        </script>
       </div>
 
       <!-- Drone mapping -->
@@ -3068,6 +3459,207 @@ app.get("/project/:id", (req, res) => {
   }
 
   else if (tab === "documents") {
+    // Phase 2: for each routed template, find the most recent existing agreement instance (if any)
+    // so rows show current status + Send/Resend. Templates without an instance get a Create button.
+    const agreementsByTemplate = {};
+    projectAgreements.forEach((a, i) => {
+      if (!a.templateId) return;
+      const cur = agreementsByTemplate[a.templateId];
+      const t = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const curT = (cur && cur.agreement.createdAt) ? new Date(cur.agreement.createdAt).getTime() : -1;
+      if (!cur || t >= curT) agreementsByTemplate[a.templateId] = { agreement: a, idx: i };
+    });
+    const routedTemplateIds = new Set();
+    ['required','recommended','optional'].forEach(bucket => {
+      routedDocs[bucket].forEach(entry => routedTemplateIds.add(entry.template.id));
+    });
+    // Agreements whose template isn't in any routed bucket — show them in an "Other" section
+    // so unrouted-but-created instances remain visible (the user already sent them via the modal).
+    const otherAgreements = projectAgreements.filter(a => !a.templateId || !routedTemplateIds.has(a.templateId));
+
+    const stageInfoMap = {
+      'draft':             { label: 'Draft',                 color: '#6b7280' },
+      'sent-to-sales-rep': { label: 'Awaiting sales rep',    color: '#f59e0b' },
+      'sales-rep-signed':  { label: 'Sales rep signed',      color: '#8b5cf6' },
+      'sent-to-customer':  { label: 'Awaiting customer',     color: '#f59e0b' },
+      'signed':            { label: 'Signed',                color: '#10b981' }
+    };
+
+    function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString() : ''; }
+    function fmtDateTime(iso) { try { return iso ? new Date(iso).toLocaleString() : ''; } catch(e) { return ''; } }
+    const SIGNED_CHECK_SVG = '<svg class="doc-signed-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2.5"><circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981"/><polyline points="8 12 11 15 16 9" stroke="#fff" fill="none"/></svg>';
+
+    // Activity timeline popover — shows every event on the agreement that has a timestamp
+    function renderActivityTimeline(a) {
+      const events = [
+        { key: 'createdAt',            label: 'Created',              ts: a.createdAt,            color: '#6b7280' },
+        { key: 'sentToSalesRepAt',     label: 'Sent to sales rep',    ts: a.sentToSalesRepAt,     color: '#f59e0b' },
+        { key: 'openedBySalesRepAt',   label: 'Opened by sales rep',  ts: a.openedBySalesRepAt,   color: '#3b82f6' },
+        { key: 'salesRepSignedAt',     label: 'Sales rep signed',     ts: a.salesRepSignedAt,     color: '#8b5cf6' },
+        { key: 'sentToCustomerAt',     label: 'Sent to customer',     ts: a.sentToCustomerAt || (a.sentToSalesRepAt ? null : a.sentAt), color: '#f59e0b' },
+        { key: 'openedByCustomerAt',   label: 'Opened by customer',   ts: a.openedByCustomerAt,   color: '#3b82f6' },
+        { key: 'signedAt',             label: 'Signed',               ts: a.signedAt,             color: '#10b981' }
+      ].filter(e => e.ts);
+      if (!events.length) return '';
+      // Sort chronologically
+      events.sort((x, y) => new Date(x.ts) - new Date(y.ts));
+      const rows = events.map(e =>
+        '<div class="doc-tl-row">' +
+          '<span class="doc-tl-dot" style="background:' + e.color + ';"></span>' +
+          '<span class="doc-tl-label">' + esc(e.label) + '</span>' +
+          '<span class="doc-tl-ts">' + esc(fmtDateTime(e.ts)) + '</span>' +
+        '</div>'
+      ).join('');
+      return '<span class="doc-activity-wrap" tabindex="0">' +
+        '<svg class="doc-activity-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>' +
+        '<span class="doc-activity-popover" role="tooltip">' +
+          '<div class="doc-tl-head">Activity</div>' +
+          rows +
+        '</span>' +
+      '</span>';
+    }
+
+    function renderRoutedRow(entry) {
+      const t = entry.template;
+      const matched = agreementsByTemplate[t.id];
+      const reasonsAttr = entry.reasons.length ? entry.reasons.join(' · ') : 'No triggers — always matches';
+      if (matched) {
+        const a = matched.agreement;
+        const stage = a.stage || a.status || 'draft';
+        const si = stageInfoMap[stage] || stageInfoMap.draft;
+        const isSigned = stage === 'signed';
+        const canSend = !isSigned;
+        const btnLabel = stage === 'draft' ? 'Send' : 'Resend';
+        const rowCls = 'doc-agreement-row' + (isSigned ? ' doc-agreement-signed' : '');
+        const dateDisplay = isSigned ? ('Signed ' + fmtDate(a.signedAt || a.createdAt)) : fmtDate(a.createdAt);
+        const signedWho = (isSigned && (a.customerName || a.customerEmail)) ? (' · by ' + esc(a.customerName || a.customerEmail)) : '';
+        const signedTs = (isSigned && a.signedAt) ? ('<div class="doc-signed-ts">Completed ' + esc(fmtDateTime(a.signedAt)) + signedWho + '</div>') : '';
+        return '<div class="' + rowCls + '" data-template-id="' + esc(t.id) + '">' +
+          '<div class="doc-agreement-main">' +
+            '<div class="doc-agreement-name">' + (isSigned ? SIGNED_CHECK_SVG + ' ' : '') + esc(t.name || 'Agreement') + '</div>' +
+            '<div class="doc-agreement-meta">' +
+              '<span class="doc-agreement-status" style="color:' + si.color + '">' + si.label + '</span>' +
+              ' ' + renderActivityTimeline(a) +
+              ' · ' + esc(a.sentTo || a.customerEmail || '—') +
+              ' · ' + dateDisplay +
+            '</div>' +
+            signedTs +
+            '<button class="doc-reasons-toggle" onclick="toggleReasons(this)">Why is this showing?</button>' +
+            '<div class="doc-reasons" hidden>' + esc(reasonsAttr) + '</div>' +
+          '</div>' +
+          (canSend ? '<button class="doc-send-btn" data-idx="' + matched.idx + '" onclick="sendAgreement(' + matched.idx + ')">' + btnLabel + '</button>' : '') +
+        '</div>';
+      } else {
+        return '<div class="doc-agreement-row" data-template-id="' + esc(t.id) + '">' +
+          '<div class="doc-agreement-main">' +
+            '<div class="doc-agreement-name">' + esc(t.name || 'Agreement') + '</div>' +
+            '<div class="doc-agreement-meta">' +
+              '<span class="doc-agreement-status" style="color:#6b7280">Not created yet</span>' +
+            '</div>' +
+            '<button class="doc-reasons-toggle" onclick="toggleReasons(this)">Why is this showing?</button>' +
+            '<div class="doc-reasons" hidden>' + esc(reasonsAttr) + '</div>' +
+          '</div>' +
+          '<button class="doc-create-btn" onclick="createAgreementFromTemplate(\'' + esc(t.id) + '\')">Create</button>' +
+        '</div>';
+      }
+    }
+
+    function renderBucket(label, color, entries) {
+      if (!entries.length) return '';
+      const rows = entries.map(renderRoutedRow).join('');
+      return '<div class="doc-routing-bucket">' +
+        '<div class="doc-routing-bucket-head" style="color:' + color + ';">' + label + ' <span class="doc-routing-bucket-count">(' + entries.length + ')</span></div>' +
+        '<div class="doc-agreements-list">' + rows + '</div>' +
+      '</div>';
+    }
+
+    function renderOtherAgreementsBlock() {
+      if (!otherAgreements.length) return '';
+      const rows = otherAgreements.map(function(a) {
+        const i = projectAgreements.indexOf(a);
+        const stage = a.stage || a.status || 'draft';
+        const si = stageInfoMap[stage] || stageInfoMap.draft;
+        const isSigned = stage === 'signed';
+        const canSend = !isSigned;
+        const btnLabel = stage === 'draft' ? 'Send' : 'Resend';
+        const rowCls = 'doc-agreement-row' + (isSigned ? ' doc-agreement-signed' : '');
+        const dateDisplay = isSigned ? ('Signed ' + fmtDate(a.signedAt || a.createdAt)) : fmtDate(a.createdAt);
+        const signedWho = (isSigned && (a.customerName || a.customerEmail)) ? (' · by ' + esc(a.customerName || a.customerEmail)) : '';
+        const signedTs = (isSigned && a.signedAt) ? ('<div class="doc-signed-ts">Completed ' + esc(fmtDateTime(a.signedAt)) + signedWho + '</div>') : '';
+        return '<div class="' + rowCls + '">' +
+          '<div class="doc-agreement-main">' +
+            '<div class="doc-agreement-name">' + (isSigned ? SIGNED_CHECK_SVG + ' ' : '') + esc(a.templateName || 'Agreement') + '</div>' +
+            '<div class="doc-agreement-meta">' +
+              '<span class="doc-agreement-status" style="color:' + si.color + '">' + si.label + '</span>' +
+              ' ' + renderActivityTimeline(a) +
+              ' · ' + esc(a.sentTo || a.customerEmail || '—') +
+              ' · ' + dateDisplay +
+            '</div>' +
+            signedTs +
+          '</div>' +
+          (canSend ? '<button class="doc-send-btn" data-idx="' + i + '" onclick="sendAgreement(' + i + ')">' + btnLabel + '</button>' : '') +
+        '</div>';
+      }).join('');
+      return '<div class="doc-routing-bucket">' +
+        '<div class="doc-routing-bucket-head" style="color:#6b7280;">Other agreements <span class="doc-routing-bucket-count">(' + otherAgreements.length + ')</span></div>' +
+        '<div class="doc-agreements-list">' + rows + '</div>' +
+      '</div>';
+    }
+
+    // Phase 4: mismatch banner + Needs review section
+    function renderMismatchBanner() {
+      if (!routingMismatches.hasMismatch) return '';
+      const n = routingMismatches.mismatches.length;
+      return '<div class="doc-mismatch-banner">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>' +
+        '<div class="doc-mismatch-banner-text">' +
+          '<strong>Project signals changed</strong> — ' + n + ' existing agreement' + (n === 1 ? '' : 's') + ' may no longer match the current project.' +
+        '</div>' +
+        '<a class="doc-mismatch-banner-link" href="#docNeedsReview">Review</a>' +
+      '</div>';
+    }
+
+    function renderNeedsReview() {
+      if (!routingMismatches.hasMismatch) return '';
+      const rows = routingMismatches.mismatches.map(function(m) {
+        const si = stageInfoMap[m.stage] || stageInfoMap.draft;
+        const canSend = m.stage !== 'signed';
+        const btnLabel = m.stage === 'draft' ? 'Send' : 'Resend';
+        return '<div class="doc-agreement-row doc-mismatch-row">' +
+          '<div class="doc-agreement-main">' +
+            '<div class="doc-agreement-name">' + esc(m.templateName) + '</div>' +
+            '<div class="doc-agreement-meta">' +
+              '<span class="doc-agreement-status" style="color:' + si.color + '">' + si.label + '</span>' +
+              ' · ' +
+              '<span class="doc-mismatch-reason">' + esc(m.reason) + '</span>' +
+            '</div>' +
+          '</div>' +
+          (canSend ? '<button class="doc-send-btn" data-idx="' + m.agreementIdx + '" onclick="sendAgreement(' + m.agreementIdx + ')">' + btnLabel + '</button>' : '') +
+          '<button class="doc-create-btn" onclick="document.getElementById(\'newAgreementModal\').classList.add(\'open\')" title="Browse templates to create a replacement">Browse</button>' +
+        '</div>';
+      }).join('');
+      return '<div class="doc-routing-bucket doc-needs-review" id="docNeedsReview">' +
+        '<div class="doc-routing-bucket-head" style="color:#b45309;">Needs review <span class="doc-routing-bucket-count">(' + routingMismatches.mismatches.length + ')</span></div>' +
+        '<div class="doc-needs-review-hint">These existing agreements were created when project signals were different. They are still accessible below and can be sent/resent as usual; this section only flags that they may no longer be the right documents for the current project.</div>' +
+        '<div class="doc-agreements-list">' + rows + '</div>' +
+      '</div>';
+    }
+
+    const mismatchBannerHtml = renderMismatchBanner();
+    const needsReviewHtml = renderNeedsReview();
+
+    const groupedHtml =
+      needsReviewHtml +
+      renderBucket('Required', '#dc2626', routedDocs.required) +
+      renderBucket('Recommended', '#8b5cf6', routedDocs.recommended) +
+      renderBucket('Optional', '#6b7280', routedDocs.optional) +
+      renderOtherAgreementsBlock();
+
+    const anyRouted = routedDocs.required.length + routedDocs.recommended.length + routedDocs.optional.length;
+    const emptyHtml = (!anyRouted && !otherAgreements.length)
+      ? '<div class="doc-routing-empty">No agreements routed to this project yet. Use <strong>Browse all templates</strong> below to create one manually.</div>'
+      : '';
+
     tabContent = `
       <div class="doc-header">
         <div class="doc-title">
@@ -3101,24 +3693,66 @@ app.get("/project/:id", (req, res) => {
       <div class="doc-section">
         <div class="doc-section-label">Agreements <span class="doc-info-icon"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16" stroke-width="3" stroke-linecap="round"/></svg></span></div>
         <div class="doc-section-sub"><em>Powered by Docusign</em></div>
+        ${mismatchBannerHtml}
+        ${groupedHtml}
+        ${emptyHtml}
         <div class="doc-cards-row">
           <div class="doc-card">
-            <div class="doc-card-title">New agreement</div>
-            <div class="doc-card-desc">Select and send new agreements.</div>
+            <div class="doc-card-title">Browse all templates</div>
+            <div class="doc-card-desc">Manually pick any template in the library (including unrouted ones).</div>
             <div class="doc-card-preview"></div>
-            <button class="doc-card-btn">New</button>
+            <button class="doc-card-btn" onclick="document.getElementById('newAgreementModal').classList.add('open')">Browse</button>
           </div>
         </div>
       </div>
 
-      <div class="doc-section">
-        <div class="doc-section-label">Legacy Agreements <span class="doc-info-icon"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16" stroke-width="3" stroke-linecap="round"/></svg></span></div>
-        <div class="doc-cards-row">
-          <div class="doc-card">
-            <div class="doc-card-title">New agreement</div>
-            <div class="doc-card-desc">Select and send new agreements.</div>
-            <div class="doc-card-preview"></div>
-            <button class="doc-card-btn">New</button>
+      <!-- Create new agreement modal -->
+      <div class="cna-overlay" id="newAgreementModal">
+        <div class="cna-modal">
+          <button class="cna-close" onclick="document.getElementById('newAgreementModal').classList.remove('open')">×</button>
+          <div class="cna-title">Create new agreement</div>
+          <div class="cna-field-label">Agreement</div>
+          <select class="cna-select" id="cnaAgreementSelect">
+            ${(utilityTemplates.length > 0 ? utilityTemplates : allAgreementTemplates).map(t => '<option value="' + t.id + '">' + esc(t.name) + '</option>').join('')}
+          </select>
+          <div class="cna-help" id="cnaUtilityFilterInfo">
+            ${utilityTemplates.length > 0
+              ? 'Showing ' + utilityTemplates.length + ' template' + (utilityTemplates.length === 1 ? '' : 's') + ' for ' + esc(customerUtility) + '. <a href="#" id="cnaShowAll" style="color:#2d9d8f;font-weight:500;">Show all ' + allAgreementTemplates.length + ' templates</a>'
+              : 'No templates linked to ' + esc(customerUtility) + ' — showing all ' + allAgreementTemplates.length + ' templates.'
+            }
+          </div>
+          <script>
+            (function() {
+              var showAll = document.getElementById('cnaShowAll');
+              if (!showAll) return;
+              var ALL_TEMPLATES = ${JSON.stringify(allAgreementTemplates.map(t => ({ id: t.id, name: t.name })))};
+              showAll.addEventListener('click', function(e) {
+                e.preventDefault();
+                var sel = document.getElementById('cnaAgreementSelect');
+                sel.innerHTML = ALL_TEMPLATES.map(function(t) { return '<option value="' + t.id + '">' + t.name + '</option>'; }).join('');
+                document.getElementById('cnaUtilityFilterInfo').textContent = 'Showing all ' + ALL_TEMPLATES.length + ' templates.';
+              });
+            })();
+          </script>
+          <div class="cna-field-label" style="margin-top:18px">Customer</div>
+          <div class="cna-customer-row">
+            <div class="cna-customer-col">
+              <div class="cna-sub-label">Name</div>
+              <input class="cna-input" id="cnaCustomerName" type="text" value="${esc(project.customer?.name || project.projectName || '')}"/>
+            </div>
+            <div class="cna-customer-col">
+              <div class="cna-sub-label">Email</div>
+              <input class="cna-input" id="cnaCustomerEmail" type="email" value="${esc(project.customer?.email || '')}"/>
+            </div>
+          </div>
+          <div class="cna-field-label" style="margin-top:18px">Locale</div>
+          <div class="cna-help">Determines field formatting for this agreement.</div>
+          <select class="cna-select" id="cnaLocale">
+            <option>United States</option>
+          </select>
+          <div class="cna-actions">
+            <button class="cna-btn-cancel" onclick="document.getElementById('newAgreementModal').classList.remove('open')">Cancel</button>
+            <button class="cna-btn-continue" id="cnaContinueBtn">Continue</button>
           </div>
         </div>
       </div>
@@ -3699,6 +4333,23 @@ app.get("/project/:id", (req, res) => {
     }
     .db-utility-template-link:hover { background: #f0fdfa; border-color: #2d9d8f; }
     .db-utility-template-link svg { color: #2d9d8f; flex-shrink: 0; }
+    /* Phase 3: Project signals card */
+    .sig-section { padding: 16px 20px 14px; }
+    .sig-sub { font-weight: 400; color: #9ca3af; font-size: 0.78rem; }
+    .sig-subhead { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin: 18px 0 8px; }
+    .sig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+    .sig-field { display: flex; flex-direction: column; gap: 4px; }
+    .sig-field.sig-full { grid-column: 1 / -1; }
+    .sig-label { font-size: 0.72rem; font-weight: 600; color: #6b7280; }
+    .sig-input { width: 100%; padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.83rem; color: #111; background: #fff; outline: none; font-family: inherit; }
+    .sig-input:focus { border-color: #6e3bf5; }
+    .sig-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; }
+    .sig-status { font-size: 0.78rem; color: #6b7280; }
+    .sig-status.success { color: #10b981; }
+    .sig-status.error { color: #dc2626; }
+    .sig-save-btn { padding: 7px 18px; background: #111; color: #fff; border: none; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+    .sig-save-btn:hover:not(:disabled) { background: #333; }
+    .sig-save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
     .db-energy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
 
     .db-section {
@@ -3883,6 +4534,85 @@ app.get("/project/:id", (req, res) => {
       cursor: pointer; text-align: center;
     }
     .doc-card-btn:hover { background: #f9fafb; }
+    /* Agreement list */
+    .doc-agreements-list { margin-bottom: 16px; }
+    .doc-agreement-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 8px; }
+    /* Signed-state treatment */
+    .doc-agreement-row.doc-agreement-signed { background: #f0fdf4; border-color: #86efac; }
+    .doc-agreement-row.doc-agreement-signed .doc-agreement-name { display: flex; align-items: center; gap: 6px; color: #065f46; }
+    .doc-signed-check { flex-shrink: 0; }
+    .doc-signed-ts { margin-top: 4px; font-size: 0.74rem; color: #047857; font-weight: 500; }
+    /* Activity-timeline hover popover */
+    .doc-activity-wrap { position: relative; display: inline-flex; align-items: center; vertical-align: middle; margin-left: 4px; cursor: help; outline: none; }
+    .doc-activity-icon { color: #9ca3af; }
+    .doc-activity-wrap:hover .doc-activity-icon, .doc-activity-wrap:focus .doc-activity-icon { color: #374151; }
+    .doc-activity-popover {
+      display: none; position: absolute; z-index: 50; top: calc(100% + 6px); left: -8px;
+      background: #111827; color: #f9fafb; padding: 10px 12px; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2); min-width: 240px; max-width: 340px;
+      font-size: 0.75rem; line-height: 1.4;
+    }
+    .doc-activity-wrap:hover .doc-activity-popover,
+    .doc-activity-wrap:focus .doc-activity-popover,
+    .doc-activity-wrap:focus-within .doc-activity-popover { display: block; }
+    .doc-tl-head { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #9ca3af; margin-bottom: 6px; }
+    .doc-tl-row { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 8px; padding: 3px 0; }
+    .doc-tl-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .doc-tl-label { color: #f9fafb; font-weight: 500; }
+    .doc-tl-ts { color: #9ca3af; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .doc-agreement-main { flex: 1; min-width: 0; }
+    .doc-agreement-name { font-size: 0.85rem; font-weight: 500; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-agreement-meta { font-size: 0.78rem; color: #6b7280; white-space: nowrap; margin-top: 2px; }
+    .doc-agreement-status { font-weight: 600; }
+    /* Phase 2: routing buckets */
+    .doc-routing-bucket { margin-bottom: 18px; }
+    .doc-routing-bucket-head { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .doc-routing-bucket-count { font-weight: 500; color: #9ca3af; }
+    .doc-routing-empty { padding: 18px 16px; border: 1px dashed #e5e7eb; border-radius: 8px; color: #6b7280; font-size: 0.83rem; margin-bottom: 14px; }
+    /* Phase 4: mismatch banner + needs-review */
+    .doc-mismatch-banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 8px; margin-bottom: 14px; color: #78350f; }
+    .doc-mismatch-banner svg { color: #d97706; flex-shrink: 0; }
+    .doc-mismatch-banner-text { flex: 1; font-size: 0.85rem; line-height: 1.45; min-width: 0; }
+    .doc-mismatch-banner-text strong { color: #92400e; }
+    .doc-mismatch-banner-link { padding: 5px 12px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 6px; font-size: 0.78rem; font-weight: 600; flex-shrink: 0; }
+    .doc-mismatch-banner-link:hover { background: #d97706; }
+    .doc-needs-review { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
+    .doc-needs-review .doc-routing-bucket-head { margin-bottom: 4px; }
+    .doc-needs-review-hint { font-size: 0.76rem; color: #78350f; line-height: 1.45; margin-bottom: 10px; }
+    .doc-mismatch-row { border-color: #fde68a; background: #fff; }
+    .doc-mismatch-reason { color: #92400e; font-weight: 500; }
+    .doc-reasons-toggle { display: inline-block; margin-top: 6px; padding: 0; background: none; border: none; color: #2d9d8f; font-size: 0.74rem; font-weight: 500; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+    .doc-reasons-toggle:hover { color: #0f766e; }
+    .doc-reasons { margin-top: 6px; padding: 8px 10px; background: #f9fafb; border-radius: 6px; font-size: 0.74rem; color: #374151; line-height: 1.5; border-left: 3px solid #2d9d8f; }
+    .doc-create-btn { padding: 5px 14px; background: #fff; color: #111; border: 1px solid #111; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+    .doc-create-btn:hover:not(:disabled) { background: #111; color: #fff; }
+    .doc-create-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .doc-send-btn { padding: 5px 14px; background: #111; color: #fff; border: none; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+    .doc-send-btn:hover:not(:disabled) { background: #333; }
+    .doc-send-btn:disabled { background: #6b7280; cursor: not-allowed; }
+    .doc-send-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: doc-spin 0.7s linear infinite; }
+    @keyframes doc-spin { to { transform: rotate(360deg); } }
+    /* Create new agreement modal */
+    .cna-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.5); z-index: 9999; align-items: center; justify-content: center; }
+    .cna-overlay.open { display: flex; }
+    .cna-modal { background: #fff; border-radius: 14px; padding: 28px 32px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,0.2); position: relative; }
+    .cna-close { position: absolute; top: 16px; right: 18px; background: none; border: none; font-size: 1.3rem; color: #6b7280; cursor: pointer; padding: 4px; line-height: 1; }
+    .cna-close:hover { color: #111; }
+    .cna-title { font-size: 1.1rem; font-weight: 700; color: #111; margin-bottom: 20px; }
+    .cna-field-label { font-size: 0.82rem; font-weight: 600; color: #111; margin-bottom: 6px; }
+    .cna-sub-label { font-size: 0.72rem; font-weight: 600; color: #6b7280; margin-bottom: 4px; }
+    .cna-help { font-size: 0.72rem; color: #6b7280; margin-bottom: 6px; }
+    .cna-select { width: 100%; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.88rem; background: #f9fafb; outline: none; color: #111; }
+    .cna-select:focus { border-color: #7c3aed; background: #fff; }
+    .cna-input { width: 100%; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.88rem; outline: none; background: #f9fafb; color: #111; }
+    .cna-input:focus { border-color: #7c3aed; background: #fff; }
+    .cna-customer-row { display: flex; gap: 12px; }
+    .cna-customer-col { flex: 1; min-width: 0; }
+    .cna-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+    .cna-btn-cancel { padding: 8px 20px; border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer; border: none; background: none; color: #374151; }
+    .cna-btn-cancel:hover { background: #f3f4f6; }
+    .cna-btn-continue { padding: 8px 20px; border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer; border: none; background: #111; color: #fff; }
+    .cna-btn-continue:hover { background: #333; }
     .doc-card-empty {
       background: #f9fafb; align-items: center; justify-content: center;
       padding: 40px 20px; text-align: center; border-style: solid; min-height: 240px;
@@ -4052,6 +4782,145 @@ app.get("/project/:id", (req, res) => {
 
   <script>
     var PROJECT_ID = "${project.id}";
+
+    /* ── Agreements ── */
+    var cnaBtn = document.getElementById('cnaContinueBtn');
+    if (cnaBtn) {
+      cnaBtn.addEventListener('click', function() {
+        var templateId = document.getElementById('cnaAgreementSelect').value;
+        var name = document.getElementById('cnaCustomerName').value;
+        var email = document.getElementById('cnaCustomerEmail').value;
+        fetch('/api/projects/' + PROJECT_ID + '/agreements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ templateId: templateId, customerName: name, customerEmail: email })
+        }).then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.success) location.reload();
+        });
+      });
+    }
+    function sendAgreement(idx) {
+      var btn = document.querySelector('.doc-send-btn[data-idx="' + idx + '"]');
+      if (btn) {
+        btn.disabled = true;
+        btn.dataset.origText = btn.textContent;
+        btn.innerHTML = '<span class="doc-send-spinner"></span> Sending...';
+      }
+      fetch('/api/projects/' + PROJECT_ID + '/agreements/' + idx + '/send', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.success) {
+            if (btn) btn.innerHTML = '✓ Sent';
+            setTimeout(function() {
+              alert('Agreement sent to ' + (data.sentTo || 'customer'));
+              location.reload();
+            }, 300);
+          } else {
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = btn.dataset.origText || 'Send';
+            }
+            alert(data.error || 'Failed to send');
+          }
+        })
+        .catch(function(err) {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.origText || 'Send';
+          }
+          alert('Network error: ' + err.message);
+        });
+    }
+
+    /* ── Phase 2: create a draft agreement from a routed template row ── */
+    function createAgreementFromTemplate(templateId) {
+      var row = document.querySelector('.doc-agreement-row[data-template-id="' + templateId + '"]');
+      var btn = row ? row.querySelector('.doc-create-btn') : null;
+      if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+      // Pull customer name/email from the modal's defaults (they're already pre-filled from project.customer)
+      var name = (document.getElementById('cnaCustomerName') || {}).value || '';
+      var email = (document.getElementById('cnaCustomerEmail') || {}).value || '';
+      fetch('/api/projects/' + PROJECT_ID + '/agreements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateId: templateId, customerName: name, customerEmail: email })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.success) location.reload();
+        else {
+          if (btn) { btn.disabled = false; btn.textContent = 'Create'; }
+          alert(data.error || 'Failed to create');
+        }
+      }).catch(function(err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Create'; }
+        alert('Network error: ' + err.message);
+      });
+    }
+
+    /* ── Phase 2: "Why is this showing?" reveal ── */
+    function toggleReasons(btn) {
+      var next = btn.nextElementSibling;
+      if (!next) return;
+      next.hidden = !next.hidden;
+      btn.textContent = next.hidden ? 'Why is this showing?' : 'Hide';
+    }
+
+    /* ── Phase 3: save project + active-design routing signals ── */
+    function saveProjectSignals() {
+      var btn = document.getElementById('sigSaveBtn');
+      var statusEl = document.getElementById('sigStatus');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+      if (statusEl) { statusEl.textContent = ''; statusEl.className = 'sig-status'; }
+
+      function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
+      function boolOrNull(v) { return v === 'true' ? true : v === 'false' ? false : null; }
+
+      var projBody = {
+        state:      val('sigState'),
+        utility:    val('sigUtility'),
+        financing:  val('sigFinancing'),
+        lenderId:   val('sigLender'),
+        ahj:        val('sigAhj'),
+        nmProgram:  val('sigNm'),
+        partnerId:  val('sigPartner'),
+        incentives: val('sigIncentives')
+      };
+      var hoaRaw = val('sigHoa');
+      if (hoaRaw === '') projBody.hoa = null;
+      else projBody.hoa = hoaRaw === 'true';
+
+      var designBody = {};
+      var hbRaw = val('sigHasBattery');
+      if (hbRaw !== '') designBody.hasBattery = hbRaw === 'true';
+      var bkRaw = val('sigBatteryKwh');
+      if (bkRaw !== '') designBody.batteryKwh = (isNaN(parseFloat(bkRaw)) ? null : parseFloat(bkRaw));
+      var puRaw = val('sigPanelUpgrade');
+      if (puRaw !== '') designBody.panelUpgradeNeeded = puRaw === 'true';
+      var rtRaw = val('sigRoofType');
+      if (rtRaw !== '') designBody.roofType = rtRaw;
+
+      var tasks = [fetch('/api/projects/' + PROJECT_ID + '/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projBody)
+      })];
+      if (window.SIG_ACTIVE_DESIGN_ID && Object.keys(designBody).length > 0) {
+        tasks.push(fetch('/api/projects/' + PROJECT_ID + '/designs/' + encodeURIComponent(window.SIG_ACTIVE_DESIGN_ID) + '/metadata', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(designBody)
+        }));
+      }
+      Promise.all(tasks).then(function(rs) {
+        var allOk = rs.every(function(r) { return r.ok; });
+        if (!allOk) throw new Error('One or more signal updates failed');
+        if (statusEl) { statusEl.textContent = 'Saved — reloading…'; statusEl.className = 'sig-status success'; }
+        setTimeout(function() { location.reload(); }, 400);
+      }).catch(function(err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save signals'; }
+        if (statusEl) { statusEl.textContent = err.message || 'Failed to save'; statusEl.className = 'sig-status error'; }
+      });
+    }
 
     /* ── Create new design from dashboard ── */
     function createNewDesignFromDashboard() {
@@ -6486,6 +7355,10 @@ app.get("/design", (req, res) => {
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M1 12h4"/><path d="M19 12h4"/><path d="M4.22 4.22l2.83 2.83"/><path d="M16.95 16.95l2.83 2.83"/><path d="M4.22 19.78l2.83-2.83"/><path d="M16.95 7.05l2.83-2.83"/></svg>
               Auto detect roof</div><span class="lp-subitem-key">A</span>
             </div>
+            <div class="lp-subitem" id="btnMlAutoBuild"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
+              ML Auto Build</div><span class="lp-subitem-key">M</span>
+            </div>
             <div class="lp-subitem" id="btnSmartRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
               Smart roof</div><span class="lp-subitem-key">R</span>
@@ -7076,6 +7949,31 @@ app.get("/design", (req, res) => {
         <button class="rp-tab" id="rpTabSimulation">Simulation</button>
       </div>
       <div class="rp-body" id="rpBody">
+
+        <!-- System Equipment (panel + inverter selection) -->
+        <div class="rp-section" id="systemEquipmentSection">
+          <div class="rp-section-title">System Equipment</div>
+          <div class="rp-row" style="margin-bottom:10px;">
+            <div class="rp-row-label">Module</div>
+            <select class="rp-select" id="rpModuleSelect" style="flex:1;margin-left:12px;"></select>
+          </div>
+          <div class="rp-row" style="margin-bottom:10px;">
+            <div class="rp-row-label">Inverter</div>
+            <select class="rp-select" id="rpInverterSelect" style="flex:1;margin-left:12px;"></select>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;color:#aaa;margin-top:6px;">
+            <span>Module wattage</span><span id="rpModuleWattage" style="color:#eee;">&mdash;</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;color:#aaa;margin-top:4px;">
+            <span>Inverter AC power</span><span id="rpInverterAcPower" style="color:#eee;">&mdash;</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;color:#aaa;margin-top:4px;">
+            <span>Total modules placed</span><span id="rpModuleTotal" style="color:#eee;">0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;color:#fff;font-weight:600;margin-top:6px;border-top:1px solid #2a2a2a;padding-top:6px;">
+            <span>System size</span><span id="rpSystemSize" style="color:#00e5ff;">0.00 kW</span>
+          </div>
+        </div>
 
         <!-- Roof Face Information (shown when roof face/section selected) -->
         <div class="rp-section" id="roofPropsSection" style="display:none;">
@@ -8086,22 +8984,105 @@ app.get("/design", (req, res) => {
 
     function markDirty() { isDirty = true; updateProductionStats(); }
 
+    /* ── Equipment (modules / inverters) selection ── */
+    var equipmentModules = [];
+    var equipmentInverters = [];
+    var selectedModuleId = null;
+    var selectedInverterId = null;
+
+    function getSelectedModule() {
+      return equipmentModules.find(function(m) { return m.id === selectedModuleId; }) || null;
+    }
+    function getSelectedInverter() {
+      return equipmentInverters.find(function(i) { return i.id === selectedInverterId; }) || null;
+    }
+    function getSelectedModuleWattage() {
+      var m = getSelectedModule();
+      return (m && Number(m.wattage)) || 400;
+    }
+
+    function populateEquipmentSelects() {
+      var modSel = document.getElementById('rpModuleSelect');
+      var invSel = document.getElementById('rpInverterSelect');
+      if (modSel) {
+        modSel.innerHTML = equipmentModules.map(function(m) {
+          var sel = (m.id === selectedModuleId) ? ' selected' : '';
+          var label = (m.manufacturer ? m.manufacturer + ' \u2014 ' : '') + m.name + ' (' + (m.wattage || '?') + 'W)';
+          return '<option value="' + m.id + '"' + sel + '>' + label + '</option>';
+        }).join('');
+      }
+      if (invSel) {
+        invSel.innerHTML = equipmentInverters.map(function(i) {
+          var sel = (i.id === selectedInverterId) ? ' selected' : '';
+          var label = (i.manufacturer ? i.manufacturer + ' \u2014 ' : '') + i.name + ' (' + (i.acPower || '?') + 'W AC)';
+          return '<option value="' + i.id + '"' + sel + '>' + label + '</option>';
+        }).join('');
+      }
+      refreshEquipmentInfo();
+    }
+
+    function refreshEquipmentInfo() {
+      var m = getSelectedModule();
+      var inv = getSelectedInverter();
+      var totalModules = 0;
+      if (typeof roofFaces3d !== 'undefined') {
+        roofFaces3d.forEach(function(f) { totalModules += (f.modules || 0); });
+      }
+      var w = m ? Number(m.wattage) || 0 : 0;
+      var sysSize = (totalModules * w) / 1000;
+      var elW = document.getElementById('rpModuleWattage');
+      if (elW) elW.textContent = w ? (w + ' W') : '\u2014';
+      var elI = document.getElementById('rpInverterAcPower');
+      if (elI) elI.textContent = inv && inv.acPower ? (inv.acPower + ' W AC') : '\u2014';
+      var elT = document.getElementById('rpModuleTotal');
+      if (elT) elT.textContent = totalModules;
+      var elS = document.getElementById('rpSystemSize');
+      if (elS) elS.textContent = sysSize.toFixed(2) + ' kW';
+    }
+
+    function initEquipmentPickers() {
+      Promise.all([
+        fetch('/api/equipment/modules?enabled=true').then(function(r) { return r.json(); }),
+        fetch('/api/equipment/inverters?enabled=true').then(function(r) { return r.json(); })
+      ]).then(function(results) {
+        equipmentModules = results[0] || [];
+        equipmentInverters = results[1] || [];
+        if (!selectedModuleId && equipmentModules[0]) selectedModuleId = equipmentModules[0].id;
+        if (!selectedInverterId && equipmentInverters[0]) selectedInverterId = equipmentInverters[0].id;
+        populateEquipmentSelects();
+        var modSel = document.getElementById('rpModuleSelect');
+        var invSel = document.getElementById('rpInverterSelect');
+        if (modSel) modSel.addEventListener('change', function() {
+          selectedModuleId = modSel.value;
+          markDirty();
+          refreshEquipmentInfo();
+        });
+        if (invSel) invSel.addEventListener('change', function() {
+          selectedInverterId = invSel.value;
+          markDirty();
+          refreshEquipmentInfo();
+        });
+      }).catch(function(e) { console.error('Equipment load failed:', e); });
+    }
+
     function updateProductionStats() {
       // Count total modules across all roof faces
       var totalModules = 0;
       roofFaces3d.forEach(function(f) { totalModules += (f.modules || 0); });
       var prodPanels = document.getElementById('prodPanels');
       if (prodPanels) prodPanels.textContent = totalModules > 0 ? totalModules : '\u2014';
+      var wattage = getSelectedModuleWattage();
       var prodEnergy = document.getElementById('prodEnergy');
       if (prodEnergy) {
         if (totalModules > 0) {
-          // ~400W per module, ~1500 kWh/kW/yr average
-          var kWh = Math.round(totalModules * 0.4 * 1500);
+          // selected module wattage × ~1500 kWh/kW/yr average
+          var kWh = Math.round(totalModules * (wattage / 1000) * 1500);
           prodEnergy.innerHTML = kWh.toLocaleString() + '<span>kWh</span>';
         } else {
           prodEnergy.innerHTML = '\u2014<span>kWh</span>';
         }
       }
+      refreshEquipmentInfo();
     }
 
     function handleBack(e) {
@@ -8131,7 +9112,12 @@ app.get("/design", (req, res) => {
 
     function saveCurrentDesign(callback) {
       if (!projectId || !currentDesignId) { if (callback) callback(); return; }
-      var data = { trees: serializeTrees(), roofFaces: serializeRoofFaces() };
+      var data = {
+        trees: serializeTrees(),
+        roofFaces: serializeRoofFaces(),
+        moduleId: selectedModuleId,
+        inverterId: selectedInverterId
+      };
       fetch('/api/projects/' + projectId + '/designs/' + currentDesignId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -8190,6 +9176,11 @@ app.get("/design", (req, res) => {
         currentDesignId = designId;
         isDirty = false;
         var design = data.design;
+
+        /* Restore equipment selection */
+        if (design.moduleId) selectedModuleId = design.moduleId;
+        if (design.inverterId) selectedInverterId = design.inverterId;
+        populateEquipmentSelects();
 
         /* Update header */
         document.getElementById('tbDesignLabel').textContent = design.name;
@@ -8603,6 +9594,9 @@ app.get("/design", (req, res) => {
 
     // Safety fallback: never let the overlay hang forever
     setTimeout(dismissDesignLoadingOverlay, 12000);
+
+    // Load equipment options as soon as DOM is ready
+    initEquipmentPickers();
 
     // Auto-init 3D viewer on page load
     setTimeout(function() {
@@ -14928,6 +15922,183 @@ app.get("/design", (req, res) => {
       });
     }
 
+    /* ── ML Auto Build: dedicated ML-only roof generation ── */
+    // Called from the "ML Auto Build" button. Calls ONLY /api/ml/auto-build
+    // (never /api/roof/auto-detect). Loads returned roof faces into the same
+    // working preview state that finalizeRoofFace uses. The saved design on
+    // disk is NOT touched — only saveCurrentDesign() does that.
+    function mlAutoBuild() {
+      if (roofDrawingMode) toggleRoofDrawingMode();
+      if (treePlacingMode) toggleTreeMode();
+
+      var banner = document.getElementById('roofModeBanner');
+      if (banner) {
+        banner.style.display = 'flex';
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: loading LiDAR...';
+      }
+
+      // LiDAR is helpful (real DSM-fit tilts + azimuths) but not required:
+      // the ML wrapper falls back to a default-pitch scene when no points
+      // arrive. Wait up to ~10s for the DSM, then run the ML call with
+      // whatever we have. On failure or timeout surface a warning banner
+      // and still continue — never block the user on LiDAR.
+      if (!lidarRawPoints || lidarRawPoints.length === 0) {
+        if (!lidarFetched && !lidarLoading) loadLidarPoints(true);
+        var waitCount = 0;
+        var waitInterval = setInterval(function() {
+          waitCount++;
+          if (lidarRawPoints && lidarRawPoints.length > 0) {
+            clearInterval(waitInterval);
+            mlAutoBuildContinue();
+          } else if (waitCount > 20 || lidarLoadError) {
+            clearInterval(waitInterval);
+            if (banner) {
+              banner.style.background = '#fff7e6';
+              banner.style.color = '#7a4a00';
+              banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a86100" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> LiDAR unavailable — running ML Auto Build without DSM; pitch/orientation may need review.';
+            }
+            mlAutoBuildContinue(/*withoutLidar=*/true);
+          }
+        }, 500);
+        return;
+      }
+      mlAutoBuildContinue();
+    }
+
+    function mlAutoBuildContinue(withoutLidar) {
+      var banner = document.getElementById('roofModeBanner');
+      // Don't overwrite the yellow "LiDAR unavailable" banner that
+      // mlAutoBuild() may have just shown — let that warning stay visible
+      // while the image-only ML call runs.
+      if (banner && !withoutLidar) {
+        banner.style.display = 'flex';
+        banner.style.background = '';
+        banner.style.color = '';
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: generating 3D roof model...';
+      }
+
+      var pId = (typeof projectId !== 'undefined' && projectId) ? projectId : 'unknown';
+      var calibOffsetX = 0, calibOffsetZ = 0;
+      if (calibSavedTransform) {
+        calibOffsetX = calibSavedTransform.tx || 0;
+        calibOffsetZ = calibSavedTransform.tz || 0;
+      } else if (lidarPoints) {
+        calibOffsetX = lidarPoints.position.x || 0;
+        calibOffsetZ = lidarPoints.position.z || 0;
+      }
+
+      var anchorDots = [];
+      if (calibSavedTransform && calibSavedTransform.controlPoints) {
+        anchorDots = calibSavedTransform.controlPoints.map(function(cp, i) {
+          return { id: 'dot_' + i, x: cp.sat.x, z: cp.sat.z,
+            lat: designLat + (cp.sat.z / -111320),
+            lng: designLng + (cp.sat.x / (111320 * Math.cos(designLat * Math.PI / 180))),
+            label: 'calib_' + i };
+        });
+      }
+
+      var lidarPts = [];
+      if (lidarRawPoints) {
+        for (var i = 0; i < lidarRawPoints.length; i++) lidarPts.push(lidarRawPoints[i]);
+      }
+
+      var mlPayload = {
+        projectId: pId,
+        designId: currentDesignId || null,
+        project_id: pId,
+        anchor_dots: anchorDots,
+        calibration_offset: { tx: calibOffsetX, tz: calibOffsetZ },
+        lidar: {
+          points: lidarPts,
+          bounds: [-35, -35, 35, 35],
+          resolution: 0.25,
+          source: 'google_solar_dsm'
+        },
+        image: {
+          url: '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640',
+          width_px: 640,
+          height_px: 640,
+          geo_bounds: [designLat - 0.000315, designLng - 0.000420, designLat + 0.000315, designLng + 0.000420],
+          resolution_m_per_px: 0.109375
+        },
+        design_center: { lat: designLat, lng: designLng },
+        options: {
+          pipeline_mode: 'ml_v2',
+          confidence_threshold: 0.5,
+          max_planes: 20
+        }
+      };
+
+      fetch('/api/ml/auto-build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mlPayload)
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(mlData) {
+        if (mlData.error) {
+          // Surface the "detail" (upstream fetch error) and "hint"
+          // (env-var fix) fields so config problems are actionable from
+          // the banner instead of requiring a server-log dive. Log the
+          // full payload for deeper diagnosis.
+          console.log('ML Auto Build error payload:', mlData);
+          if (banner) {
+            var extras = [mlData.detail, mlData.hint].filter(Boolean).join(' · ');
+            banner.style.background = '';
+            banner.style.color = '';
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build: ' + mlData.error + (extras ? ' — ' + extras : '');
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 9000);
+          }
+          return;
+        }
+        var faces = mlData.crmResult && mlData.crmResult.roof_faces;
+        if (!faces || faces.length === 0) {
+          // Empty faces is usually a pipeline disposition (reject / needs_review
+          // on an unusable image), not a transport error. Surface the reason
+          // from the envelope so the user knows why, rather than a generic
+          // "no roof faces" that hides the diagnostic info.
+          var gate   = (mlData.crmResult && mlData.crmResult.status) || '';
+          var dispo  = mlData.disposition || '';
+          var reason = mlData.reason || '';
+          var detail = [dispo && ('disposition: ' + dispo), gate && ('gate: ' + gate), reason].filter(Boolean).join(' · ');
+          console.log('ML Auto Build empty result:', mlData);
+          if (banner) {
+            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build returned no roof faces' + (detail ? ' — ' + detail : '') + '.';
+            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 8000);
+          }
+          return;
+        }
+
+        pushUndo();
+        clearAllRoofFaces();
+        var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+        faces.forEach(function(face, i) {
+          var idx = finalizeRoofFace(
+            face.vertices,
+            face.pitch || 0,
+            face.azimuth || 0,
+            face.height || 0,
+            face.deletedSections || null,
+            face.sectionPitches || null
+          );
+          roofFaces3d[idx].color = faceColors[i % faceColors.length];
+          rebuildRoofFace(idx);
+        });
+        isDirty = true;
+
+        if (banner) {
+          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '') + '. Save to keep changes.';
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
+        }
+      })
+      .catch(function(err) {
+        if (banner) {
+          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build failed: ' + err.message;
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
+        }
+      });
+    }
+
     function autoGenerateRoof() {
       if (roofDrawingMode) toggleRoofDrawingMode();
       if (treePlacingMode) toggleTreeMode();
@@ -15662,6 +16833,15 @@ app.get("/design", (req, res) => {
           else enterChimneyPlaceMode();
           return;
         }
+        if ((e.key === 'm' || e.key === 'M') &&
+            !e.metaKey && !e.ctrlKey && !e.altKey &&
+            document.activeElement &&
+            document.activeElement.tagName !== 'INPUT' &&
+            document.activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          mlAutoBuild();
+          return;
+        }
         if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
           e.preventDefault();
           if (roofSelectedSection >= 0) {
@@ -15678,9 +16858,14 @@ app.get("/design", (req, res) => {
       var btnSmart = document.getElementById('btnSmartRoof');
       var btnFlat = document.getElementById('btnFlatRoof');
       var btnAutoDetect = document.getElementById('btnAutoDetect');
+      var btnMlAuto = document.getElementById('btnMlAutoBuild');
       if (btnAutoDetect) btnAutoDetect.addEventListener('click', function(e) {
         e.stopPropagation();
         autoDetectRoof();
+      });
+      if (btnMlAuto) btnMlAuto.addEventListener('click', function(e) {
+        e.stopPropagation();
+        mlAutoBuild();
       });
       if (btnManual) btnManual.addEventListener('click', function(e) {
         e.stopPropagation();
@@ -16401,8 +17586,34 @@ app.get("/sales", (req, res) => {
   const production = [220, 280, 870, 1010, 1060, 1200, 1250, 1220, 880, 490, 220, 120];
   const annualProduction = production.reduce((a, b) => a + b, 0);
   const systemCost = 46225;
-  const systemSize = 10.75;
-  const panelCount = Math.round(systemSize * 1000 / 400);
+
+  // Pull system size + panel count from the project's active design and equipment library.
+  // Falls back to the legacy 10.75 kW / 400 W defaults if the design has no roof faces / equipment yet.
+  const activeDesign = (project.designs || []).find(d => d.id === project.activeDesignId)
+    || (project.designs || [])[0] || null;
+  const equipment = loadEquipment();
+  const designModule = activeDesign && activeDesign.moduleId
+    ? (equipment.modules || []).find(m => m.id === activeDesign.moduleId)
+    : null;
+  const designInverter = activeDesign && activeDesign.inverterId
+    ? (equipment.inverters || []).find(i => i.id === activeDesign.inverterId)
+    : null;
+  const designPanelCount = activeDesign && Array.isArray(activeDesign.roofFaces)
+    ? activeDesign.roofFaces.reduce((sum, f) => sum + (Number(f.modules) || 0), 0)
+    : 0;
+  const moduleWattage = (designModule && Number(designModule.wattage)) || 400;
+  const systemSize = designPanelCount > 0
+    ? Number(((designPanelCount * moduleWattage) / 1000).toFixed(2))
+    : 10.75;
+  const panelCount = designPanelCount > 0
+    ? designPanelCount
+    : Math.round(systemSize * 1000 / moduleWattage);
+  const moduleLabel = designModule
+    ? ((designModule.manufacturer ? designModule.manufacturer + " — " : "") + designModule.name)
+    : "Default module";
+  const inverterLabel = designInverter
+    ? ((designInverter.manufacturer ? designInverter.manufacturer + " — " : "") + designInverter.name)
+    : "Default inverter";
   const avgRate = 0.18;
   const estMonthlyBill = Math.round(avgMonthlyUsage * avgRate) || 185;
   const estAnnualBill = estMonthlyBill * 12;
@@ -16668,6 +17879,7 @@ app.get("/sales", (req, res) => {
             <div class="design-spec"><div class="design-spec-val">${annualProduction.toLocaleString()} <span style="font-size:0.55em;font-weight:400">kWh</span></div><div class="design-spec-label">Annual Production</div></div>
             <div class="design-spec"><div class="design-spec-val">$${systemCost.toLocaleString()}</div><div class="design-spec-label">System Cost</div></div>
             <div class="design-spec" style="grid-column:span 2"><div class="design-spec-val s-green">${offsetPct}%</div><div class="design-spec-label">Estimated Energy Offset</div></div>
+            <div class="design-spec" style="grid-column:span 2;text-align:left"><div style="font-size:0.85rem;color:#fff;font-weight:600;margin-bottom:6px;">Equipment</div><div style="font-size:0.75rem;color:rgba(255,255,255,0.7);line-height:1.5;"><div>Module: ${esc(moduleLabel)} (${moduleWattage}W)</div><div>Inverter: ${esc(inverterLabel)}${designInverter && designInverter.acPower ? ' (' + designInverter.acPower + 'W AC)' : ''}</div></div></div>
           </div>
         </div>
       </div>
@@ -17010,7 +18222,7 @@ app.get("/settings", (req, res) => {
       <div class="sidebar-group">
         <div class="sidebar-section-label">Account</div>
         <a class="sidebar-item active" href="/settings">User profile</a>
-        <a class="sidebar-item" href="/settings">Organization profile</a>
+        <a class="sidebar-item" href="/settings/organization">Organization profile</a>
         <a class="sidebar-item" href="/settings">Apps</a>
       </div>
 
@@ -17131,6 +18343,359 @@ app.get("/settings", (req, res) => {
 </html>`);
 });
 
+// ── Organization API ──────────────────────────────────────────────────────────
+app.get("/api/organization", (req, res) => {
+  res.json(loadOrganization());
+});
+
+app.put("/api/organization", (req, res) => {
+  const org = loadOrganization();
+  const editable = ["name", "logoUrl", "contactName", "address", "phone", "email"];
+  editable.forEach(k => { if (req.body[k] !== undefined) org[k] = req.body[k]; });
+  if (req.body.region && typeof req.body.region === "object") {
+    org.region = Object.assign({}, org.region || {}, req.body.region);
+  }
+  saveOrganization(org);
+  res.json(org);
+});
+
+// ── Organization profile settings page ────────────────────────────────────────
+app.get("/settings/organization", (req, res) => {
+  const org = loadOrganization();
+  const reg = org.region || {};
+  const credits = (org.account && org.account.creditUsage) || {};
+  const fmtNum = (n) => (typeof n === "number" ? n.toLocaleString() : (n || "\u2014"));
+  const now = new Date();
+  const longDate = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "short", day: "numeric" });
+  const shortDate = now.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+  const logoInitial = esc((org.name || "?").trim().charAt(0).toUpperCase());
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Organization profile \u2014 Solar CRM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#111;display:flex;height:100vh;overflow:hidden}
+  .rail{width:52px;background:#1a0828;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;flex-shrink:0}
+  .rail-logo{width:32px;height:32px;background:linear-gradient(135deg,#c084fc,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;flex-shrink:0}
+  .rail-btn{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#7c5fa0;transition:all 0.15s;border:none;background:none;text-decoration:none}
+  .rail-btn:hover,.rail-btn.active{background:#2d1045;color:#e2d4f0}
+  .settings-shell{flex:1;display:flex;overflow:hidden}
+  .settings-sidebar{width:210px;flex-shrink:0;border-right:1px solid #e5e7eb;overflow-y:auto;padding:20px 0;background:#fafafa}
+  .sidebar-group{padding:0 12px;margin-bottom:4px}
+  .sidebar-group+.sidebar-group{margin-top:4px;padding-top:12px;border-top:1px solid #e5e7eb}
+  .sidebar-section-label{font-size:0.68rem;font-weight:700;color:#b0b7c3;text-transform:uppercase;letter-spacing:0.6px;padding:0 4px 6px}
+  .sidebar-item{display:block;padding:6px 8px;font-size:0.84rem;color:#4b5563;text-decoration:none;border-radius:6px;transition:background 0.1s,color 0.1s;margin-bottom:1px}
+  .sidebar-item:hover{background:#ede9f6;color:#1a0828}
+  .sidebar-item.active{background:#ede9f6;color:#1a0828;font-weight:600;position:relative}
+  .sidebar-item.active::before{content:'';position:absolute;left:-12px;top:6px;bottom:6px;width:3px;background:#7c3aed;border-radius:0 2px 2px 0}
+  .settings-main{flex:1;overflow-y:auto;padding:32px 40px}
+  .settings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px}
+  .settings-header h1{font-size:1.6rem;font-weight:700;color:#111}
+  .header-actions{display:flex;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:8px;font-size:0.85rem;font-weight:600;border:1px solid transparent;cursor:pointer;transition:all 0.15s;background:#fff;font-family:inherit}
+  .btn-edit{background:#111;color:#fff;border-color:#111}
+  .btn-edit:hover{background:#333;border-color:#333}
+  .btn-cancel{background:#fff;color:#111;border-color:#d1d5db}
+  .btn-cancel:hover{background:#f9fafb}
+  .btn-save{background:#7c3aed;color:#fff;border-color:#7c3aed}
+  .btn-save:hover{background:#6d28d9;border-color:#6d28d9}
+  .profile-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:40px}
+  .section-heading{display:flex;align-items:center;gap:8px;font-size:0.95rem;font-weight:700;color:#111;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid #e5e7eb}
+  .section-heading svg{color:#6b7280;flex-shrink:0}
+  .field{margin-bottom:18px}
+  .field-label{font-size:0.75rem;color:#6b7280;margin-bottom:3px}
+  .field-label .req{color:#dc2626;margin-right:3px}
+  .field-value{font-size:0.9rem;color:#111}
+  .field-value.muted{color:#9ca3af}
+  hr.divider{border:none;border-top:1px solid #e5e7eb;margin:24px 0}
+  .edit-input{width:100%;padding:9px 12px;border:1px solid transparent;border-radius:8px;background:#f3f4f6;font-size:0.88rem;color:#111;font-family:inherit;outline:none;transition:border-color 0.15s,background 0.15s}
+  .edit-input:focus{border-color:#7c3aed;background:#fff}
+  .edit-input-wrap{position:relative}
+  .edit-input-wrap .edit-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#9ca3af;pointer-events:none;display:flex}
+  .edit-input-wrap .edit-input{padding-left:34px}
+  .edit-select{width:100%;padding:9px 32px 9px 12px;border:1px solid transparent;border-radius:8px;background:#f3f4f6 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat right 12px center;font-size:0.88rem;color:#111;font-family:inherit;outline:none;appearance:none;-webkit-appearance:none;transition:border-color 0.15s,background-color 0.15s}
+  .edit-select:focus{border-color:#7c3aed;background-color:#fff}
+  .logo-box{width:140px;height:120px;background:#fef3c7;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:"Brush Script MT","Lucida Handwriting",cursive;font-size:1.8rem;color:#f59e0b;font-weight:700;letter-spacing:0.5px;line-height:1;padding:10px;text-align:center}
+  .logo-box img{width:100%;height:100%;object-fit:contain}
+  .logo-box-edit{cursor:pointer;border:1px dashed #d1d5db}
+  .logo-box-edit:hover{border-color:#7c3aed}
+  .region-preview{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;margin-top:16px}
+  .region-preview-title{font-size:0.75rem;font-weight:600;color:#6b7280;margin-bottom:10px}
+  .region-preview-row{display:flex;justify-content:space-between;font-size:0.82rem;color:#374151;padding:3px 0}
+  .info-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid #9ca3af;font-size:0.6rem;color:#9ca3af;cursor:default;vertical-align:middle;margin-left:3px}
+  .account-status-label{font-size:0.85rem;font-weight:600;color:#111;margin-bottom:3px}
+  .account-status-desc{font-size:0.82rem;color:#6b7280}
+  .account-status-desc a{color:#4a90e2;text-decoration:none}
+  .account-status-desc a:hover{text-decoration:underline}
+  .credit-row{display:flex;justify-content:space-between;font-size:0.85rem;padding:5px 0}
+  .credit-label{color:#6b7280}
+  .credit-val{color:#111;font-weight:500}
+  .page.view-mode .edit-only{display:none}
+  .page.edit-mode .view-only{display:none}
+</style>
+</head><body>
+
+<nav class="rail">
+  <div class="rail-logo" onclick="location.href='/'" style="cursor:pointer">
+    <svg width="18" height="18" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+  </div>
+  <a class="rail-btn" href="/" title="Projects"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></a>
+  <a class="rail-btn" href="/database" title="Database"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></a>
+  <a class="rail-btn active" href="/settings" title="Settings"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></a>
+  <a class="rail-btn" href="/partners" title="Partners"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></a>
+</nav>
+
+<div class="settings-shell">
+  <aside class="settings-sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">Account</div>
+      <a class="sidebar-item" href="/settings">User profile</a>
+      <a class="sidebar-item active" href="/settings/organization">Organization profile</a>
+      <a class="sidebar-item" href="/settings">Apps</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">User management</div>
+      <a class="sidebar-item" href="/settings/users">Users and licenses</a>
+      <a class="sidebar-item" href="/settings/roles">Roles</a>
+      <a class="sidebar-item" href="/settings/teams">Teams</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">Pricing &amp; financing</div>
+      <a class="sidebar-item" href="/settings">Pricing defaults</a>
+      <a class="sidebar-item" href="/settings">Financing</a>
+      <a class="sidebar-item" href="/settings">Utility and tax rates</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">Projects and designs</div>
+      <a class="sidebar-item" href="/settings">Statuses and warnings</a>
+      <a class="sidebar-item" href="/settings">Design</a>
+      <a class="sidebar-item" href="/settings">Financing integrations</a>
+      <a class="sidebar-item" href="/settings">Performance simulations</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">API</div>
+      <a class="sidebar-item" href="/settings">API tokens</a>
+      <a class="sidebar-item" href="/settings">Webhooks</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-section-label">Plan sets</div>
+      <a class="sidebar-item" href="/settings">Contractor profiles</a>
+    </div>
+  </aside>
+
+  <main class="settings-main">
+    <div class="page view-mode" id="orgPage">
+      <div class="settings-header">
+        <h1>Organization profile</h1>
+        <div class="header-actions">
+          <button class="btn btn-edit view-only" onclick="toggleEdit(true)">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Edit
+          </button>
+          <button class="btn btn-cancel edit-only" onclick="toggleEdit(false)">Cancel</button>
+          <button class="btn btn-save edit-only" onclick="saveOrg()">Save</button>
+        </div>
+      </div>
+
+      <div class="profile-grid">
+
+        <div>
+          <div class="section-heading">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            Profile
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span class="edit-only"><span class="req">*</span></span>Organization name</div>
+            <div class="field-value view-only">${esc(org.name || "")}</div>
+            <input class="edit-input edit-only" id="fName" value="${esc(org.name || "")}"/>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Logo</div>
+            <div class="view-only"><div class="logo-box">${org.logoUrl ? `<img src="${esc(org.logoUrl)}" alt="Logo"/>` : `${esc(org.name || logoInitial)}`}</div></div>
+            <div class="edit-only"><div class="logo-box logo-box-edit" onclick="document.getElementById('fLogo').click()">${org.logoUrl ? `<img src="${esc(org.logoUrl)}" alt="Logo"/>` : `${esc(org.name || logoInitial)}`}</div><input type="file" id="fLogo" accept="image/*" style="display:none" onchange="uploadLogo(this)"/></div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Contact name</div>
+            <div class="field-value view-only">${esc(org.contactName || "\u2014")}</div>
+            <input class="edit-input edit-only" id="fContactName" value="${esc(org.contactName || "")}"/>
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span class="edit-only"><span class="req">*</span></span>Address</div>
+            <div class="field-value view-only">${esc(org.address || "\u2014")}</div>
+            <div class="edit-only edit-input-wrap">
+              <span class="edit-icon"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+              <input class="edit-input" id="fAddress" value="${esc(org.address || "")}"/>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Phone number</div>
+            <div class="field-value view-only">${esc(org.phone || "\u2014")}</div>
+            <input class="edit-input edit-only" id="fPhone" value="${esc(org.phone || "")}"/>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Email</div>
+            <div class="field-value view-only">${esc(org.email || "\u2014")}</div>
+            <input class="edit-input edit-only" id="fEmail" type="email" value="${esc(org.email || "")}"/>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-heading">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+            Region
+          </div>
+
+          <div class="field">
+            <div class="field-label">Regional formatting</div>
+            <div class="field-value view-only">${esc(reg.formatting || "\u2014")}</div>
+            <select class="edit-select edit-only" id="fRegFormatting">
+              <option${reg.formatting === "United States" ? " selected" : ""}>United States</option>
+              <option${reg.formatting === "Canada" ? " selected" : ""}>Canada</option>
+              <option${reg.formatting === "United Kingdom" ? " selected" : ""}>United Kingdom</option>
+              <option${reg.formatting === "Australia" ? " selected" : ""}>Australia</option>
+              <option${reg.formatting === "Germany" ? " selected" : ""}>Germany</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Temperature <span class="info-icon">i</span></div>
+            <div class="field-value view-only">${esc(reg.temperature || "\u2014")}</div>
+            <select class="edit-select edit-only" id="fRegTemperature">
+              <option${reg.temperature === "Fahrenheit" ? " selected" : ""}>Fahrenheit</option>
+              <option${reg.temperature === "Celsius" ? " selected" : ""}>Celsius</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Measurement system <span class="info-icon">i</span></div>
+            <div class="field-value view-only">${esc(reg.measurementSystem || "\u2014")}</div>
+            <select class="edit-select edit-only" id="fRegMeasurement">
+              <option${reg.measurementSystem === "Imperial (US)" ? " selected" : ""}>Imperial (US)</option>
+              <option${reg.measurementSystem === "Metric" ? " selected" : ""}>Metric</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Currency <span class="info-icon">i</span></div>
+            <div class="field-value view-only">${esc(reg.currency || "\u2014")}</div>
+            <div class="edit-only edit-input-wrap">
+              <span class="edit-icon"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+              <input class="edit-input" id="fRegCurrency" value="${esc(reg.currency || "")}"/>
+            </div>
+          </div>
+
+          <div class="region-preview">
+            <div class="region-preview-title">Regional formatting</div>
+            <div class="region-preview-row"><span>${longDate}</span><span>$1,234.56</span></div>
+            <div class="region-preview-row"><span>${shortDate}</span><span>30 lb</span></div>
+            <div class="region-preview-row"><span>77°F</span><span>5'6"</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-heading">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Account
+          </div>
+          <div class="account-status-label">Account status</div>
+          <div class="account-status-desc">To close your account, <a href="#">contact us</a>.</div>
+
+          <hr class="divider"/>
+
+          <div class="section-heading">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M2 11h20"/></svg>
+            Credit usage
+          </div>
+          <div class="credit-row"><span class="credit-label">Contract period</span><span class="credit-val">${esc(credits.contractPeriod || "\u2014")}</span></div>
+          <div class="credit-row"><span class="credit-label">Tier</span><span class="credit-val">${esc(credits.tier || "\u2014")}</span></div>
+          <div class="credit-row"><span class="credit-label">Credits purchased</span><span class="credit-val">${fmtNum(credits.purchased)}</span></div>
+          <div class="credit-row"><span class="credit-label">Credits used</span><span class="credit-val">${fmtNum(credits.used)}</span></div>
+          <div class="credit-row"><span class="credit-label">Credits remaining <span class="info-icon">i</span></span><span class="credit-val">${fmtNum(credits.remaining)}</span></div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  var ORIGINAL = ${JSON.stringify({
+    name: org.name || "",
+    contactName: org.contactName || "",
+    address: org.address || "",
+    phone: org.phone || "",
+    email: org.email || "",
+    region: {
+      formatting: reg.formatting || "",
+      temperature: reg.temperature || "",
+      measurementSystem: reg.measurementSystem || "",
+      currency: reg.currency || ""
+    }
+  })};
+
+  function toggleEdit(on) {
+    var page = document.getElementById('orgPage');
+    if (on) {
+      page.classList.remove('view-mode');
+      page.classList.add('edit-mode');
+    } else {
+      document.getElementById('fName').value = ORIGINAL.name;
+      document.getElementById('fContactName').value = ORIGINAL.contactName;
+      document.getElementById('fAddress').value = ORIGINAL.address;
+      document.getElementById('fPhone').value = ORIGINAL.phone;
+      document.getElementById('fEmail').value = ORIGINAL.email;
+      document.getElementById('fRegFormatting').value = ORIGINAL.region.formatting;
+      document.getElementById('fRegTemperature').value = ORIGINAL.region.temperature;
+      document.getElementById('fRegMeasurement').value = ORIGINAL.region.measurementSystem;
+      document.getElementById('fRegCurrency').value = ORIGINAL.region.currency;
+      page.classList.remove('edit-mode');
+      page.classList.add('view-mode');
+    }
+  }
+
+  function saveOrg() {
+    var body = {
+      name: document.getElementById('fName').value.trim(),
+      contactName: document.getElementById('fContactName').value.trim(),
+      address: document.getElementById('fAddress').value.trim(),
+      phone: document.getElementById('fPhone').value.trim(),
+      email: document.getElementById('fEmail').value.trim(),
+      region: {
+        formatting: document.getElementById('fRegFormatting').value,
+        temperature: document.getElementById('fRegTemperature').value,
+        measurementSystem: document.getElementById('fRegMeasurement').value,
+        currency: document.getElementById('fRegCurrency').value.trim()
+      }
+    };
+    if (!body.name) { alert('Organization name is required.'); return; }
+    if (!body.address) { alert('Address is required.'); return; }
+    fetch('/api/organization', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(r) {
+      if (r.ok) location.reload();
+      else r.json().then(function(d) { alert((d && d.error) || 'Could not save.'); });
+    });
+  }
+
+  function uploadLogo(inp) {
+    alert('Logo upload coming soon.');
+    inp.value = '';
+  }
+</script>
+</body></html>`);
+});
+
 // ── Users API ─────────────────────────────────────────────────────────────────
 app.get("/api/users", (req, res) => {
   const users = loadUsers().map(u => ({ ...u, password: undefined }));
@@ -17165,9 +18730,20 @@ app.patch("/api/users/:id", (req, res) => {
 });
 
 app.delete("/api/users/:id", (req, res) => {
-  let users = loadUsers();
-  users = users.filter(u => u.id !== req.params.id);
-  saveUsers(users);
+  const users = loadUsers();
+  const target = users.find(u => u.id === req.params.id);
+  if (!target) return res.status(404).json({ error: "User not found" });
+  if (req.user && req.user.id === target.id) {
+    return res.status(400).json({ error: "You cannot delete your own account while signed in." });
+  }
+  if (target.role === "Admin") {
+    const remainingAdmins = users.filter(u => u.role === "Admin" && u.id !== target.id);
+    if (remainingAdmins.length === 0) {
+      return res.status(400).json({ error: "Cannot delete the last Admin user." });
+    }
+  }
+  const remaining = users.filter(u => u.id !== target.id);
+  saveUsers(remaining);
   res.json({ ok: true });
 });
 
@@ -17192,9 +18768,14 @@ app.get("/settings/users", (req, res) => {
       <td><span class="ut-license ut-license-${u.license.toLowerCase()}">${esc(u.license)}</span></td>
       <td><span class="ut-status ut-status-${u.active ? 'active' : 'inactive'}">${u.active ? 'Active' : 'Inactive'}</span></td>
       <td>
-        <button class="ut-action-btn" onclick="editUser('${u.id}')" title="Edit">
-          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
+        <div style="display:flex;gap:6px;">
+          <button class="ut-action-btn" onclick="editUser('${u.id}')" title="Edit">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          ${u.id === req.user.id ? '' : `<button class="ut-action-btn ut-action-btn-danger" onclick="deleteUser('${u.id}', '${esc((u.firstName || '') + ' ' + (u.lastName || '')).trim().replace(/'/g, "\\'")}')" title="Delete">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 012-2h2a2 2 0 012 2v2"/></svg>
+          </button>`}
+        </div>
       </td>
     </tr>`).join("");
 
@@ -17246,6 +18827,7 @@ app.get("/settings/users", (req, res) => {
   .ut-status-inactive{background:#fee2e2;color:#991b1b}
   .ut-action-btn{background:none;border:1px solid #d1d5db;border-radius:6px;padding:5px 7px;cursor:pointer;color:#6b7280;transition:all 0.15s}
   .ut-action-btn:hover{border-color:#7c3aed;color:#7c3aed;background:#f5f3ff}
+  .ut-action-btn-danger:hover{border-color:#dc2626;color:#dc2626;background:#fef2f2}
   .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;align-items:center;justify-content:center}
   .modal-overlay.open{display:flex}
   .modal{background:#fff;border-radius:14px;padding:28px 32px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,0.2)}
@@ -17271,7 +18853,7 @@ app.get("/settings/users", (req, res) => {
     <aside class="settings-sidebar">
       <div class="sidebar-group"><div class="sidebar-section-label">Account</div>
         <a class="sidebar-item" href="/settings">User profile</a>
-        <a class="sidebar-item" href="/settings">Organization profile</a>
+        <a class="sidebar-item" href="/settings/organization">Organization profile</a>
         <a class="sidebar-item" href="/settings">Apps</a>
       </div>
       <div class="sidebar-group"><div class="sidebar-section-label">User management</div>
@@ -17367,6 +18949,14 @@ app.get("/settings/users", (req, res) => {
     document.getElementById('userModal').classList.add('open');
   }
   function closeModal() { document.getElementById('userModal').classList.remove('open'); }
+  function deleteUser(id, name) {
+    var label = (name || '').trim() || 'this user';
+    if (!confirm('Delete ' + label + '? This cannot be undone.')) return;
+    fetch('/api/users/' + id, { method: 'DELETE' }).then(function(r) {
+      if (r.ok) { location.reload(); return; }
+      r.json().then(function(d) { alert((d && d.error) || 'Could not delete user.'); });
+    });
+  }
   function saveUser() {
     var editId = document.getElementById('editUserId').value;
     var body = { firstName: document.getElementById('mFirstName').value, lastName: document.getElementById('mLastName').value, email: document.getElementById('mEmail').value, phone: document.getElementById('mPhone').value, role: document.getElementById('mRole').value, license: document.getElementById('mLicense').value, team: document.getElementById('mTeam').value, jobFunction: document.getElementById('mJobFunction').value };
@@ -17463,7 +19053,7 @@ app.get("/settings/teams", (req, res) => {
     <aside class="settings-sidebar">
       <div class="sidebar-group"><div class="sidebar-section-label">Account</div>
         <a class="sidebar-item" href="/settings">User profile</a>
-        <a class="sidebar-item" href="/settings">Organization profile</a>
+        <a class="sidebar-item" href="/settings/organization">Organization profile</a>
         <a class="sidebar-item" href="/settings">Apps</a>
       </div>
       <div class="sidebar-group"><div class="sidebar-section-label">User management</div>
@@ -17820,7 +19410,6 @@ app.get("/database", (req, res) => {
           <a class="db-sidebar-item">Incentives</a>
           <a class="db-sidebar-item">Utility rates</a>
           <a class="db-sidebar-item" href="/database/agreement-templates">Agreement templates</a>
-          <a class="db-sidebar-item">Legacy agreement templates</a>
         </div>
         <div class="db-sidebar-group">
           <div class="db-sidebar-section">Operations</div>
@@ -17899,7 +19488,6 @@ function renderDatabaseSidebar(activeKey) {
           <a class="db-sidebar-item">Incentives</a>
           <a class="db-sidebar-item">Utility rates</a>
           <a class="db-sidebar-item${atActive}" href="/database/agreement-templates">Agreement templates</a>
-          <a class="db-sidebar-item">Legacy agreement templates</a>
         </div>
         <div class="db-sidebar-group">
           <div class="db-sidebar-section">Operations</div>
@@ -19114,6 +20702,768 @@ function loadAgreementTemplates() {
   catch(e) { return { items: [] }; }
 }
 
+// ── Document routing evaluator (Phase 2) ──────────────────────────────────────
+// Stateless — safe to call from any render. Reads only CRM/project-level fields.
+const US_STATE_ABBREV = {
+  'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California','CO':'Colorado',
+  'CT':'Connecticut','DE':'Delaware','FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho',
+  'IL':'Illinois','IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana',
+  'ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota','MS':'Mississippi',
+  'MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada','NH':'New Hampshire','NJ':'New Jersey',
+  'NM':'New Mexico','NY':'New York','NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma',
+  'OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina','SD':'South Dakota',
+  'TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont','VA':'Virginia','WA':'Washington',
+  'WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming','DC':'District of Columbia'
+};
+const US_STATE_NAME_TO_ABBREV = Object.keys(US_STATE_ABBREV).reduce((m, k) => (m[US_STATE_ABBREV[k].toLowerCase()] = k, m), {});
+
+function parseStateFromAddress(address) {
+  if (!address || typeof address !== 'string') return null;
+  // Common patterns: "... MA 01854, USA" or "..., Massachusetts, ..."
+  const m = address.match(/\b([A-Z]{2})\b\s*\d{5}/);
+  if (m && US_STATE_ABBREV[m[1]]) return m[1];
+  // Try full-name scan
+  const lower = address.toLowerCase();
+  for (const name in US_STATE_NAME_TO_ABBREV) {
+    if (lower.indexOf(name) !== -1) return US_STATE_NAME_TO_ABBREV[name];
+  }
+  return null;
+}
+
+function normalizeState(v) {
+  if (!v || typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s) return null;
+  const upper = s.toUpperCase();
+  if (US_STATE_ABBREV[upper]) return upper; // already an abbrev
+  const lower = s.toLowerCase();
+  if (US_STATE_NAME_TO_ABBREV[lower]) return US_STATE_NAME_TO_ABBREV[lower];
+  return upper; // unknown — keep uppercased for comparison
+}
+
+function anyCiMatch(needle, haystackArr) {
+  if (!needle) return false;
+  const n = String(needle).trim().toLowerCase();
+  if (!n) return false;
+  return haystackArr.some(h => {
+    const x = String(h || '').trim().toLowerCase();
+    return x && (x === n || x.includes(n) || n.includes(x));
+  });
+}
+
+// Phase 4 refactor: signals extraction and trigger matching are shared by evaluator + mismatch detector.
+function extractSignalsFromProject(project) {
+  const activeDesign = (project.designs || []).find(d => d.id === project.activeDesignId) || (project.designs || [])[0] || {};
+  const stateAbbr = normalizeState(project.state) || parseStateFromAddress(project.address);
+  return {
+    utility:            project.utility || null,
+    state:              stateAbbr,
+    customerType:       project.propertyType || null,
+    systemKwDc:         (activeDesign && activeDesign.stats && typeof activeDesign.stats.kw === 'number') ? activeDesign.stats.kw : 0,
+    financing:          project.financing || null,
+    lender:             project.lenderId || null,
+    partnerId:          project.partnerId || null,
+    ahj:                project.ahj || null,
+    nmProgram:          project.nmProgram || null,
+    incentives:         Array.isArray(project.incentives) ? project.incentives : [],
+    hoa:                (typeof project.hoa === 'boolean') ? project.hoa : false,
+    hasBattery:         !!(activeDesign && activeDesign.hasBattery),
+    batteryKwh:         (activeDesign && typeof activeDesign.batteryKwh === 'number') ? activeDesign.batteryKwh : null,
+    panelUpgradeNeeded: !!(activeDesign && activeDesign.panelUpgradeNeeded),
+    roofType:           (activeDesign && activeDesign.roofType) || null
+  };
+}
+
+/**
+ * Pure check: does `template` match `signals`?
+ * Returns { match: bool, reasons: string[], failedOn: string | null, failedHint: string | null }.
+ * If template has no routing block, returns match=true, failedOn=null (caller decides how to treat unrouted).
+ */
+function templateMatchesSignals(signals, template) {
+  if (!template || !template.routing || typeof template.routing !== 'object') {
+    return { match: true, reasons: [], failedOn: null, failedHint: null };
+  }
+  const triggers = (template.routing.triggers && typeof template.routing.triggers === 'object') ? template.routing.triggers : {};
+  const reasons = [];
+
+  function fail(key, hint) {
+    return { match: false, reasons: reasons, failedOn: key, failedHint: hint || null };
+  }
+  function passStringArr(triggerArr, signalVal, key) {
+    if (!Array.isArray(triggerArr) || !triggerArr.length) return null; // not constrained
+    if (anyCiMatch(signalVal, triggerArr)) { reasons.push(key + '=' + signalVal); return true; }
+    return false;
+  }
+
+  // utility
+  let r = passStringArr(triggers.utility, signals.utility, 'utility');
+  if (r === false) return fail('utility', 'utility does not match');
+
+  // state (normalized both sides)
+  if (Array.isArray(triggers.state) && triggers.state.length) {
+    if (!signals.state) return fail('state', 'state not set on project');
+    const normalizedTriggers = triggers.state.map(normalizeState).filter(Boolean);
+    if (normalizedTriggers.indexOf(signals.state) === -1) return fail('state', 'state no longer matches');
+    reasons.push('state=' + signals.state);
+  }
+
+  // customerType
+  r = passStringArr(triggers.customerType, signals.customerType, 'customerType');
+  if (r === false) return fail('customerType', 'customer type no longer matches');
+
+  // kW range
+  if (typeof triggers.systemKwDcMin === 'number') {
+    if (signals.systemKwDc < triggers.systemKwDcMin) return fail('systemKwDcMin', 'system size is below minimum');
+    reasons.push('systemKwDc>=' + triggers.systemKwDcMin);
+  }
+  if (typeof triggers.systemKwDcMax === 'number') {
+    if (signals.systemKwDc > triggers.systemKwDcMax) return fail('systemKwDcMax', 'system size exceeds maximum');
+    reasons.push('systemKwDc<=' + triggers.systemKwDcMax);
+  }
+
+  // Phase 3 triggers
+  r = passStringArr(triggers.financingMethod, signals.financing, 'financing');
+  if (r === false) return fail('financing', 'financing changed');
+  r = passStringArr(triggers.lender, signals.lender, 'lender');
+  if (r === false) return fail('lender', 'lender changed');
+  r = passStringArr(triggers.partnerId, signals.partnerId, 'partnerId');
+  if (r === false) return fail('partnerId', 'partner changed');
+  r = passStringArr(triggers.ahj, signals.ahj, 'ahj');
+  if (r === false) return fail('ahj', 'AHJ no longer matches');
+  r = passStringArr(triggers.netMeteringProgram, signals.nmProgram, 'nmProgram');
+  if (r === false) return fail('nmProgram', 'net metering program changed');
+  r = passStringArr(triggers.roofType, signals.roofType, 'roofType');
+  if (r === false) return fail('roofType', 'roof type changed');
+
+  if (typeof triggers.hasBattery === 'boolean') {
+    if (signals.hasBattery !== triggers.hasBattery) return fail('hasBattery', 'battery requirement no longer matches');
+    reasons.push('hasBattery=' + signals.hasBattery);
+  }
+  if (typeof triggers.hoaApplicable === 'boolean') {
+    if (signals.hoa !== triggers.hoaApplicable) return fail('hoaApplicable', 'HOA applicability changed');
+    reasons.push('hoa=' + signals.hoa);
+  }
+
+  if (Array.isArray(triggers.incentivePrograms) && triggers.incentivePrograms.length) {
+    const tLower = triggers.incentivePrograms.map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
+    let incMatched = false;
+    for (const inc of (signals.incentives || [])) {
+      const iLower = String(inc || '').trim().toLowerCase();
+      if (iLower && tLower.some(tok => tok === iLower || tok.includes(iLower) || iLower.includes(tok))) {
+        reasons.push('incentive=' + inc);
+        incMatched = true;
+        break;
+      }
+    }
+    if (!incMatched) return fail('incentivePrograms', 'incentive programs no longer match');
+  }
+
+  return { match: true, reasons: reasons, failedOn: null, failedHint: null };
+}
+
+function evaluateDocumentsForProject(project, templates) {
+  const signals = extractSignalsFromProject(project);
+  const required = [], recommended = [], optional = [], unrouted = [];
+
+  (templates || []).forEach(t => {
+    if (!t.routing || typeof t.routing !== 'object') {
+      unrouted.push(t);
+      return;
+    }
+    const result = templateMatchesSignals(signals, t);
+    if (!result.match) return;
+
+    const entry = { template: t, reasons: result.reasons };
+    const req = t.routing.requirement;
+    if (req === 'required') required.push(entry);
+    else if (req === 'recommended') recommended.push(entry);
+    else optional.push(entry); // 'optional' | 'conditional' | unknown
+  });
+
+  const sorter = (a, b) => {
+    const sa = (a.template.routing && typeof a.template.routing.sequence === 'number') ? a.template.routing.sequence : 1e9;
+    const sb = (b.template.routing && typeof b.template.routing.sequence === 'number') ? b.template.routing.sequence : 1e9;
+    if (sa !== sb) return sa - sb;
+    return (a.template.name || '').localeCompare(b.template.name || '');
+  };
+  required.sort(sorter); recommended.sort(sorter); optional.sort(sorter);
+
+  return { required, recommended, optional, unrouted, signals };
+}
+
+// Phase 4: detect agreement instances whose current template routing no longer matches project signals.
+// Purely derived — no persistence, no state change.
+function detectAgreementRoutingMismatches(project, templates, routedDocs) {
+  const agreements = project.agreements || [];
+  const mismatches = [];
+  const staleAgreementIdxs = [];
+  if (!agreements.length) {
+    return { hasMismatch: false, mismatches, staleAgreementIdxs };
+  }
+  const templatesById = {};
+  (templates || []).forEach(t => { if (t && t.id) templatesById[t.id] = t; });
+
+  // Build set of templateIds currently matching (any bucket). These definitely aren't mismatches.
+  const matchedIds = new Set();
+  ['required','recommended','optional'].forEach(bucket => {
+    (routedDocs && routedDocs[bucket] ? routedDocs[bucket] : []).forEach(entry => {
+      if (entry && entry.template && entry.template.id) matchedIds.add(entry.template.id);
+    });
+  });
+  const signals = (routedDocs && routedDocs.signals) ? routedDocs.signals : extractSignalsFromProject(project);
+
+  agreements.forEach((a, idx) => {
+    if (!a || !a.templateId) return; // cannot diagnose, leave it alone
+    // Phase 6+: signed agreements are complete — never flag them for review
+    const stage = a.stage || a.status || 'draft';
+    if (stage === 'signed') return;
+    const tpl = templatesById[a.templateId];
+
+    // Template record removed → always flag
+    if (!tpl) {
+      mismatches.push({
+        agreementIdx: idx,
+        templateId: a.templateId,
+        templateName: a.templateName || a.templateId,
+        stage: a.stage || a.status || 'draft',
+        status: a.status || a.stage || 'draft',
+        reason: 'Template no longer exists',
+        severity: 'warning'
+      });
+      staleAgreementIdxs.push(idx);
+      return;
+    }
+
+    // Legacy/unrouted agreement → do not flag
+    if (!tpl.routing || typeof tpl.routing !== 'object') return;
+
+    // Still matches → not a mismatch
+    if (matchedIds.has(tpl.id)) return;
+
+    // Compute readable hint
+    const result = templateMatchesSignals(signals, tpl);
+    const reason = result.failedHint
+      ? ('Template no longer matches — ' + result.failedHint)
+      : 'Template no longer matches current routing signals';
+
+    mismatches.push({
+      agreementIdx: idx,
+      templateId: tpl.id,
+      templateName: tpl.name || a.templateName || tpl.id,
+      stage: a.stage || a.status || 'draft',
+      status: a.status || a.stage || 'draft',
+      reason: reason,
+      severity: 'warning'
+    });
+    staleAgreementIdxs.push(idx);
+  });
+
+  return { hasMismatch: mismatches.length > 0, mismatches, staleAgreementIdxs };
+}
+
+// Phase 5: admin coverage analysis. Pure — reuses templateMatchesSignals for matching.
+const MEANINGFUL_TRIGGER_KEYS = [
+  'utility','state','customerType','systemKwDcMin','systemKwDcMax',
+  'financingMethod','lender','partnerId','ahj','netMeteringProgram',
+  'roofType','hasBattery','hoaApplicable','incentivePrograms'
+];
+function isGlobalRouting(template) {
+  if (!template || !template.routing || typeof template.routing !== 'object') return false;
+  const triggers = template.routing.triggers || {};
+  return !MEANINGFUL_TRIGGER_KEYS.some(k => {
+    const v = triggers[k];
+    if (v === undefined || v === null) return false;
+    if (typeof v === 'boolean') return true;
+    if (typeof v === 'number') return true;
+    if (Array.isArray(v)) return v.length > 0;
+    return !!v;
+  });
+}
+function syntheticSignalsFor(utility, state, customerType) {
+  // Baseline project signals used to test coverage. Defaults null/false for everything else.
+  return {
+    utility:            utility || null,
+    state:              state || null,
+    customerType:       customerType || null,
+    systemKwDc:         0,
+    financing:          null,
+    lender:             null,
+    partnerId:          null,
+    ahj:                null,
+    nmProgram:          null,
+    incentives:         [],
+    hoa:                false,
+    hasBattery:         false,
+    batteryKwh:         null,
+    panelUpgradeNeeded: false,
+    roofType:           null
+  };
+}
+
+// Phase 6: routing validation / guardrails. Pure helper. Reuses existing normalization + constants.
+function analyzeTemplateRoutingWarnings(template) {
+  const errors = [];
+  const warnings = [];
+  const infos = [];
+
+  if (!template || typeof template !== 'object') {
+    return { errors, warnings, infos, summary: { hasErrors: false, hasWarnings: false, hasInfos: false } };
+  }
+
+  const hasRouting = !!(template.routing && typeof template.routing === 'object');
+
+  // A. Unrouted template
+  if (!hasRouting) {
+    infos.push({ code: 'UNROUTED', message: 'This template is unrouted and will only be available through Browse all templates.' });
+    return {
+      errors, warnings, infos,
+      summary: { hasErrors: false, hasWarnings: false, hasInfos: infos.length > 0 }
+    };
+  }
+
+  const routing = template.routing;
+  const triggers = (routing.triggers && typeof routing.triggers === 'object') ? routing.triggers : {};
+  const req = routing.requirement;
+  const category = (typeof routing.category === 'string') ? routing.category.trim() : '';
+  const lifecycle = (typeof routing.lifecycle === 'string') ? routing.lifecycle.trim() : '';
+  const isGlobal = isGlobalRouting(template);
+
+  // B. Global routed template
+  if (isGlobal) {
+    if (req === 'required') {
+      warnings.push({ code: 'GLOBAL_REQUIRED', message: 'This template is globally required and will match every project.' });
+    } else if (req === 'conditional') {
+      warnings.push({ code: 'GLOBAL_CONDITIONAL', message: "This template is global, and 'conditional' currently behaves like optional." });
+    } else {
+      infos.push({ code: 'GLOBAL_MATCH_ALL', message: 'This template is global and can match every project.' });
+    }
+  }
+
+  // C. Conditional requirement (skip duplicate if already reported via B)
+  if (req === 'conditional' && !isGlobal) {
+    warnings.push({ code: 'CONDITIONAL_BEHAVES_AS_OPTIONAL', message: "'Conditional' currently behaves like optional in the live evaluator." });
+  }
+
+  // D. Missing category
+  if (!category) {
+    warnings.push({ code: 'MISSING_CATEGORY', message: 'Routing is enabled but category is missing.' });
+  }
+
+  // E. Missing lifecycle
+  if (!lifecycle) {
+    warnings.push({ code: 'MISSING_LIFECYCLE', message: 'Routing is enabled but lifecycle is missing.' });
+  }
+
+  // F. Invalid numeric range (kW min > max)
+  const kwMin = triggers.systemKwDcMin;
+  const kwMax = triggers.systemKwDcMax;
+  if (typeof kwMin === 'number' && typeof kwMax === 'number' && kwMin > kwMax) {
+    errors.push({ code: 'KW_MIN_GT_MAX', message: 'System kW minimum is greater than maximum.' });
+  }
+
+  // G. Conflicting top-level utility vs routing trigger utility
+  if (template.utility && Array.isArray(triggers.utility) && triggers.utility.length) {
+    const topU = String(template.utility || '').trim().toLowerCase();
+    if (topU) {
+      const match = triggers.utility.some(u => {
+        const t = String(u || '').trim().toLowerCase();
+        return t && (t === topU || t.includes(topU) || topU.includes(t));
+      });
+      if (!match) {
+        warnings.push({ code: 'UTILITY_CONFLICT', message: 'Top-level utility and routing utility triggers disagree.' });
+      }
+    }
+  }
+
+  // H. Conflicting top-level state vs routing trigger state
+  if (template.state && Array.isArray(triggers.state) && triggers.state.length) {
+    const topS = normalizeState(template.state);
+    if (topS) {
+      const triggerStates = triggers.state.map(normalizeState).filter(Boolean);
+      if (triggerStates.length && triggerStates.indexOf(topS) === -1) {
+        warnings.push({ code: 'STATE_CONFLICT', message: 'Top-level state and routing state triggers disagree.' });
+      }
+    }
+  }
+
+  // I. Empty routing shell — routing exists but literally has no fields set at all
+  if (!req && !category && !lifecycle && isGlobal && (typeof routing.sequence !== 'number')) {
+    infos.push({ code: 'ROUTING_UNCONSTRAINED', message: 'Routing is present but unconstrained.' });
+  }
+
+  return {
+    errors, warnings, infos,
+    summary: {
+      hasErrors: errors.length > 0,
+      hasWarnings: warnings.length > 0,
+      hasInfos: infos.length > 0
+    }
+  };
+}
+
+function analyzeAgreementTemplateCoverage(templates) {
+  const list = templates || [];
+  const routed = list.filter(t => t && t.routing && typeof t.routing === 'object');
+  const unrouted = list.filter(t => !(t && t.routing && typeof t.routing === 'object'));
+
+  const summary = {
+    totalTemplates: list.length,
+    routedTemplates: routed.length,
+    unroutedTemplates: unrouted.length,
+    required:    routed.filter(t => t.routing.requirement === 'required').length,
+    recommended: routed.filter(t => t.routing.requirement === 'recommended').length,
+    optional:    routed.filter(t => !['required','recommended'].includes(t.routing.requirement)).length,
+    combosChecked: 0,
+    combosWithNoRequired: 0,
+    globallyRequired: 0,
+    globallyRecommended: 0,
+    globallyOptional: 0
+  };
+
+  const globals = { required: [], recommended: [], optional: [] };
+  routed.forEach(t => {
+    if (!isGlobalRouting(t)) return;
+    const req = t.routing.requirement;
+    if (req === 'required') globals.required.push(t);
+    else if (req === 'recommended') globals.recommended.push(t);
+    else globals.optional.push(t);
+  });
+  summary.globallyRequired    = globals.required.length;
+  summary.globallyRecommended = globals.recommended.length;
+  summary.globallyOptional    = globals.optional.length;
+
+  // Derive dimensions from routed templates' triggers (fallback to legacy t.utility / t.state)
+  const utilitiesSet = new Set();
+  const statesSet = new Set();
+  const customerTypesSet = new Set();
+  routed.forEach(t => {
+    const triggers = (t.routing && t.routing.triggers) || {};
+    if (Array.isArray(triggers.utility) && triggers.utility.length) {
+      triggers.utility.forEach(u => { const s = String(u || '').trim(); if (s) utilitiesSet.add(s); });
+    } else if (t.utility) {
+      utilitiesSet.add(String(t.utility).trim());
+    }
+    if (Array.isArray(triggers.state) && triggers.state.length) {
+      triggers.state.forEach(s => { const n = normalizeState(s); if (n) statesSet.add(n); });
+    } else if (t.state) {
+      const n = normalizeState(t.state); if (n) statesSet.add(n);
+    }
+    if (Array.isArray(triggers.customerType) && triggers.customerType.length) {
+      triggers.customerType.forEach(c => { const s = String(c || '').trim().toLowerCase(); if (s) customerTypesSet.add(s); });
+    }
+  });
+  if (customerTypesSet.size === 0) {
+    customerTypesSet.add('residential');
+    customerTypesSet.add('commercial');
+  }
+
+  const utilities = Array.from(utilitiesSet).sort((a, b) => a.localeCompare(b));
+  const states    = Array.from(statesSet).sort();
+  const customerTypes = Array.from(customerTypesSet).sort();
+
+  const combos = [];
+  utilities.forEach(utility => {
+    states.forEach(state => {
+      customerTypes.forEach(customerType => {
+        const signals = syntheticSignalsFor(utility, state, customerType);
+        const matchedRequired = [], matchedRecommended = [], matchedOptional = [];
+        routed.forEach(t => {
+          const r = templateMatchesSignals(signals, t);
+          if (!r.match) return;
+          const brief = { id: t.id, name: t.name };
+          const req = t.routing.requirement;
+          if (req === 'required') matchedRequired.push(brief);
+          else if (req === 'recommended') matchedRecommended.push(brief);
+          else matchedOptional.push(brief);
+        });
+        combos.push({
+          utility, state, customerType,
+          matchedRequired, matchedRecommended, matchedOptional,
+          hasRequired: matchedRequired.length > 0,
+          gapReasons: matchedRequired.length === 0 ? ['No required templates matched'] : []
+        });
+      });
+    });
+  });
+
+  summary.combosChecked = combos.length;
+  const gaps = combos.filter(c => !c.hasRequired).map(c => ({
+    utility: c.utility, state: c.state, customerType: c.customerType,
+    reason: 'No required templates matched'
+  }));
+  summary.combosWithNoRequired = gaps.length;
+
+  return {
+    summary, globals, combos, gaps,
+    dimensions: { utilities, states, customerTypes },
+    unrouted
+  };
+}
+
+// Serve uploaded agreement PDFs
+app.get("/uploads/agreements/:filename", (req, res) => {
+  const filePath = path.join(__dirname, 'data/uploads/agreements', req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.setHeader('Content-Type', 'application/pdf');
+  res.sendFile(filePath);
+});
+
+// Upload PDF to an agreement template
+app.post("/api/agreement-templates/:id/upload", agreementUpload.single('pdf'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
+  const data = loadAgreementTemplates();
+  const items = data.items || [];
+  const idx = items.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Template not found' });
+  items[idx].pdfFile = req.file.filename;
+  items[idx].pdfOriginalName = req.file.originalname;
+  data.items = items;
+  fs.writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  res.json({ success: true, filename: req.file.filename, originalName: req.file.originalname });
+});
+
+// Phase 5: admin coverage page — read-only observability for document routing rules
+app.get("/database/agreement-templates/coverage", (req, res) => {
+  const data = loadAgreementTemplates();
+  const templates = data.items || [];
+  const analysis = analyzeAgreementTemplateCoverage(templates);
+  const { summary, globals, combos, gaps, dimensions } = analysis;
+
+  // Phase 6: per-template validation rollup
+  const needsAttention = templates.map(t => {
+    const w = analyzeTemplateRoutingWarnings(t);
+    return { template: t, warnings: w };
+  }).filter(e => e.warnings.summary.hasErrors || e.warnings.summary.hasWarnings);
+
+  function esc2(s) { return esc(s == null ? '' : String(s)); }
+
+  function renderGlobalsList(list) {
+    if (!list.length) return '<div class="cov-muted">None</div>';
+    return '<ul class="cov-list">' + list.map(t =>
+      '<li><a href="/database/agreement-templates/' + encodeURIComponent(t.id) + '/editor">' + esc2(t.name || t.id) + '</a></li>'
+    ).join('') + '</ul>';
+  }
+
+  const matrixRows = combos.length === 0
+    ? '<tr><td colspan="7" class="cov-muted" style="padding:18px;">No routed templates have utility/state/customerType triggers yet — no combos to evaluate.</td></tr>'
+    : combos.map((c, i) => {
+        const status = c.hasRequired ? '<span class="cov-pill cov-pill-ok">Covered</span>' : '<span class="cov-pill cov-pill-gap">Gap</span>';
+        return '<tr class="cov-row" onclick="toggleComboDetail(' + i + ')">' +
+          '<td>' + esc2(c.utility) + '</td>' +
+          '<td>' + esc2(c.state) + '</td>' +
+          '<td>' + esc2(c.customerType) + '</td>' +
+          '<td class="cov-num">' + c.matchedRequired.length + '</td>' +
+          '<td class="cov-num">' + c.matchedRecommended.length + '</td>' +
+          '<td class="cov-num">' + c.matchedOptional.length + '</td>' +
+          '<td>' + status + '</td>' +
+        '</tr>' +
+        '<tr class="cov-detail-row" id="cov-detail-' + i + '" hidden>' +
+          '<td colspan="7">' +
+            '<div class="cov-detail-grid">' +
+              '<div><div class="cov-detail-label">Required (' + c.matchedRequired.length + ')</div>' +
+                (c.matchedRequired.length ? '<ul class="cov-list">' + c.matchedRequired.map(t => '<li>' + esc2(t.name) + '</li>').join('') + '</ul>' : '<div class="cov-muted">None</div>') +
+              '</div>' +
+              '<div><div class="cov-detail-label">Recommended (' + c.matchedRecommended.length + ')</div>' +
+                (c.matchedRecommended.length ? '<ul class="cov-list">' + c.matchedRecommended.map(t => '<li>' + esc2(t.name) + '</li>').join('') + '</ul>' : '<div class="cov-muted">None</div>') +
+              '</div>' +
+              '<div><div class="cov-detail-label">Optional (' + c.matchedOptional.length + ')</div>' +
+                (c.matchedOptional.length ? '<ul class="cov-list">' + c.matchedOptional.map(t => '<li>' + esc2(t.name) + '</li>').join('') + '</ul>' : '<div class="cov-muted">None</div>') +
+              '</div>' +
+            '</div>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+
+  const gapsList = gaps.length
+    ? '<div class="cov-gap-list">' + gaps.map(g =>
+        '<div class="cov-gap-row">' +
+          '<div class="cov-gap-combo">' + esc2(g.utility) + ' <span class="cov-sep">·</span> ' + esc2(g.state) + ' <span class="cov-sep">·</span> ' + esc2(g.customerType) + '</div>' +
+          '<div class="cov-gap-reason">' + esc2(g.reason) + '</div>' +
+        '</div>').join('') + '</div>'
+    : '<div class="cov-muted">No gaps — every evaluated combo has at least one required template.</div>';
+
+  res.send(`${renderDatabaseShellHead('Agreement templates — Coverage')}
+  <style>
+    .cov-main-inner { max-width: 1180px; margin: 0 auto; }
+    .cov-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .cov-header-left h1 { font-size: 1.5rem; font-weight: 700; }
+    .cov-subtitle { font-size: 0.82rem; color: #9ca3af; margin-top: 4px; }
+    .cov-back-link { padding: 7px 14px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; color: #374151; text-decoration: none; font-size: 0.82rem; font-weight: 500; flex-shrink: 0; }
+    .cov-back-link:hover { background: #f9fafb; border-color: #d1d5db; }
+
+    .cov-section { border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; background: #fff; }
+    .cov-section-title { font-size: 0.95rem; font-weight: 700; color: #111; margin-bottom: 12px; }
+    .cov-section-sub { font-size: 0.78rem; color: #6b7280; margin-bottom: 12px; line-height: 1.5; }
+
+    .cov-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 14px; }
+    .cov-stat { padding: 10px 12px; background: #f9fafb; border-radius: 8px; }
+    .cov-stat-label { font-size: 0.7rem; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.4px; }
+    .cov-stat-value { font-size: 1.4rem; font-weight: 700; color: #111; margin-top: 2px; }
+    .cov-stat.gap .cov-stat-value { color: #b45309; }
+    .cov-stat.ok .cov-stat-value { color: #047857; }
+
+    .cov-globals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .cov-global-col { }
+    .cov-global-head { font-size: 0.76rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
+
+    .cov-list { list-style: none; padding: 0; margin: 0; font-size: 0.84rem; color: #111; }
+    .cov-list li { padding: 4px 0; border-bottom: 1px solid #f3f4f6; }
+    .cov-list li:last-child { border-bottom: none; }
+    .cov-list a { color: #2d9d8f; text-decoration: none; }
+    .cov-list a:hover { text-decoration: underline; }
+    .cov-muted { color: #9ca3af; font-size: 0.82rem; font-style: italic; }
+
+    .cov-matrix { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    .cov-matrix thead th { text-align: left; padding: 10px 12px; font-size: 0.75rem; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb; background: #fff; }
+    .cov-matrix thead th.cov-num { text-align: right; }
+    .cov-matrix tbody td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; color: #111; }
+    .cov-matrix tbody td.cov-num { text-align: right; font-variant-numeric: tabular-nums; }
+    .cov-row { cursor: pointer; }
+    .cov-row:hover { background: #fafafa; }
+    .cov-pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 0.72rem; font-weight: 700; }
+    .cov-pill-ok { background: #d1fae5; color: #047857; }
+    .cov-pill-gap { background: #fef3c7; color: #92400e; }
+    .cov-pill-err { background: #fee2e2; color: #991b1b; }
+    .cov-pill-warn { background: #fef3c7; color: #92400e; }
+    .cov-na-count { font-weight: 500; color: #9ca3af; font-size: 0.8rem; }
+    .cov-na-list { display: flex; flex-direction: column; gap: 8px; }
+    .cov-na-row { display: block; padding: 10px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; text-decoration: none; color: inherit; }
+    .cov-na-row:hover { background: #fef3c7; }
+    .cov-na-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .cov-na-name { font-size: 0.88rem; font-weight: 500; color: #111; }
+    .cov-na-issues { list-style: disc; padding-left: 22px; margin: 0; color: #78350f; }
+    .cov-na-issues li { font-size: 0.78rem; line-height: 1.45; padding: 1px 0; }
+
+    .cov-detail-row td { background: #f9fafb; padding: 14px; }
+    .cov-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .cov-detail-label { font-size: 0.72rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+
+    .cov-gap-list { display: flex; flex-direction: column; gap: 8px; }
+    .cov-gap-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; }
+    .cov-gap-combo { font-size: 0.85rem; font-weight: 500; color: #111; }
+    .cov-gap-reason { font-size: 0.78rem; color: #92400e; }
+    .cov-sep { color: #d1d5db; margin: 0 2px; }
+  </style>
+</head>
+<body>
+  ${renderDatabaseRail('database')}
+  <div class="db-shell">
+    <div class="db-topbar">
+      Database
+      <div class="db-topbar-right">
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="db-topbar-icon"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+        <div class="db-topbar-avatar">AB</div>
+      </div>
+    </div>
+    <div class="db-body">
+      <aside class="db-sidebar">
+        ${renderDatabaseSidebar('agreement-templates')}
+      </aside>
+      <main class="db-main">
+        <div class="cov-main-inner">
+          <div class="cov-header">
+            <div class="cov-header-left">
+              <h1>Routing coverage</h1>
+              <div class="cov-subtitle">Read-only observability — shows which utility × state × customer-type combos have required documents, and which are gaps. Based on the same evaluator used on project pages.</div>
+            </div>
+            <a class="cov-back-link" href="/database/agreement-templates">← Back to templates</a>
+          </div>
+
+          <div class="cov-section">
+            <div class="cov-section-title">Summary</div>
+            <div class="cov-summary-grid">
+              <div class="cov-stat"><div class="cov-stat-label">Total</div><div class="cov-stat-value">${summary.totalTemplates}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Routed</div><div class="cov-stat-value">${summary.routedTemplates}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Unrouted</div><div class="cov-stat-value">${summary.unroutedTemplates}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Required</div><div class="cov-stat-value">${summary.required}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Recommended</div><div class="cov-stat-value">${summary.recommended}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Optional</div><div class="cov-stat-value">${summary.optional}</div></div>
+              <div class="cov-stat ok"><div class="cov-stat-label">Combos checked</div><div class="cov-stat-value">${summary.combosChecked}</div></div>
+              <div class="cov-stat ${summary.combosWithNoRequired ? 'gap' : 'ok'}"><div class="cov-stat-label">Combos with no required</div><div class="cov-stat-value">${summary.combosWithNoRequired}</div></div>
+              <div class="cov-stat"><div class="cov-stat-label">Globally required</div><div class="cov-stat-value">${summary.globallyRequired}</div></div>
+            </div>
+          </div>
+
+          <div class="cov-section">
+            <div class="cov-section-title">Global templates</div>
+            <div class="cov-section-sub">These templates have routing enabled but no meaningful trigger constraints, so they apply to <em>every</em> project on render. Keep a close eye on globally required ones.</div>
+            <div class="cov-globals-grid">
+              <div class="cov-global-col">
+                <div class="cov-global-head" style="color:#dc2626;">Required (${globals.required.length})</div>
+                ${renderGlobalsList(globals.required)}
+              </div>
+              <div class="cov-global-col">
+                <div class="cov-global-head" style="color:#8b5cf6;">Recommended (${globals.recommended.length})</div>
+                ${renderGlobalsList(globals.recommended)}
+              </div>
+              <div class="cov-global-col">
+                <div class="cov-global-head" style="color:#6b7280;">Optional (${globals.optional.length})</div>
+                ${renderGlobalsList(globals.optional)}
+              </div>
+            </div>
+          </div>
+
+          <div class="cov-section">
+            <div class="cov-section-title">Templates needing attention <span class="cov-na-count">(${needsAttention.length})</span></div>
+            <div class="cov-section-sub">Templates with validation errors or warnings from the routing check. Click a row to open its editor.</div>
+            ${needsAttention.length === 0 ? '<div class="cov-muted">All templates look clean.</div>' : '<div class="cov-na-list">' + needsAttention.map(e => {
+              const issues = []
+                .concat(e.warnings.errors.map(x => ({ sev: 'error', msg: x.message })))
+                .concat(e.warnings.warnings.map(x => ({ sev: 'warning', msg: x.message })));
+              // Only show errors + warnings in the summary; infos stay in the editor
+              const sevPill = e.warnings.summary.hasErrors
+                ? '<span class="cov-pill cov-pill-err">Error</span>'
+                : '<span class="cov-pill cov-pill-warn">Warning</span>';
+              const issueList = issues.map(i => '<li>' + esc2(i.msg) + '</li>').join('');
+              return '<a class="cov-na-row" href="/database/agreement-templates/' + encodeURIComponent(e.template.id) + '/editor">' +
+                '<div class="cov-na-head">' +
+                  sevPill +
+                  '<span class="cov-na-name">' + esc2(e.template.name || e.template.id) + '</span>' +
+                '</div>' +
+                '<ul class="cov-na-issues">' + issueList + '</ul>' +
+              '</a>';
+            }).join('') + '</div>'}
+          </div>
+
+          <div class="cov-section">
+            <div class="cov-section-title">Coverage matrix</div>
+            <div class="cov-section-sub">Click a row to see which templates currently match a combo. Synthetic combos use a baseline project (no battery, no HOA, etc.) so narrow templates (those requiring specific extras) may not appear here.</div>
+            <table class="cov-matrix">
+              <thead>
+                <tr>
+                  <th>Utility</th>
+                  <th>State</th>
+                  <th>Customer type</th>
+                  <th class="cov-num">Required</th>
+                  <th class="cov-num">Recommended</th>
+                  <th class="cov-num">Optional</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>${matrixRows}</tbody>
+            </table>
+          </div>
+
+          <div class="cov-section">
+            <div class="cov-section-title">Gaps</div>
+            <div class="cov-section-sub">Combos with no required template.</div>
+            ${gapsList}
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script>
+    function toggleComboDetail(i) {
+      var row = document.getElementById('cov-detail-' + i);
+      if (row) row.hidden = !row.hidden;
+    }
+  </script>
+</body>
+</html>`);
+});
+
 app.get("/database/agreement-templates", (req, res) => {
   const data = loadAgreementTemplates();
   const allItems = data.items || [];
@@ -19173,6 +21523,8 @@ app.get("/database/agreement-templates", (req, res) => {
     .at-subtitle { font-size: 0.82rem; color: #9ca3af; margin-top: 4px; }
     .at-new-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; background: #111; color: #fff; border: none; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
     .at-new-btn:hover { background: #333; }
+    .at-coverage-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.82rem; font-weight: 500; flex-shrink: 0; }
+    .at-coverage-link:hover { background: #f9fafb; border-color: #d1d5db; color: #111; }
     .at-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     .at-table thead th { text-align: left; padding: 12px 14px; font-size: 0.78rem; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb; background: #fff; white-space: nowrap; }
     .at-table tbody td { padding: 16px 14px; border-bottom: 1px solid #f3f4f6; color: #111; vertical-align: middle; }
@@ -19238,6 +21590,10 @@ app.get("/database/agreement-templates", (req, res) => {
               </div>
               <div class="at-subtitle">Powered by DocuSign</div>
             </div>
+            <a class="at-coverage-link" href="/database/agreement-templates/coverage" style="text-decoration:none;margin-right:8px;">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+              Coverage
+            </a>
             <a class="at-new-btn" href="/database/agreement-templates/new" style="text-decoration:none;">
               <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               New
@@ -19488,8 +21844,24 @@ app.get("/database/agreement-templates/new", (req, res) => {
       });
       prevBtn.addEventListener('click', function() { openStep(currentStep - 1); });
       nextBtn.addEventListener('click', function() {
-        if (currentStep < totalSteps) openStep(currentStep + 1);
-        else document.getElementById('wzForm').submit();
+        if (currentStep < totalSteps) { openStep(currentStep + 1); return; }
+        // Final step: create template via AJAX, then upload PDF if one was picked
+        var form = document.getElementById('wzForm');
+        var formData = new URLSearchParams(new FormData(form));
+        fetch('/database/agreement-templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: formData.toString()
+        }).then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data.success || !data.id) { location.href = '/database/agreement-templates'; return; }
+          var pdfFile = document.getElementById('wfile').files[0];
+          if (!pdfFile) { location.href = '/database/agreement-templates/' + data.id + '/editor'; return; }
+          var fd = new FormData();
+          fd.append('pdf', pdfFile);
+          return fetch('/api/agreement-templates/' + data.id + '/upload', { method: 'POST', body: fd })
+            .then(function() { location.href = '/database/agreement-templates/' + data.id + '/editor'; });
+        }).catch(function() { location.href = '/database/agreement-templates'; });
       });
 
       // State dropdown
@@ -19518,6 +21890,13 @@ app.get("/database/agreement-templates/new", (req, res) => {
       var wfile = document.getElementById('wfile');
       var wuploadBrowse = document.getElementById('wuploadBrowse');
       function pickFile() { wfile.click(); }
+      function showPicked() {
+        if (wfile.files && wfile.files[0]) {
+          wupload.querySelector('.wupload-title').textContent = wfile.files[0].name;
+          wupload.querySelector('.wupload-sub').textContent = (wfile.files[0].size / 1024).toFixed(0) + ' KB — click to change';
+        }
+      }
+      wfile.addEventListener('change', showPicked);
       wupload.addEventListener('click', pickFile);
       wuploadBrowse.addEventListener('click', function(e) { e.stopPropagation(); pickFile(); });
       wupload.addEventListener('dragover', function(e) { e.preventDefault(); wupload.classList.add('drag'); });
@@ -19527,6 +21906,7 @@ app.get("/database/agreement-templates/new", (req, res) => {
         wupload.classList.remove('drag');
         if (e.dataTransfer.files.length) {
           wfile.files = e.dataTransfer.files;
+          showPicked();
         }
       });
     })();
@@ -19540,7 +21920,8 @@ app.post("/database/agreement-templates", express.urlencoded({ extended: false }
   const items = data.items || [];
   const body = req.body || {};
   const name = (body.name || '').trim();
-  if (!name) return res.redirect('/database/agreement-templates/new');
+  const wantJson = req.headers.accept && req.headers.accept.includes('application/json');
+  if (!name) { return wantJson ? res.status(400).json({ error: 'Name required' }) : res.redirect('/database/agreement-templates/new'); }
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
   const id = 'at-' + slug + '-' + Date.now().toString(36);
   const attachments = Array.isArray(body.attachments) ? body.attachments : (body.attachments ? [body.attachments] : []);
@@ -19552,23 +21933,29 @@ app.post("/database/agreement-templates", express.urlencoded({ extended: false }
     createdAt: new Date().toISOString()
   });
   data.items = items;
-  require('fs').writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  fs.writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  if (wantJson) return res.json({ success: true, id: id });
   res.redirect('/database/agreement-templates');
 });
 
-app.post("/database/agreement-templates/:id/save", express.urlencoded({ extended: false }), (req, res) => {
+app.post("/database/agreement-templates/:id/save", express.json(), (req, res) => {
   const data = loadAgreementTemplates();
   const items = data.items || [];
   const idx = items.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).end();
   const body = req.body || {};
-  items[idx] = Object.assign(items[idx], {
-    name: (body.name || items[idx].name).trim(),
-    description: body.description || '',
-    utility: body.utility || items[idx].utility || ''
-  });
+  items[idx].name = (body.name || items[idx].name).trim();
+  items[idx].description = body.description || items[idx].description || '';
+  items[idx].utility = body.utility || items[idx].utility || '';
+  if (Array.isArray(body.fields)) items[idx].fields = body.fields;
+  // Phase 1: persist optional routing block if provided. null clears it; omitted leaves untouched.
+  if (body.routing === null) {
+    delete items[idx].routing;
+  } else if (body.routing && typeof body.routing === 'object') {
+    items[idx].routing = body.routing;
+  }
   data.items = items;
-  require('fs').writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
+  fs.writeFileSync(__dirname + '/data/agreementTemplates.json', JSON.stringify(data, null, 2));
   res.json({ success: true });
 });
 
@@ -19577,7 +21964,11 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
   const template = (data.items || []).find(t => t.id === req.params.id);
   if (!template) return res.status(404).send('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>Template not found</h2><p><a href="/database/agreement-templates">← Back</a></p></body></html>');
 
-  const docName = 'Docusign_' + (template.utility || 'Template').replace(/\s+/g, '_') + '.pdf';
+  const docName = template.pdfOriginalName || 'Docusign_' + (template.utility || 'Template').replace(/\s+/g, '_') + '.pdf';
+  const pdfUrl = template.pdfFile ? '/uploads/agreements/' + template.pdfFile : '';
+  const hasPdf = !!template.pdfFile;
+  const savedFields = JSON.stringify(template.fields || []);
+  const savedRouting = JSON.stringify(template.routing || null);
   const utilityUpper = (template.utility || 'AGREEMENT').toUpperCase();
 
   res.send(`<!DOCTYPE html>
@@ -19586,6 +21977,7 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>${esc(template.name)} — Editor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111; }
@@ -19633,6 +22025,14 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
     .ed-placed:hover { background: rgba(245, 158, 11, 0.4); }
     .ed-placed.selected { border-color: #6e3bf5; background: rgba(110, 59, 245, 0.18); color: #4c1d95; box-shadow: 0 0 0 2px rgba(110, 59, 245, 0.3); z-index: 5; }
     .ed-placed.dragging { opacity: 0.6; cursor: grabbing; }
+    .ed-placed.sig-customer { background: rgba(6, 182, 212, 0.22); border-color: #06b6d4; color: #0e7490; }
+    .ed-placed.sig-customer:hover { background: rgba(6, 182, 212, 0.35); }
+    .ed-placed.sig-salesrep { background: rgba(245, 158, 11, 0.22); border-color: #f59e0b; color: #78350f; }
+    .ed-placed.sig-salesrep:hover { background: rgba(245, 158, 11, 0.35); }
+    .ed-upload-prompt { width: 612px; background: #fff; border: 2px dashed #d1d5db; border-radius: 12px; flex-shrink: 0; }
+    .ed-pdf-page-wrap { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.08); border: 1px solid #e5e7eb; }
+    .ed-pdf-page-wrap.drag-over { border-color: #6e3bf5; }
+    .ed-pdf-page-wrap canvas { display: block; width: 100%; height: auto; }
 
     /* Right panel */
     .ed-right { width: 280px; flex-shrink: 0; background: #fff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
@@ -19643,6 +22043,32 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
     .ed-right-input:focus, .ed-right-select:focus { border-color: #6e3bf5; }
     .ed-right-textarea { width: 100%; min-height: 70px; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.83rem; color: #111; outline: none; resize: vertical; font-family: inherit; }
     .ed-right-textarea:focus { border-color: #6e3bf5; }
+    /* Document routing (Phase 1) */
+    .ed-routing-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px 0; background: none; border: none; cursor: pointer; font-size: 0.82rem; font-weight: 700; color: #111; text-align: left; }
+    .ed-routing-toggle:hover { color: #6e3bf5; }
+    .ed-routing-chevron { transition: transform 0.15s; color: #6b7280; }
+    .ed-routing-toggle[aria-expanded="true"] .ed-routing-chevron { transform: rotate(180deg); }
+    .ed-routing-panel { display: block; padding: 4px 0 12px; }
+    /* Phase 6: routing checks box */
+    .ed-checks { margin-top: 4px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff; }
+    .ed-checks-group { padding: 10px 12px; border-top: 1px solid #f3f4f6; }
+    .ed-checks-group:first-child { border-top: none; }
+    .ed-checks-head { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .ed-checks-errors { background: #fef2f2; }
+    .ed-checks-errors .ed-checks-head { color: #b91c1c; }
+    .ed-checks-warnings { background: #fffbeb; }
+    .ed-checks-warnings .ed-checks-head { color: #b45309; }
+    .ed-checks-infos { background: #f3f4f6; }
+    .ed-checks-infos .ed-checks-head { color: #4b5563; }
+    .ed-checks ul { list-style: disc; padding-left: 18px; margin: 0; }
+    .ed-checks li { font-size: 0.78rem; color: #111; line-height: 1.45; padding: 2px 0; }
+    .ed-save-blocked-msg { font-size: 0.76rem; color: #b91c1c; margin-right: auto; padding: 4px 10px; background: #fef2f2; border-radius: 6px; }
+    .ed-routing-panel[hidden] { display: none; }
+    .ed-rtg-radios, .ed-rtg-checks { display: flex; flex-wrap: wrap; gap: 10px 14px; font-size: 0.78rem; color: #374151; }
+    .ed-rtg-radios label, .ed-rtg-checks label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+    .ed-rtg-radios input, .ed-rtg-checks input { accent-color: #6e3bf5; margin: 0; }
+    .ed-rtg-minmax { display: flex; gap: 8px; }
+    .ed-rtg-minmax input { flex: 1; min-width: 0; }
     .ed-right-row { margin-bottom: 14px; }
     .ed-right-divider { height: 1px; background: #f3f4f6; margin: 18px 0; }
     .ed-empty { padding: 16px 0; text-align: center; color: #9ca3af; font-size: 0.78rem; line-height: 1.5; }
@@ -19805,7 +22231,7 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
           <div class="ed-doc-thumb"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
           <div class="ed-doc-info">
             <div class="ed-doc-name">${esc(docName)}</div>
-            <div class="ed-doc-pages">3 pages</div>
+            <div class="ed-doc-pages">— pages</div>
           </div>
           <button class="ed-doc-menu-btn">⋮</button>
           <div class="ed-doc-menu">
@@ -19821,28 +22247,20 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
     </aside>
 
     <main class="ed-center" id="edCenter">
-      <div class="ed-page" data-page="1">
-        <span class="ed-page-num">Page 1</span>
-        <div class="ed-page-header">${esc(utilityUpper)}<br/>STANDARD INTERCONNECTION AGREEMENT<br/>FOR CUSTOMER-OWNED RENEWABLE GENERATION SYSTEMS<br/>10 KW AC OR LESS — TIER 1</div>
-        <p style="margin-bottom:14px">This Interconnection Agreement ("Interconnection Agreement") is made this ___ day of ____, 20___, by and between Customer and Utility, hereinafter referred to as the "Parties."</p>
-        <p style="margin-bottom:14px"><strong>RECITALS</strong></p>
-        <p style="margin-bottom:14px"><em>Whereas</em>, a Renewable Generation System ("RGS") is an electric generating system that uses one or more of the following fuels or energy sources: hydrogen, biomass, solar energy, geothermal energy, wind energy, ocean energy, waste heat, or hydroelectric power.</p>
-        <p style="margin-bottom:14px"><em>Whereas</em>, the Customer has requested to interconnect its Renewable Generation System with the Utility's electrical service grid at the Customer's presently metered location.</p>
-        <p style="margin-bottom:14px"><em>Now, Therefore</em>, in consideration of the mutual covenants and agreements herein set forth, the Parties do hereby agree as follows:</p>
-      </div>
-      <div class="ed-page" data-page="2">
-        <span class="ed-page-num">Page 2</span>
-        <p style="margin-bottom:14px">2) Customer-owned RGS shall be considered certified for interconnected operation if it has been submitted by a manufacturer to a nationally recognized testing and certification laboratory, and has been tested and listed by the laboratory for continuous interactive operation with an electric distribution system in compliance with applicable codes and standards of IEEE 1547, IEEE 1547.1 and UL 1741.</p>
-        <p style="margin-bottom:14px">3) Customer-owned RGS shall include a utility-interactive inverter, or other device certified pursuant to item 2 listed above, that performs the function of automatically isolating the Customer-owned RGS equipment from the electric grid in the event the electric grid loses power.</p>
-        <p style="margin-bottom:14px">4) The Customer is responsible for the inspection, maintenance, and testing in accordance with the manufacturer's instructions and applicable codes, standards, and regulations to ensure that the RGS and associated equipment are operated correctly and safely, and are in compliance.</p>
-      </div>
-      <div class="ed-page" data-page="3">
-        <span class="ed-page-num">Page 3</span>
-        <p style="margin-bottom:14px"><strong>IN WITNESS WHEREOF</strong>, the parties hereto have caused this Interconnection Agreement to be duly executed by their respective authorized representatives.</p>
-        <p style="margin-top:60px"><strong>Customer Signature:</strong></p>
-        <p style="margin-top:60px"><strong>Printed Name:</strong></p>
-        <p style="margin-top:60px"><strong>Date:</strong></p>
-      </div>
+      ${hasPdf ? '' : `
+      <div class="ed-upload-prompt" id="edUploadPrompt">
+        <div style="text-align:center;padding:60px 20px;">
+          <svg width="48" height="48" fill="none" stroke="#9ca3af" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:16px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <div style="font-size:1rem;font-weight:600;color:#374151;margin-bottom:8px;">No PDF uploaded yet</div>
+          <div style="font-size:0.85rem;color:#6b7280;margin-bottom:20px;">Upload a PDF to start placing fields on the document.</div>
+          <label style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:#6e3bf5;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:600;cursor:pointer;">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/></svg>
+            Upload PDF
+            <input type="file" accept=".pdf" id="edUploadInput" hidden/>
+          </label>
+        </div>
+      </div>`}
+      <div id="edPagesContainer"></div>
     </main>
 
     <aside class="ed-right">
@@ -19862,14 +22280,150 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
             <input class="ed-right-input" id="edTplUtility" type="text" value="${esc(template.utility || '')}" placeholder="e.g. Eversource Energy"/>
           </div>
           <div class="ed-right-divider"></div>
+
+          <!-- Phase 1: Document routing (data capture only — evaluator comes in Phase 2) -->
+          <button type="button" class="ed-routing-toggle" id="edRoutingToggle" aria-expanded="false">
+            <span>Document routing</span>
+            <svg class="ed-routing-chevron" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="ed-routing-panel" id="edRoutingPanel" hidden>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Category</div>
+              <select class="ed-right-select" id="edRtgCategory">
+                <option value="">—</option>
+                <option value="interconnection">Interconnection</option>
+                <option value="net-metering">Net metering</option>
+                <option value="installation">Installation</option>
+                <option value="financing">Financing</option>
+                <option value="permitting">Permitting</option>
+                <option value="engineering">Engineering</option>
+                <option value="hoa">HOA</option>
+                <option value="safety-disclosure">Safety disclosure</option>
+                <option value="tax-incentive">Tax / incentive</option>
+                <option value="warranty">Warranty</option>
+                <option value="commissioning">Commissioning</option>
+                <option value="decommissioning">Decommissioning</option>
+              </select>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Requirement</div>
+              <div class="ed-rtg-radios">
+                <label><input type="radio" name="edRtgReq" value="required"/> Required</label>
+                <label><input type="radio" name="edRtgReq" value="recommended"/> Recommended</label>
+                <label><input type="radio" name="edRtgReq" value="optional"/> Optional</label>
+                <label><input type="radio" name="edRtgReq" value="conditional"/> Conditional</label>
+              </div>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Lifecycle</div>
+              <select class="ed-right-select" id="edRtgLifecycle">
+                <option value="">—</option>
+                <option value="pre-install">Pre-install</option>
+                <option value="post-install">Post-install</option>
+                <option value="contract-addendum">Contract addendum</option>
+              </select>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Sequence</div>
+              <input class="ed-right-input" id="edRtgSequence" type="number" placeholder="e.g. 10"/>
+            </div>
+
+            <div class="ed-right-section-title" style="margin-top:12px;font-size:0.78rem;">Triggers <span style="font-weight:400;color:#6b7280;">(empty = any)</span></div>
+
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Utilities</div>
+              <input class="ed-right-input" id="edRtgUtilities" type="text" placeholder="Comma-separated (e.g. Eversource Energy, National Grid)"/>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">States</div>
+              <input class="ed-right-input" id="edRtgStates" type="text" placeholder="e.g. MA, CA, NY"/>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Customer type</div>
+              <div class="ed-rtg-checks">
+                <label><input type="checkbox" class="edRtgCustType" value="residential"/> Residential</label>
+                <label><input type="checkbox" class="edRtgCustType" value="commercial"/> Commercial</label>
+              </div>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">System size (kW DC)</div>
+              <div class="ed-rtg-minmax">
+                <input class="ed-right-input" id="edRtgKwMin" type="number" step="0.1" placeholder="Min"/>
+                <input class="ed-right-input" id="edRtgKwMax" type="number" step="0.1" placeholder="Max"/>
+              </div>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Interconnection tier</div>
+              <input class="ed-right-input" id="edRtgTier" type="text" placeholder="e.g. tier1, tier2"/>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Financing method</div>
+              <div class="ed-rtg-checks">
+                <label><input type="checkbox" class="edRtgFin" value="cash"/> Cash</label>
+                <label><input type="checkbox" class="edRtgFin" value="loan"/> Loan</label>
+                <label><input type="checkbox" class="edRtgFin" value="PPA"/> PPA</label>
+                <label><input type="checkbox" class="edRtgFin" value="lease"/> Lease</label>
+                <label><input type="checkbox" class="edRtgFin" value="PACE"/> PACE</label>
+              </div>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Lender</div>
+              <input class="ed-right-input" id="edRtgLender" type="text" placeholder="e.g. GoodLeap, Sunlight"/>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Has battery</div>
+              <div class="ed-rtg-radios">
+                <label><input type="radio" name="edRtgBattery" value="any" checked/> Any</label>
+                <label><input type="radio" name="edRtgBattery" value="yes"/> Yes</label>
+                <label><input type="radio" name="edRtgBattery" value="no"/> No</label>
+              </div>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Roof type</div>
+              <input class="ed-right-input" id="edRtgRoofType" type="text" placeholder="e.g. asphalt, tile, metal"/>
+            </div>
+            <div class="ed-right-row">
+              <div class="ed-right-field-label">Partner IDs (override)</div>
+              <input class="ed-right-input" id="edRtgPartnerId" type="text" placeholder="e.g. partner-abc, partner-xyz"/>
+            </div>
+          </div>
+
+          <!-- Phase 6: Routing checks (live-updated) -->
+          <div class="ed-checks" id="edChecks" hidden>
+            <div class="ed-checks-group ed-checks-errors" id="edChecksErrorsWrap" hidden>
+              <div class="ed-checks-head">Errors</div>
+              <ul id="edChecksErrors"></ul>
+            </div>
+            <div class="ed-checks-group ed-checks-warnings" id="edChecksWarningsWrap" hidden>
+              <div class="ed-checks-head">Warnings</div>
+              <ul id="edChecksWarnings"></ul>
+            </div>
+            <div class="ed-checks-group ed-checks-infos" id="edChecksInfosWrap" hidden>
+              <div class="ed-checks-head">Info</div>
+              <ul id="edChecksInfos"></ul>
+            </div>
+          </div>
+
+          <div class="ed-right-divider"></div>
+
           <div class="ed-empty">Drag a field from the left onto the document, then click it to edit its properties here.</div>
         </div>
 
         <div id="edRightField" style="display:none">
           <div class="ed-right-section-title" id="edFieldTitle">Field properties</div>
+          <div class="ed-right-row" id="edFieldSignerRow" style="display:none">
+            <div class="ed-right-field-label">Signer</div>
+            <select class="ed-right-select" id="edFieldSigner">
+              <option value="customer">Customer</option>
+              <option value="salesRep">Sales rep</option>
+            </select>
+          </div>
           <div class="ed-right-row">
             <div class="ed-right-field-label">Assigned to</div>
-            <select class="ed-right-select"><option>Customer</option></select>
+            <select class="ed-right-select" id="edFieldAssignedTo">
+              <option value="customer">Customer</option>
+              <option value="salesRep">Sales rep</option>
+            </select>
           </div>
           <div class="ed-right-row">
             <div class="ed-right-field-label">Type</div>
@@ -20062,17 +22616,24 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
   <script>
     (function() {
       var TEMPLATE_ID = '${template.id}';
+      var PDF_URL = '${pdfUrl}';
+      var HAS_PDF = ${hasPdf ? 'true' : 'false'};
+      var SAVED_FIELDS = ${savedFields};
+      var SAVED_ROUTING = ${savedRouting};
       var fieldTypeLabels = {
         signature: 'Signature', initials: 'Initials',
         dateSigned: 'Date signed', fullName: 'Full name', email: 'Email address', title: 'Title',
         textbox: 'Textbox', checkbox: 'Checkbox', dropdown: 'Dropdown', radio: 'Radio group'
       };
+      var pageWrappers = [];
+      var nextFieldId = 1;
+      var selectedField = null;
+      var draggingType = null;
 
       // Tab switching
-      var tabBtns = document.querySelectorAll('.ed-tab');
-      tabBtns.forEach(function(btn) {
+      document.querySelectorAll('.ed-tab').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          tabBtns.forEach(function(b) { b.classList.remove('active'); });
+          document.querySelectorAll('.ed-tab').forEach(function(b) { b.classList.remove('active'); });
           btn.classList.add('active');
           var tab = btn.dataset.leftab;
           document.getElementById('edTabFields').style.display = (tab === 'fields') ? '' : 'none';
@@ -20080,11 +22641,72 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
         });
       });
 
-      // Drag-drop
-      var draggingType = null;
-      var nextFieldId = 1;
-      var selectedField = null;
+      // ── PDF rendering ──
+      function renderPdf(url) {
+        if (typeof pdfjsLib === 'undefined') { console.error('PDF.js not loaded'); return; }
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        var container = document.getElementById('edPagesContainer');
+        container.innerHTML = '';
+        pageWrappers = [];
+        var prompt = document.getElementById('edUploadPrompt');
+        if (prompt) prompt.style.display = 'none';
 
+        pdfjsLib.getDocument(url).promise.then(function(pdf) {
+          var numPages = pdf.numPages;
+          document.querySelector('.ed-doc-pages').textContent = numPages + ' pages';
+          var pagePromises = [];
+          for (var p = 1; p <= numPages; p++) {
+            (function(pageNum) {
+              var wrap = document.createElement('div');
+              wrap.className = 'ed-pdf-page-wrap';
+              wrap.dataset.page = String(pageNum);
+              wrap.style.marginBottom = '24px';
+              var canvas = document.createElement('canvas');
+              wrap.appendChild(canvas);
+              container.appendChild(wrap);
+              pageWrappers.push(wrap);
+              attachPageDropHandlers(wrap);
+
+              var pp = pdf.getPage(pageNum).then(function(page) {
+                var viewport = page.getViewport({ scale: 1.5 });
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                wrap.style.width = viewport.width + 'px';
+                wrap.style.height = viewport.height + 'px';
+                return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+              });
+              pagePromises.push(pp);
+            })(p);
+          }
+          // Wait for every page to finish rendering before placing saved fields
+          Promise.all(pagePromises).then(loadSavedFields);
+        }).catch(function(err) {
+          container.innerHTML = '<div style="text-align:center;padding:40px;color:#dc2626;">Failed to load PDF: ' + err.message + '</div>';
+        });
+      }
+
+      // ── Drop handlers per page ──
+      function attachPageDropHandlers(wrap) {
+        wrap.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          wrap.classList.add('drag-over');
+        });
+        wrap.addEventListener('dragleave', function(e) {
+          if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('drag-over');
+        });
+        wrap.addEventListener('drop', function(e) {
+          e.preventDefault();
+          wrap.classList.remove('drag-over');
+          var type = e.dataTransfer.getData('text/plain') || draggingType;
+          if (!type) return;
+          var rect = wrap.getBoundingClientRect();
+          createPlacedField(wrap, type, e.clientX - rect.left - 50, e.clientY - rect.top - 12);
+          draggingType = null;
+        });
+      }
+
+      // ── Sidebar field drag ──
       document.querySelectorAll('.ed-field-item').forEach(function(item) {
         item.addEventListener('dragstart', function(e) {
           draggingType = item.dataset.fieldType;
@@ -20093,42 +22715,29 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
         });
       });
 
-      document.querySelectorAll('.ed-page').forEach(function(page) {
-        page.addEventListener('dragover', function(e) {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'copy';
-          page.classList.add('drag-over');
-        });
-        page.addEventListener('dragleave', function(e) {
-          if (!page.contains(e.relatedTarget)) page.classList.remove('drag-over');
-        });
-        page.addEventListener('drop', function(e) {
-          e.preventDefault();
-          page.classList.remove('drag-over');
-          var type = e.dataTransfer.getData('text/plain') || draggingType;
-          if (!type) return;
-          var rect = page.getBoundingClientRect();
-          var x = e.clientX - rect.left;
-          var y = e.clientY - rect.top;
-          createPlacedField(page, type, x - 50, y - 12);
-          draggingType = null;
-        });
-      });
-
-      function createPlacedField(page, type, x, y) {
+      // ── Create / manage placed fields ──
+      function createPlacedField(pageWrap, type, x, y, w, h, signer) {
         var div = document.createElement('div');
         div.className = 'ed-placed';
         div.dataset.fieldId = String(nextFieldId++);
         div.dataset.fieldType = type;
-        div.style.left = Math.max(0, Math.min(page.offsetWidth - 100, x)) + 'px';
-        div.style.top = Math.max(0, Math.min(page.offsetHeight - 24, y)) + 'px';
-        var w = (type === 'signature' || type === 'fullName' || type === 'email') ? 160 : 100;
-        div.style.width = w + 'px';
-        div.style.height = '24px';
+        div.dataset.signer = signer || 'customer';
+        var pw = pageWrap.offsetWidth || 612;
+        var ph = pageWrap.offsetHeight || 792;
+        var fw = w || ((type === 'signature' || type === 'fullName' || type === 'email') ? 160 : 100);
+        var fh = h || 24;
+        div.style.left = Math.max(0, Math.min(pw - fw, x)) + 'px';
+        div.style.top = Math.max(0, Math.min(ph - fh, y)) + 'px';
+        div.style.width = fw + 'px';
+        div.style.height = fh + 'px';
         div.textContent = fieldTypeLabels[type] || type;
-        page.appendChild(div);
+        var isSigField = (type === 'signature' || type === 'initials');
+        if (isSigField) {
+          div.classList.add(div.dataset.signer === 'salesRep' ? 'sig-salesrep' : 'sig-customer');
+        }
+        pageWrap.appendChild(div);
         attachFieldHandlers(div);
-        selectField(div);
+        return div;
       }
 
       function attachFieldHandlers(div) {
@@ -20144,16 +22753,14 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
         function onMove(e) {
           if (!dragState) return;
           dragState.moved = true;
-          var page = div.parentElement;
-          var pageRect = page.getBoundingClientRect();
-          var newX = e.clientX - pageRect.left - dragState.offsetX;
-          var newY = e.clientY - pageRect.top - dragState.offsetY;
-          newX = Math.max(0, Math.min(pageRect.width - div.offsetWidth, newX));
-          newY = Math.max(0, Math.min(pageRect.height - div.offsetHeight, newY));
-          div.style.left = newX + 'px';
-          div.style.top = newY + 'px';
+          var pw = div.parentElement;
+          var r = pw.getBoundingClientRect();
+          var nx = Math.max(0, Math.min(r.width - div.offsetWidth, e.clientX - r.left - dragState.offsetX));
+          var ny = Math.max(0, Math.min(r.height - div.offsetHeight, e.clientY - r.top - dragState.offsetY));
+          div.style.left = nx + 'px';
+          div.style.top = ny + 'px';
         }
-        function onUp(e) {
+        function onUp() {
           if (!dragState) return;
           var wasMoved = dragState.moved;
           dragState = null;
@@ -20169,12 +22776,41 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
         selectedField = div;
         div.classList.add('selected');
         var type = div.dataset.fieldType;
+        var signer = div.dataset.signer || 'customer';
         document.getElementById('edRightDefault').style.display = 'none';
         document.getElementById('edRightField').style.display = '';
         document.getElementById('edFieldTitle').textContent = (fieldTypeLabels[type] || type) + ' field';
         document.getElementById('edFieldTypeInput').value = fieldTypeLabels[type] || type;
         document.getElementById('edFieldLabel').value = fieldTypeLabels[type] || type;
+        document.getElementById('edFieldAssignedTo').value = signer;
+        // Only signature/initials need the Signer row (they're the gated fields)
+        var isSigField = (type === 'signature' || type === 'initials');
+        document.getElementById('edFieldSignerRow').style.display = isSigField ? '' : 'none';
+        document.getElementById('edFieldSigner').value = signer;
+        // Color the box based on signer
+        div.classList.toggle('sig-customer', isSigField && signer === 'customer');
+        div.classList.toggle('sig-salesrep', isSigField && signer === 'salesRep');
       }
+
+      // Signer dropdown updates the selected field's signer
+      document.getElementById('edFieldSigner').addEventListener('change', function() {
+        if (!selectedField) return;
+        selectedField.dataset.signer = this.value;
+        document.getElementById('edFieldAssignedTo').value = this.value;
+        var type = selectedField.dataset.fieldType;
+        var isSigField = (type === 'signature' || type === 'initials');
+        selectedField.classList.toggle('sig-customer', isSigField && this.value === 'customer');
+        selectedField.classList.toggle('sig-salesrep', isSigField && this.value === 'salesRep');
+      });
+      document.getElementById('edFieldAssignedTo').addEventListener('change', function() {
+        if (!selectedField) return;
+        selectedField.dataset.signer = this.value;
+        document.getElementById('edFieldSigner').value = this.value;
+        var type = selectedField.dataset.fieldType;
+        var isSigField = (type === 'signature' || type === 'initials');
+        selectedField.classList.toggle('sig-customer', isSigField && this.value === 'customer');
+        selectedField.classList.toggle('sig-salesrep', isSigField && this.value === 'salesRep');
+      });
 
       function deselectField() {
         if (selectedField) selectedField.classList.remove('selected');
@@ -20183,35 +22819,379 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
         document.getElementById('edRightField').style.display = 'none';
       }
 
+      function deleteSelectedField() {
+        if (selectedField) { selectedField.remove(); deselectField(); }
+      }
+
       document.getElementById('edCenter').addEventListener('click', function(e) {
         if (!e.target.closest('.ed-placed')) deselectField();
       });
+      document.getElementById('edFieldDelete').addEventListener('click', deleteSelectedField);
 
-      document.getElementById('edFieldDelete').addEventListener('click', function() {
-        if (selectedField) {
-          selectedField.remove();
-          deselectField();
+      // Backspace / Delete key removes selected field
+      document.addEventListener('keydown', function(e) {
+        if ((e.key === 'Backspace' || e.key === 'Delete') && selectedField) {
+          var tag = document.activeElement && document.activeElement.tagName;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+          e.preventDefault();
+          deleteSelectedField();
+        }
+        if (e.key === 'Escape') {
+          closeDrawer('Recip'); closeDrawer('Msg');
+          advOverlay.classList.remove('open');
+          docPrevOverlay.classList.remove('open');
+          actionsWrap.classList.remove('open');
         }
       });
 
-      // Actions dropdown
+      // ── Collect + save fields (positions stored as fractions 0-1 of page size) ──
+      function collectFields() {
+        var fields = [];
+        pageWrappers.forEach(function(wrap) {
+          var pageNum = parseInt(wrap.dataset.page);
+          var pw = wrap.offsetWidth || 1;
+          var ph = wrap.offsetHeight || 1;
+          wrap.querySelectorAll('.ed-placed').forEach(function(f) {
+            fields.push({
+              type: f.dataset.fieldType,
+              signer: f.dataset.signer || 'customer',
+              page: pageNum,
+              xPct: parseFloat(f.style.left) / pw,
+              yPct: parseFloat(f.style.top) / ph,
+              wPct: f.offsetWidth / pw,
+              hPct: f.offsetHeight / ph
+            });
+          });
+        });
+        return fields;
+      }
+
+      // ── Phase 1: Document routing helpers ──
+      function splitList(s) {
+        return (s || '').split(',').map(function(v) { return v.trim(); }).filter(function(v) { return v.length > 0; });
+      }
+      function hydrateRouting() {
+        var r = SAVED_ROUTING;
+        if (!r || typeof r !== 'object') return;
+        // Expand the panel if we have data to show
+        var toggle = document.getElementById('edRoutingToggle');
+        var panel = document.getElementById('edRoutingPanel');
+        toggle.setAttribute('aria-expanded', 'true');
+        panel.hidden = false;
+
+        var setVal = function(id, v) { var el = document.getElementById(id); if (el && v != null) el.value = v; };
+        setVal('edRtgCategory', r.category);
+        setVal('edRtgLifecycle', r.lifecycle);
+        setVal('edRtgSequence', (r.sequence != null ? r.sequence : ''));
+
+        if (r.requirement) {
+          var rq = document.querySelector('input[name="edRtgReq"][value="' + r.requirement + '"]');
+          if (rq) rq.checked = true;
+        }
+        var t = r.triggers || {};
+        setVal('edRtgUtilities', (t.utility || []).join(', '));
+        setVal('edRtgStates', (t.state || []).join(', '));
+        setVal('edRtgTier', (t.interconnectionTier || []).join(', '));
+        setVal('edRtgLender', (t.lender || []).join(', '));
+        setVal('edRtgRoofType', (t.roofType || []).join(', '));
+        setVal('edRtgPartnerId', (t.partnerId || []).join(', '));
+        setVal('edRtgKwMin', (t.systemKwDcMin != null ? t.systemKwDcMin : ''));
+        setVal('edRtgKwMax', (t.systemKwDcMax != null ? t.systemKwDcMax : ''));
+
+        (t.customerType || []).forEach(function(ct) {
+          var cb = document.querySelector('.edRtgCustType[value="' + ct + '"]');
+          if (cb) cb.checked = true;
+        });
+        (t.financingMethod || []).forEach(function(fm) {
+          var cb = document.querySelector('.edRtgFin[value="' + fm + '"]');
+          if (cb) cb.checked = true;
+        });
+        var bVal = (t.hasBattery === true) ? 'yes' : (t.hasBattery === false) ? 'no' : 'any';
+        var bRadio = document.querySelector('input[name="edRtgBattery"][value="' + bVal + '"]');
+        if (bRadio) bRadio.checked = true;
+      }
+      function collectRouting() {
+        // Returns a clean routing object, or null if nothing meaningful was entered (preserves backward-compat)
+        var category = document.getElementById('edRtgCategory').value || '';
+        var lifecycle = document.getElementById('edRtgLifecycle').value || '';
+        var seqRaw = document.getElementById('edRtgSequence').value;
+        var reqRadio = document.querySelector('input[name="edRtgReq"]:checked');
+        var requirement = reqRadio ? reqRadio.value : '';
+
+        var utilities = splitList(document.getElementById('edRtgUtilities').value);
+        var states = splitList(document.getElementById('edRtgStates').value);
+        var tier = splitList(document.getElementById('edRtgTier').value);
+        var lender = splitList(document.getElementById('edRtgLender').value);
+        var roofType = splitList(document.getElementById('edRtgRoofType').value);
+        var partnerId = splitList(document.getElementById('edRtgPartnerId').value);
+        var kwMinRaw = document.getElementById('edRtgKwMin').value;
+        var kwMaxRaw = document.getElementById('edRtgKwMax').value;
+        var customerType = [].slice.call(document.querySelectorAll('.edRtgCustType:checked')).map(function(c) { return c.value; });
+        var financing = [].slice.call(document.querySelectorAll('.edRtgFin:checked')).map(function(c) { return c.value; });
+        var batRadio = document.querySelector('input[name="edRtgBattery"]:checked');
+        var batVal = batRadio ? batRadio.value : 'any';
+
+        var triggers = {};
+        if (utilities.length) triggers.utility = utilities;
+        if (states.length) triggers.state = states;
+        if (customerType.length) triggers.customerType = customerType;
+        if (kwMinRaw !== '' && !isNaN(parseFloat(kwMinRaw))) triggers.systemKwDcMin = parseFloat(kwMinRaw);
+        if (kwMaxRaw !== '' && !isNaN(parseFloat(kwMaxRaw))) triggers.systemKwDcMax = parseFloat(kwMaxRaw);
+        if (tier.length) triggers.interconnectionTier = tier;
+        if (financing.length) triggers.financingMethod = financing;
+        if (lender.length) triggers.lender = lender;
+        if (batVal === 'yes') triggers.hasBattery = true;
+        else if (batVal === 'no') triggers.hasBattery = false;
+        if (roofType.length) triggers.roofType = roofType;
+        if (partnerId.length) triggers.partnerId = partnerId;
+
+        var hasTopLevel = category || lifecycle || requirement || (seqRaw !== '' && !isNaN(parseFloat(seqRaw)));
+        var hasTriggers = Object.keys(triggers).length > 0;
+        if (!hasTopLevel && !hasTriggers) return null; // nothing to save
+
+        var out = {};
+        if (category) out.category = category;
+        if (requirement) out.requirement = requirement;
+        if (lifecycle) out.lifecycle = lifecycle;
+        if (seqRaw !== '' && !isNaN(parseFloat(seqRaw))) out.sequence = parseFloat(seqRaw);
+        if (hasTriggers) out.triggers = triggers;
+        return out;
+      }
+
+      // Collapsible toggle
+      (function() {
+        var toggle = document.getElementById('edRoutingToggle');
+        var panel = document.getElementById('edRoutingPanel');
+        if (!toggle || !panel) return;
+        toggle.addEventListener('click', function() {
+          var expanded = toggle.getAttribute('aria-expanded') === 'true';
+          toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+          panel.hidden = expanded;
+        });
+      })();
+      hydrateRouting();
+
+      // ── Phase 6: client-side routing validation (mirrors server analyzeTemplateRoutingWarnings) ──
+      var MEANINGFUL_TRIGGER_KEYS_CLIENT = [
+        'utility','state','customerType','systemKwDcMin','systemKwDcMax',
+        'financingMethod','lender','partnerId','ahj','netMeteringProgram',
+        'roofType','hasBattery','hoaApplicable','incentivePrograms'
+      ];
+      var US_ABBREV_CLIENT = {'AL':1,'AK':1,'AZ':1,'AR':1,'CA':1,'CO':1,'CT':1,'DE':1,'FL':1,'GA':1,'HI':1,'ID':1,'IL':1,'IN':1,'IA':1,'KS':1,'KY':1,'LA':1,'ME':1,'MD':1,'MA':1,'MI':1,'MN':1,'MS':1,'MO':1,'MT':1,'NE':1,'NV':1,'NH':1,'NJ':1,'NM':1,'NY':1,'NC':1,'ND':1,'OH':1,'OK':1,'OR':1,'PA':1,'RI':1,'SC':1,'SD':1,'TN':1,'TX':1,'UT':1,'VT':1,'VA':1,'WA':1,'WV':1,'WI':1,'WY':1,'DC':1};
+      var US_FULL_TO_ABBREV_CLIENT = {'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA','colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA','hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA','kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD','massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS','missouri':'MO','montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH','oklahoma':'OK','oregon':'OR','pennsylvania':'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD','tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA','west virginia':'WV','wisconsin':'WI','wyoming':'WY','district of columbia':'DC'};
+      function normalizeStateClient(v) {
+        if (!v || typeof v !== 'string') return null;
+        var s = v.trim(); if (!s) return null;
+        var up = s.toUpperCase();
+        if (US_ABBREV_CLIENT[up]) return up;
+        var lo = s.toLowerCase();
+        if (US_FULL_TO_ABBREV_CLIENT[lo]) return US_FULL_TO_ABBREV_CLIENT[lo];
+        return up;
+      }
+      function triggerHasMeaningfulValue(v) {
+        if (v === undefined || v === null) return false;
+        if (typeof v === 'boolean') return true;
+        if (typeof v === 'number') return true;
+        if (Array.isArray(v)) return v.length > 0;
+        return !!v;
+      }
+      function isGlobalRoutingClient(routing) {
+        var triggers = (routing && routing.triggers) || {};
+        return !MEANINGFUL_TRIGGER_KEYS_CLIENT.some(function(k) { return triggerHasMeaningfulValue(triggers[k]); });
+      }
+      function analyzeWarningsClient(templateLike) {
+        var errors = [], warnings = [], infos = [];
+        var routing = templateLike.routing;
+        if (!routing || typeof routing !== 'object') {
+          infos.push({ code: 'UNROUTED', message: 'This template is unrouted and will only be available through Browse all templates.' });
+          return { errors: errors, warnings: warnings, infos: infos };
+        }
+        var triggers = (routing.triggers && typeof routing.triggers === 'object') ? routing.triggers : {};
+        var req = routing.requirement;
+        var category = (typeof routing.category === 'string') ? routing.category.trim() : '';
+        var lifecycle = (typeof routing.lifecycle === 'string') ? routing.lifecycle.trim() : '';
+        var isGlobal = isGlobalRoutingClient(routing);
+
+        if (isGlobal) {
+          if (req === 'required') warnings.push({ code: 'GLOBAL_REQUIRED', message: 'This template is globally required and will match every project.' });
+          else if (req === 'conditional') warnings.push({ code: 'GLOBAL_CONDITIONAL', message: "This template is global, and 'conditional' currently behaves like optional." });
+          else infos.push({ code: 'GLOBAL_MATCH_ALL', message: 'This template is global and can match every project.' });
+        }
+        if (req === 'conditional' && !isGlobal) {
+          warnings.push({ code: 'CONDITIONAL_BEHAVES_AS_OPTIONAL', message: "'Conditional' currently behaves like optional in the live evaluator." });
+        }
+        if (!category) warnings.push({ code: 'MISSING_CATEGORY', message: 'Routing is enabled but category is missing.' });
+        if (!lifecycle) warnings.push({ code: 'MISSING_LIFECYCLE', message: 'Routing is enabled but lifecycle is missing.' });
+
+        var kwMin = triggers.systemKwDcMin, kwMax = triggers.systemKwDcMax;
+        if (typeof kwMin === 'number' && typeof kwMax === 'number' && kwMin > kwMax) {
+          errors.push({ code: 'KW_MIN_GT_MAX', message: 'System kW minimum is greater than maximum.' });
+        }
+
+        var topUtility = (templateLike.utility || '').trim().toLowerCase();
+        if (topUtility && Array.isArray(triggers.utility) && triggers.utility.length) {
+          var overlap = triggers.utility.some(function(u) {
+            var t = String(u || '').trim().toLowerCase();
+            return t && (t === topUtility || t.indexOf(topUtility) !== -1 || topUtility.indexOf(t) !== -1);
+          });
+          if (!overlap) warnings.push({ code: 'UTILITY_CONFLICT', message: 'Top-level utility and routing utility triggers disagree.' });
+        }
+
+        var topState = normalizeStateClient(templateLike.state);
+        if (topState && Array.isArray(triggers.state) && triggers.state.length) {
+          var triggerStates = triggers.state.map(normalizeStateClient).filter(Boolean);
+          if (triggerStates.length && triggerStates.indexOf(topState) === -1) {
+            warnings.push({ code: 'STATE_CONFLICT', message: 'Top-level state and routing state triggers disagree.' });
+          }
+        }
+
+        if (!req && !category && !lifecycle && isGlobal && (typeof routing.sequence !== 'number')) {
+          infos.push({ code: 'ROUTING_UNCONSTRAINED', message: 'Routing is present but unconstrained.' });
+        }
+
+        return { errors: errors, warnings: warnings, infos: infos };
+      }
+
+      function renderChecks() {
+        var routing = collectRouting();
+        var templateLike = {
+          utility: (document.getElementById('edTplUtility') || {}).value || '',
+          state: '',
+          routing: routing
+        };
+        var result = analyzeWarningsClient(templateLike);
+        var box = document.getElementById('edChecks');
+        var hasAny = result.errors.length + result.warnings.length + result.infos.length > 0;
+        if (box) box.hidden = !hasAny;
+
+        function fill(listId, wrapId, items) {
+          var wrap = document.getElementById(wrapId);
+          var list = document.getElementById(listId);
+          if (!wrap || !list) return;
+          if (!items.length) { wrap.hidden = true; list.innerHTML = ''; return; }
+          wrap.hidden = false;
+          list.innerHTML = items.map(function(i) { return '<li>' + i.message + '</li>'; }).join('');
+        }
+        fill('edChecksErrors', 'edChecksErrorsWrap', result.errors);
+        fill('edChecksWarnings', 'edChecksWarningsWrap', result.warnings);
+        fill('edChecksInfos', 'edChecksInfosWrap', result.infos);
+
+        var saveBtn = document.getElementById('edSaveBtn');
+        var saveCloseBtn = document.getElementById('edSaveCloseBtn');
+        var hasErrors = result.errors.length > 0;
+        if (saveBtn) {
+          saveBtn.disabled = hasErrors;
+          saveBtn.title = hasErrors ? 'Fix routing errors before saving' : '';
+        }
+        if (saveCloseBtn) {
+          saveCloseBtn.style.pointerEvents = hasErrors ? 'none' : '';
+          saveCloseBtn.style.opacity = hasErrors ? '0.5' : '';
+        }
+      }
+
+      (function() {
+        var ids = ['edRtgCategory','edRtgLifecycle','edRtgSequence','edRtgUtilities','edRtgStates','edRtgTier','edRtgLender','edRtgRoofType','edRtgPartnerId','edRtgKwMin','edRtgKwMax','edTplUtility'];
+        ids.forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el) el.addEventListener('input', renderChecks);
+        });
+        document.querySelectorAll('input[name="edRtgReq"], input[name="edRtgBattery"], .edRtgCustType, .edRtgFin').forEach(function(el) {
+          el.addEventListener('change', renderChecks);
+        });
+      })();
+      renderChecks();
+
+      function saveTemplate(redirect) {
+        // Phase 6: block save on errors
+        var routingForCheck = collectRouting();
+        var checkResult = analyzeWarningsClient({
+          utility: (document.getElementById('edTplUtility') || {}).value || '',
+          routing: routingForCheck
+        });
+        if (checkResult.errors.length) {
+          renderChecks();
+          alert('Cannot save: ' + checkResult.errors.map(function(e) { return e.message; }).join(' · '));
+          return Promise.resolve();
+        }
+        var payload = {
+          name: document.getElementById('edTplName').value,
+          description: document.getElementById('edTplDesc').value,
+          utility: document.getElementById('edTplUtility').value,
+          fields: collectFields(),
+          routing: routingForCheck  // null when user didn't enter anything; server leaves existing routing untouched only if body.routing === undefined, so we explicitly clear by sending null
+        };
+        return fetch('/database/agreement-templates/' + TEMPLATE_ID + '/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).then(function() {
+          if (redirect) location.href = '/database/agreement-templates';
+        });
+      }
+      document.getElementById('edSaveBtn').addEventListener('click', function() { saveTemplate(true); });
+      document.getElementById('edSaveCloseBtn').addEventListener('click', function(e) { e.preventDefault(); saveTemplate(true); });
+
+      // ── Load saved fields onto pages (handles both pct and legacy pixel formats) ──
+      function loadSavedFields() {
+        if (!SAVED_FIELDS || !SAVED_FIELDS.length) return;
+        SAVED_FIELDS.forEach(function(f) {
+          var wrap = pageWrappers.find(function(w) { return parseInt(w.dataset.page) === f.page; });
+          if (!wrap) return;
+          var pw = wrap.offsetWidth || 1;
+          var ph = wrap.offsetHeight || 1;
+          var x, y, w, h;
+          if (typeof f.xPct === 'number') {
+            x = f.xPct * pw;
+            y = f.yPct * ph;
+            w = f.wPct * pw;
+            h = f.hPct * ph;
+          } else {
+            // Legacy pixel values — use as-is
+            x = f.x; y = f.y; w = f.w; h = f.h;
+          }
+          createPlacedField(wrap, f.type, x, y, w, h, f.signer || 'customer');
+        });
+      }
+
+      // ── Upload PDF from editor ──
+      function uploadPdf(file) {
+        var fd = new FormData();
+        fd.append('pdf', file);
+        fetch('/api/agreement-templates/' + TEMPLATE_ID + '/upload', { method: 'POST', body: fd })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.success) {
+              PDF_URL = '/uploads/agreements/' + data.filename;
+              HAS_PDF = true;
+              document.querySelector('.ed-doc-name').textContent = data.originalName;
+              renderPdf(PDF_URL);
+            }
+          });
+      }
+      var uploadInput = document.getElementById('edUploadInput');
+      if (uploadInput) {
+        uploadInput.addEventListener('change', function() {
+          if (this.files && this.files[0]) uploadPdf(this.files[0]);
+        });
+      }
+
+      // ── Actions dropdown ──
       var actionsWrap = document.getElementById('edActionsWrap');
       document.getElementById('edActionsBtn').addEventListener('click', function(e) {
-        e.stopPropagation();
-        actionsWrap.classList.toggle('open');
+        e.stopPropagation(); actionsWrap.classList.toggle('open');
       });
       document.addEventListener('click', function(e) {
         if (!actionsWrap.contains(e.target)) actionsWrap.classList.remove('open');
       });
 
-      // Drawers
-      function openDrawer(name) {
-        document.getElementById('ed' + name + 'Drawer').classList.add('open');
-        document.getElementById('ed' + name + 'Overlay').classList.add('open');
+      // ── Drawers ──
+      function openDrawer(n) {
+        document.getElementById('ed' + n + 'Drawer').classList.add('open');
+        document.getElementById('ed' + n + 'Overlay').classList.add('open');
       }
-      function closeDrawer(name) {
-        document.getElementById('ed' + name + 'Drawer').classList.remove('open');
-        document.getElementById('ed' + name + 'Overlay').classList.remove('open');
+      function closeDrawer(n) {
+        document.getElementById('ed' + n + 'Drawer').classList.remove('open');
+        document.getElementById('ed' + n + 'Overlay').classList.remove('open');
       }
       document.getElementById('edRecipBtn').addEventListener('click', function() { openDrawer('Recip'); });
       document.getElementById('edRecipClose').addEventListener('click', function() { closeDrawer('Recip'); });
@@ -20220,9 +23200,7 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
       document.getElementById('edRecipOverlay').addEventListener('click', function() { closeDrawer('Recip'); });
       document.getElementById('edAddRecipBtn').addEventListener('click', function() {
         var card = document.querySelector('.ed-recipient-card').cloneNode(true);
-        card.querySelectorAll('input').forEach(function(i) {
-          if (i.placeholder) i.value = '';
-        });
+        card.querySelectorAll('input').forEach(function(i) { if (i.placeholder) i.value = ''; });
         document.getElementById('edRecipList').appendChild(card);
       });
       document.getElementById('edMsgBtn').addEventListener('click', function() { openDrawer('Msg'); });
@@ -20231,92 +23209,483 @@ app.get("/database/agreement-templates/:id/editor", (req, res) => {
       document.getElementById('edMsgSaveBtn').addEventListener('click', function() { closeDrawer('Msg'); });
       document.getElementById('edMsgOverlay').addEventListener('click', function() { closeDrawer('Msg'); });
 
-      // Advanced Options modal
+      // ── Advanced Options modal ──
       var advOverlay = document.getElementById('edAdvOverlay');
       document.getElementById('edAdvBtn').addEventListener('click', function() { advOverlay.classList.add('open'); });
       document.getElementById('edAdvClose').addEventListener('click', function() { advOverlay.classList.remove('open'); });
       document.getElementById('edAdvSave').addEventListener('click', function() { advOverlay.classList.remove('open'); });
-
-      // Adv nav clicks + scroll spy
       var advContent = document.getElementById('edAdvContent');
       document.querySelectorAll('.ed-adv-nav-item').forEach(function(item) {
         item.addEventListener('click', function() {
-          var sect = item.dataset.section;
-          var target = advContent.querySelector('.ed-adv-section[data-section="' + sect + '"]');
-          if (target) {
-            advContent.scrollTo({ top: target.offsetTop - 16, behavior: 'smooth' });
-          }
+          var target = advContent.querySelector('.ed-adv-section[data-section="' + item.dataset.section + '"]');
+          if (target) advContent.scrollTo({ top: target.offsetTop - 16, behavior: 'smooth' });
         });
       });
       advContent.addEventListener('scroll', function() {
         var sections = advContent.querySelectorAll('.ed-adv-section');
         var topThreshold = advContent.scrollTop + 80;
         var activeId = null;
-        sections.forEach(function(s) {
-          if (s.offsetTop <= topThreshold) activeId = s.dataset.section;
-        });
-        if (activeId) {
-          document.querySelectorAll('.ed-adv-nav-item').forEach(function(n) {
-            n.classList.toggle('active', n.dataset.section === activeId);
-          });
-        }
+        sections.forEach(function(s) { if (s.offsetTop <= topThreshold) activeId = s.dataset.section; });
+        if (activeId) document.querySelectorAll('.ed-adv-nav-item').forEach(function(n) { n.classList.toggle('active', n.dataset.section === activeId); });
       });
+      document.querySelectorAll('.ed-adv-toggle').forEach(function(t) { t.addEventListener('click', function() { t.classList.toggle('on'); }); });
 
-      // Adv toggles
-      document.querySelectorAll('.ed-adv-toggle').forEach(function(t) {
-        t.addEventListener('click', function() { t.classList.toggle('on'); });
-      });
-
-      // Document preview modal
+      // ── Document preview modal ──
       var docPrevOverlay = document.getElementById('edDocPrevOverlay');
       document.getElementById('edViewDocBtn').addEventListener('click', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
+        e.preventDefault(); e.stopPropagation();
         docPrevOverlay.classList.add('open');
         document.getElementById('edDocCard1').classList.remove('menu-open');
       });
       document.getElementById('edDocPrevClose').addEventListener('click', function() { docPrevOverlay.classList.remove('open'); });
-
-      // Doc card menu
       var docCard = document.getElementById('edDocCard1');
-      docCard.querySelector('.ed-doc-menu-btn').addEventListener('click', function(e) {
-        e.stopPropagation();
-        docCard.classList.toggle('menu-open');
-      });
-      document.addEventListener('click', function(e) {
-        if (!docCard.contains(e.target)) docCard.classList.remove('menu-open');
-      });
+      docCard.querySelector('.ed-doc-menu-btn').addEventListener('click', function(e) { e.stopPropagation(); docCard.classList.toggle('menu-open'); });
+      document.addEventListener('click', function(e) { if (!docCard.contains(e.target)) docCard.classList.remove('menu-open'); });
 
-      // Save template
-      function saveTemplate(redirect) {
-        var formData = new URLSearchParams();
-        formData.set('name', document.getElementById('edTplName').value);
-        formData.set('description', document.getElementById('edTplDesc').value);
-        formData.set('utility', document.getElementById('edTplUtility').value);
-        return fetch('/database/agreement-templates/' + TEMPLATE_ID + '/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: formData.toString()
-        }).then(function() {
-          if (redirect) location.href = '/database/agreement-templates';
-        });
+      // ── Init: render PDF if available ──
+      if (HAS_PDF && PDF_URL) {
+        renderPdf(PDF_URL);
       }
-      document.getElementById('edSaveBtn').addEventListener('click', function() { saveTemplate(true); });
-      document.getElementById('edSaveCloseBtn').addEventListener('click', function(e) { e.preventDefault(); saveTemplate(true); });
-
-      // Escape closes drawers/modals
-      document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-          closeDrawer('Recip'); closeDrawer('Msg');
-          advOverlay.classList.remove('open');
-          docPrevOverlay.classList.remove('open');
-          actionsWrap.classList.remove('open');
-        }
-      });
     })();
   </script>
 </body>
 </html>`);
+});
+
+// ── Signing pages (public, no auth) ────────────────────────────────────────────
+function findAgreementByToken(token) {
+  const projects = loadProjects();
+  for (const p of projects) {
+    if (!p.agreements) continue;
+    for (let i = 0; i < p.agreements.length; i++) {
+      const a = p.agreements[i];
+      if (a.salesRepToken === token) return { project: p, agreement: a, idx: i, role: 'salesRep' };
+      if (a.customerToken === token || a.signToken === token) return { project: p, agreement: a, idx: i, role: 'customer' };
+    }
+  }
+  return null;
+}
+
+// Phase 6+: record first-time opens per role. Idempotent — subsequent visits don't overwrite.
+function recordAgreementOpen(project, agreementIdx, role) {
+  const projects = loadProjects();
+  const p = projects.find(x => x.id === project.id);
+  if (!p || !p.agreements || !p.agreements[agreementIdx]) return;
+  const a = p.agreements[agreementIdx];
+  const key = (role === 'salesRep') ? 'openedBySalesRepAt' : 'openedByCustomerAt';
+  if (a[key]) return; // already recorded
+  a[key] = new Date().toISOString();
+  saveProjects(projects);
+}
+
+app.get("/sign/:token", (req, res) => {
+  const found = findAgreementByToken(req.params.token);
+  if (!found) return res.status(404).send('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:60px;text-align:center;"><h2>Agreement not found</h2><p>This link is invalid or has expired.</p></body></html>');
+  const { agreement, role } = found;
+  // Stamp first-view for whichever role opened the link (idempotent)
+  recordAgreementOpen(found.project, found.idx, role);
+  const stage = agreement.stage || agreement.status || 'draft';
+
+  // Fully signed
+  if (stage === 'signed') {
+    return res.send(`<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;padding:80px 20px;text-align:center;background:#f9fafb;min-height:100vh;margin:0;">
+      <div style="max-width:480px;margin:0 auto;background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.06);">
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/></svg>
+        <h2 style="margin:20px 0 8px;color:#111;">Already completed</h2>
+        <p style="color:#6b7280;">This agreement was fully signed on ${new Date(agreement.signedAt || Date.now()).toLocaleString()}.</p>
+      </div>
+    </body></html>`);
+  }
+
+  // Sales rep link used after sales rep already finished
+  if (role === 'salesRep' && (stage === 'sales-rep-signed' || stage === 'sent-to-customer')) {
+    return res.send(`<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;padding:80px 20px;text-align:center;background:#f9fafb;min-height:100vh;margin:0;">
+      <div style="max-width:480px;margin:0 auto;background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.06);">
+        <h2 style="margin:20px 0 8px;color:#111;">Already submitted</h2>
+        <p style="color:#6b7280;">You have already completed your portion. Awaiting customer signature.</p>
+      </div>
+    </body></html>`);
+  }
+
+  // Customer link used before sales rep finished
+  if (role === 'customer' && stage !== 'sent-to-customer' && stage !== 'sales-rep-signed') {
+    return res.send(`<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;padding:80px 20px;text-align:center;background:#f9fafb;min-height:100vh;margin:0;">
+      <div style="max-width:480px;margin:0 auto;background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.06);">
+        <h2 style="margin:20px 0 8px;color:#111;">Not ready yet</h2>
+        <p style="color:#6b7280;">This agreement is still being prepared by the sales team. You'll receive a new email when it's ready for your signature.</p>
+      </div>
+    </body></html>`);
+  }
+
+  const tplData = loadAgreementTemplates();
+  const template = (tplData.items || []).find(t => t.id === agreement.templateId);
+  if (!template) return res.status(404).send('Template not found');
+
+  const pdfUrl = template.pdfFile ? '/uploads/agreements/' + template.pdfFile : '';
+  const fields = template.fields || [];
+  const prefill = {
+    fullName: agreement.customerName || '',
+    email: agreement.customerEmail || '',
+    dateSigned: new Date().toISOString().slice(0, 10),
+    salesRepName: agreement.salesRepName || ''
+  };
+  // What values/signatures did the sales rep already submit?
+  const salesRepValues = agreement.salesRepValues || {};
+  const salesRepSignatures = agreement.salesRepSignatures || {};
+  const roleLabel = role === 'salesRep' ? 'Sales rep review' : 'Customer signing';
+  const finishLabel = role === 'salesRep' ? 'Finish and send to customer' : 'Complete Signing';
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sign ${esc(template.name)}</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111; background: #f3f4f6; min-height: 100vh; }
+    .sign-header { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    .sign-title { font-size: 0.95rem; font-weight: 600; color: #111; }
+    .sign-sub { font-size: 0.78rem; color: #6b7280; margin-top: 2px; }
+    .sign-btn { padding: 10px 22px; background: #6e3bf5; color: #fff; border: none; border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer; }
+    .sign-btn:hover { background: #5a2dd6; }
+    .sign-btn:disabled { background: #d1d5db; cursor: not-allowed; }
+    .sign-body { padding: 32px 20px 80px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    .sign-page-wrap { position: relative; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.08); border: 1px solid #e5e7eb; }
+    .sign-page-wrap canvas { display: block; }
+    .sign-field { position: absolute; background: rgba(110, 59, 245, 0.08); border: 1.5px solid #6e3bf5; border-radius: 3px; padding: 0; display: flex; align-items: center; }
+    .sign-field input, .sign-field select { width: 100%; height: 100%; border: none; outline: none; background: transparent; padding: 2px 6px; font-size: 0.8rem; color: #111; font-family: inherit; }
+    .sign-field input[readonly] { color: #374151; }
+    .sign-field.sig-field { cursor: pointer; justify-content: center; background: rgba(249, 115, 22, 0.15); border-color: #f59e0b; color: #78350f; font-size: 0.75rem; font-weight: 600; }
+    .sign-field.sig-field.filled { background: #fff; border-style: solid; }
+    .sign-field.sig-field canvas { max-width: 100%; max-height: 100%; }
+    .sign-field.disabled { background: rgba(156, 163, 175, 0.12); border-color: #9ca3af; border-style: dashed; color: #6b7280; pointer-events: none; font-size: 0.7rem; justify-content: center; }
+    .sign-field.sig-customer-wait { background: rgba(6, 182, 212, 0.08); border-color: #06b6d4; border-style: dashed; color: #0e7490; pointer-events: none; justify-content: center; }
+    .sign-field input:disabled, .sign-field select:disabled { color: #374151; background: rgba(249,250,251,0.6); }
+    .sign-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; margin-left: 8px; }
+    .sign-badge.rep { background: #fef3c7; color: #78350f; }
+    .sign-badge.cust { background: #cffafe; color: #0e7490; }
+    .sign-modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.5); z-index: 100; display: none; align-items: center; justify-content: center; }
+    .sign-modal-overlay.open { display: flex; }
+    .sign-modal { background: #fff; border-radius: 12px; padding: 28px; width: 520px; max-width: 95vw; }
+    .sign-modal h3 { margin-bottom: 12px; font-size: 1.1rem; }
+    .sign-modal-canvas-wrap { border: 1.5px dashed #d1d5db; border-radius: 8px; background: #fafafa; }
+    .sign-modal canvas { display: block; background: transparent; cursor: crosshair; width: 100%; }
+    .sign-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .sign-modal-actions button { padding: 8px 18px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: 1px solid #e5e7eb; background: #fff; color: #374151; }
+    .sign-modal-actions .primary { background: #6e3bf5; color: #fff; border-color: #6e3bf5; }
+    .sign-modal-actions .primary:hover { background: #5a2dd6; }
+    .sign-success { max-width: 480px; margin: 80px auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="sign-header">
+    <div>
+      <div class="sign-title">${esc(template.name)}<span class="sign-badge ${role === 'salesRep' ? 'rep' : 'cust'}">${role === 'salesRep' ? 'Sales Rep' : 'Customer'}</span></div>
+      <div class="sign-sub">${role === 'salesRep' ? 'Fill in customer details and sign your portion. Customer signature boxes will be sent to them next.' : 'Please review the pre-filled details and sign the highlighted boxes below.'}</div>
+    </div>
+    <button class="sign-btn" id="sign-submit" disabled>${finishLabel}</button>
+  </div>
+  <div class="sign-body" id="sign-body"></div>
+
+  <div class="sign-modal-overlay" id="sig-modal">
+    <div class="sign-modal">
+      <h3 id="sig-modal-title">Draw your signature</h3>
+      <div class="sign-modal-canvas-wrap">
+        <canvas id="sig-canvas" width="440" height="180"></canvas>
+      </div>
+      <div class="sign-modal-actions">
+        <button id="sig-clear">Clear</button>
+        <button id="sig-cancel">Cancel</button>
+        <button class="primary" id="sig-save">Save signature</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var TOKEN = '${req.params.token}';
+    var PDF_URL = '${pdfUrl}';
+    var ROLE = '${role}'; // 'salesRep' or 'customer'
+    var FIELDS = ${JSON.stringify(fields)};
+    var PREFILL = ${JSON.stringify(prefill)};
+    var SALES_REP_VALUES = ${JSON.stringify(salesRepValues)};
+    var SALES_REP_SIGS = ${JSON.stringify(salesRepSignatures)};
+    var fieldValues = {};
+    var signatureDataUrls = {};
+    var pageWrappers = [];
+    // Cached signatures for reuse (per role signing session)
+    var savedSigDataUrl = null;
+    var savedInitialsDataUrl = null;
+    // Ordered list of sig/initials boxes that THIS role needs to fill (for skip-to-next)
+    var mySigFieldIdxs = [];
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    pdfjsLib.getDocument(PDF_URL).promise.then(function(pdf) {
+      var body = document.getElementById('sign-body');
+      var promises = [];
+      for (var p = 1; p <= pdf.numPages; p++) {
+        (function(n) {
+          var wrap = document.createElement('div');
+          wrap.className = 'sign-page-wrap';
+          wrap.dataset.page = String(n);
+          var canvas = document.createElement('canvas');
+          wrap.appendChild(canvas);
+          body.appendChild(wrap);
+          pageWrappers.push(wrap);
+          var pp = pdf.getPage(n).then(function(page) {
+            var viewport = page.getViewport({ scale: 1.5 });
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            wrap.style.width = viewport.width + 'px';
+            wrap.style.height = viewport.height + 'px';
+            return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+          });
+          promises.push(pp);
+        })(p);
+      }
+      Promise.all(promises).then(renderFields);
+    });
+
+    // Is this field THIS role's responsibility?
+    function isMyField(f) {
+      var sig = f.signer || 'customer';
+      if (f.type === 'signature' || f.type === 'initials') {
+        return (ROLE === 'salesRep') ? (sig === 'salesRep') : (sig === 'customer');
+      }
+      // Non-sig fields: sales rep fills them all; customer sees them locked
+      return ROLE === 'salesRep';
+    }
+
+    function setFieldImage(box, dataUrl) {
+      box.classList.add('filled');
+      box.innerHTML = '';
+      var img = document.createElement('img');
+      img.src = dataUrl;
+      img.style.maxWidth = '100%';
+      img.style.maxHeight = '100%';
+      img.style.objectFit = 'contain';
+      box.appendChild(img);
+    }
+
+    function renderFields() {
+      FIELDS.forEach(function(f, idx) {
+        var wrap = pageWrappers.find(function(w) { return parseInt(w.dataset.page) === f.page; });
+        if (!wrap) return;
+        var pw = wrap.offsetWidth, ph = wrap.offsetHeight;
+        var x = typeof f.xPct === 'number' ? f.xPct * pw : f.x;
+        var y = typeof f.yPct === 'number' ? f.yPct * ph : f.y;
+        var w = typeof f.wPct === 'number' ? f.wPct * pw : f.w;
+        var h = typeof f.hPct === 'number' ? f.hPct * ph : f.h;
+        var box = document.createElement('div');
+        box.className = 'sign-field';
+        box.style.left = x + 'px';
+        box.style.top = y + 'px';
+        box.style.width = w + 'px';
+        box.style.height = h + 'px';
+        box.dataset.idx = String(idx);
+        box.dataset.type = f.type;
+        var mine = isMyField(f);
+        var isSig = (f.type === 'signature' || f.type === 'initials');
+
+        if (isSig) {
+          box.classList.add('sig-field');
+          if (mine) {
+            box.textContent = f.type === 'initials' ? 'Initials' : 'Sign';
+            box.addEventListener('click', function() { handleSigClick(idx, f.type); });
+            mySigFieldIdxs.push(idx);
+          } else if (SALES_REP_SIGS[idx]) {
+            // Sales rep already signed this one — show their signature (locked)
+            setFieldImage(box, SALES_REP_SIGS[idx]);
+            box.classList.add('disabled');
+          } else {
+            // Other role's signature box — waiting for them
+            box.classList.remove('sig-field');
+            box.classList.add(ROLE === 'salesRep' ? 'sig-customer-wait' : 'disabled');
+            box.textContent = ROLE === 'salesRep' ? (f.type === 'initials' ? 'Customer initials (later)' : 'Customer signature (later)') : (f.type === 'initials' ? 'Sales rep initials' : 'Sales rep signature');
+          }
+        } else if (f.type === 'checkbox') {
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          if (SALES_REP_VALUES.hasOwnProperty(idx)) cb.checked = !!SALES_REP_VALUES[idx];
+          fieldValues[idx] = cb.checked;
+          cb.disabled = !mine;
+          cb.addEventListener('change', function() { fieldValues[idx] = cb.checked; checkComplete(); });
+          box.appendChild(cb);
+        } else if (f.type === 'dropdown') {
+          var sel = document.createElement('select');
+          ['Option 1', 'Option 2', 'Option 3'].forEach(function(o) {
+            var opt = document.createElement('option'); opt.textContent = o; sel.appendChild(opt);
+          });
+          if (SALES_REP_VALUES[idx]) sel.value = SALES_REP_VALUES[idx];
+          fieldValues[idx] = sel.value;
+          sel.disabled = !mine;
+          sel.addEventListener('change', function() { fieldValues[idx] = sel.value; checkComplete(); });
+          box.appendChild(sel);
+        } else {
+          var input = document.createElement('input');
+          input.type = (f.type === 'email') ? 'email' : (f.type === 'dateSigned') ? 'date' : 'text';
+          // Pre-fill priority: sales rep's value > prefill default
+          var pre = SALES_REP_VALUES[idx];
+          if (pre != null && pre !== '') {
+            input.value = pre; fieldValues[idx] = pre;
+          } else if (f.type === 'fullName') { input.value = PREFILL.fullName; fieldValues[idx] = PREFILL.fullName; }
+          else if (f.type === 'email') { input.value = PREFILL.email; fieldValues[idx] = PREFILL.email; }
+          else if (f.type === 'dateSigned') { input.value = PREFILL.dateSigned; fieldValues[idx] = PREFILL.dateSigned; }
+          else { input.placeholder = f.type; }
+          if (f.type === 'dateSigned') input.readOnly = true;
+          input.disabled = !mine;
+          input.addEventListener('input', function() { fieldValues[idx] = input.value; checkComplete(); });
+          box.appendChild(input);
+        }
+        wrap.appendChild(box);
+      });
+      checkComplete();
+    }
+
+    function checkComplete() {
+      var allFilled = FIELDS.every(function(f, idx) {
+        if (!isMyField(f)) return true;
+        if (f.type === 'signature' || f.type === 'initials') return !!signatureDataUrls[idx];
+        if (f.type === 'checkbox') return true; // optional
+        return !!fieldValues[idx];
+      });
+      document.getElementById('sign-submit').disabled = !allFilled;
+    }
+
+    // ── Signature handling with reuse + skip-to-next ──
+    function handleSigClick(idx, type) {
+      var cached = type === 'initials' ? savedInitialsDataUrl : savedSigDataUrl;
+      if (cached) {
+        applySignatureToField(idx, cached);
+        scrollToNextEmptySig();
+      } else {
+        openSigModal(idx, type);
+      }
+    }
+
+    function applySignatureToField(idx, dataUrl) {
+      signatureDataUrls[idx] = dataUrl;
+      var box = document.querySelector('.sign-field[data-idx="' + idx + '"]');
+      if (box) setFieldImage(box, dataUrl);
+      checkComplete();
+    }
+
+    function scrollToNextEmptySig() {
+      var next = mySigFieldIdxs.find(function(i) { return !signatureDataUrls[i]; });
+      if (next != null) {
+        var el = document.querySelector('.sign-field[data-idx="' + next + '"]');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    var sigModal = document.getElementById('sig-modal');
+    var sigCanvas = document.getElementById('sig-canvas');
+    var sigCtx = sigCanvas.getContext('2d');
+    sigCtx.strokeStyle = '#111'; sigCtx.lineWidth = 2; sigCtx.lineCap = 'round';
+    var sigDrawing = false, sigCurrentIdx = null, sigCurrentType = null;
+    function openSigModal(idx, type) {
+      sigCurrentIdx = idx; sigCurrentType = type;
+      document.getElementById('sig-modal-title').textContent = type === 'initials' ? 'Draw your initials' : 'Draw your signature';
+      clearSig(); sigModal.classList.add('open');
+    }
+    function clearSig() { sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height); }
+    function ptr(e, r) { return [(e.clientX - r.left) * (sigCanvas.width / r.width), (e.clientY - r.top) * (sigCanvas.height / r.height)]; }
+    sigCanvas.addEventListener('mousedown', function(e) {
+      sigDrawing = true;
+      var r = sigCanvas.getBoundingClientRect();
+      var p = ptr(e, r);
+      sigCtx.beginPath(); sigCtx.moveTo(p[0], p[1]);
+    });
+    sigCanvas.addEventListener('mousemove', function(e) {
+      if (!sigDrawing) return;
+      var r = sigCanvas.getBoundingClientRect();
+      var p = ptr(e, r);
+      sigCtx.lineTo(p[0], p[1]); sigCtx.stroke();
+    });
+    sigCanvas.addEventListener('mouseup', function() { sigDrawing = false; });
+    sigCanvas.addEventListener('mouseleave', function() { sigDrawing = false; });
+    document.getElementById('sig-clear').addEventListener('click', clearSig);
+    document.getElementById('sig-cancel').addEventListener('click', function() { sigModal.classList.remove('open'); });
+    document.getElementById('sig-save').addEventListener('click', function() {
+      var dataUrl = sigCanvas.toDataURL('image/png');
+      if (sigCurrentType === 'initials') savedInitialsDataUrl = dataUrl;
+      else savedSigDataUrl = dataUrl;
+      applySignatureToField(sigCurrentIdx, dataUrl);
+      sigModal.classList.remove('open');
+      scrollToNextEmptySig();
+    });
+
+    document.getElementById('sign-submit').addEventListener('click', function() {
+      var btn = this; btn.disabled = true; btn.textContent = 'Submitting...';
+      fetch('/sign/' + TOKEN + '/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values: fieldValues, signatures: signatureDataUrls })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.success) {
+          var msg = ROLE === 'salesRep'
+            ? '<h2 style="margin:20px 0 8px;">All set!</h2><p style="color:#6b7280;">The agreement has been sent to the customer for their signature.</p>'
+            : '<h2 style="margin:20px 0 8px;">Thank you!</h2><p style="color:#6b7280;">Your signed agreement has been recorded.</p>';
+          document.body.innerHTML = '<div class="sign-success"><svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/></svg>' + msg + '</div>';
+        } else {
+          alert('Failed to submit: ' + (data.error || 'unknown'));
+          btn.disabled = false; btn.textContent = '${finishLabel}';
+        }
+      });
+    });
+  </script>
+</body>
+</html>`);
+});
+
+app.post("/sign/:token/submit", express.json({ limit: '10mb' }), async (req, res) => {
+  const found = findAgreementByToken(req.params.token);
+  if (!found) return res.status(404).json({ error: 'Not found' });
+  const projects = loadProjects();
+  const project = projects.find(p => p.id === found.project.id);
+  const agreement = project.agreements[found.idx];
+  const stage = agreement.stage || agreement.status || 'draft';
+  if (stage === 'signed') return res.status(400).json({ error: 'Already signed' });
+  const body = req.body || {};
+  const role = found.role;
+
+  if (role === 'salesRep') {
+    if (stage !== 'sent-to-sales-rep' && stage !== 'draft') return res.status(400).json({ error: 'Sales rep already submitted' });
+    agreement.salesRepValues = body.values || {};
+    agreement.salesRepSignatures = body.signatures || {};
+    agreement.salesRepSignedAt = new Date().toISOString();
+    agreement.stage = 'sales-rep-signed';
+    saveProjects(projects);
+    // Auto-email the customer
+    const tplData = loadAgreementTemplates();
+    const template = (tplData.items || []).find(t => t.id === agreement.templateId);
+    try {
+      await sendAgreementEmail(agreement, template, 'customer');
+      agreement.stage = 'sent-to-customer';
+      agreement.sentToCustomerAt = new Date().toISOString();
+      agreement.sentTo = agreement.customerEmail;
+      saveProjects(projects);
+    } catch(err) {
+      // Customer email failed — leave as sales-rep-signed so admin can resend
+      return res.json({ success: true, warning: 'Your signature was recorded, but sending to customer failed: ' + err.message });
+    }
+    return res.json({ success: true });
+  } else {
+    // Customer signing
+    if (stage !== 'sent-to-customer' && stage !== 'sales-rep-signed') return res.status(400).json({ error: 'Agreement not ready for customer yet' });
+    agreement.customerValues = body.values || {};
+    agreement.customerSignatures = body.signatures || {};
+    // Keep the old signedValues/signedSignatures for back-compat too
+    agreement.signedValues = body.values || {};
+    agreement.signedSignatures = body.signatures || {};
+    agreement.status = 'signed';
+    agreement.stage = 'signed';
+    agreement.signedAt = new Date().toISOString();
+    saveProjects(projects);
+    return res.json({ success: true });
+  }
 });
 
 // ── Roles settings page ──────────────────────────────────────────────────────
@@ -20459,7 +23828,7 @@ app.get("/settings/roles", (req, res) => {
           <tbody>
             <tr><td><div class="pt">Account</div><div class="pd">Account pages: User profile, Organization profile, Billing, On-demand services, and Integrations.</div></td><td class="cc">${dash}</td><td class="cc">${dash}</td></tr>
             <tr><td class="ps"><div class="pt">User profile</div><div class="pd">All users have access to their own user profile. Only Admins can set the license type and role of another user. View <a class="pl" href="/settings">User profile</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
-            <tr><td class="ps"><div class="pt">Organization profile</div><div class="pd">Only users in an Admin role can view and edit their Organization profile. View <a class="pl" href="/settings">Organization profile</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
+            <tr><td class="ps"><div class="pt">Organization profile</div><div class="pd">Only users in an Admin role can view and edit their Organization profile. View <a class="pl" href="/settings/organization">Organization profile</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
             <tr><td><div class="pt">User management</div><div class="pd">User management pages: Users and licenses, Roles, and Teams.</div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
             <tr><td class="ps"><div class="pt">Users and licenses</div><div class="pd">Create and edit users. View <a class="pl" href="/settings/users">Users and licenses</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
             <tr><td class="ps"><div class="pt">Roles</div><div class="pd">Create and edit user roles. View <a class="pl" href="/settings/roles">Roles</a></div></td><td class="cc">${ck}</td><td class="cc">${ck}</td></tr>
@@ -20941,6 +24310,117 @@ app.post("/api/roof/auto-detect", async (req, res) => {
   } catch (e) {
     res.status(503).json({ error: "Roof detection service unavailable. Start it with: cd roof_geometry && uvicorn app:app --port 8000" });
   }
+});
+
+// ── ML auto-build orchestrator — Step 1 (smallest safe implementation) ─────
+//
+// Proves the CRM repo can call the external ML handler and persist draft
+// envelopes safely. This route NEVER mutates a design, NEVER calls
+// PUT /api/projects/:id/designs/:designId, and NEVER writes roofFaces.
+// Manual-preservation and apply-to-design logic land in later steps.
+//
+// Transport configuration (env vars):
+//   ML_ENGINE_URL      — base URL of the ML engine (e.g. http://localhost:9000).
+//                        Required. If unset, the route returns 503.
+//   ML_AUTO_BUILD_PATH — path on the ML engine for the CRM-safe auto-build
+//                        handler. Defaults to "/crm/auto-build".
+//                        Override if the ML repo mounts it elsewhere
+//                        (e.g. "/v1/handle_crm_auto_build_request").
+//
+// Request body (pass-through to the ML handler):
+//   { projectId, designId, ...mlInput }
+// projectId is required so drafts are scoped to a project for later review.
+// designId is optional (may be null if the ML flow targets a new design).
+//
+// Response (compact):
+//   { draftId, status, disposition, reason }
+// Defaults match the local ml_ui_server.py layout (port 5001,
+// /api/crm/auto-build). Set ML_ENGINE_URL / ML_AUTO_BUILD_PATH in .env
+// to point at a different host or path.
+const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
+const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
+
+app.post("/api/ml/auto-build", async (req, res) => {
+  const ML_URL = process.env.ML_ENGINE_URL || ML_ENGINE_URL_DEFAULT;
+  const ML_PATH = process.env.ML_AUTO_BUILD_PATH || ML_AUTO_BUILD_PATH_DEFAULT;
+  const ML_URL_SOURCE = process.env.ML_ENGINE_URL ? "env" : "default";
+
+  const body = req.body || {};
+  const projectId = body.projectId;
+  const designId = body.designId || null;
+  if (!projectId) return res.status(400).json({ error: "projectId required" });
+
+  let envelope;
+  try {
+    const resp = await fetch(`${ML_URL}${ML_PATH}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({
+        error: errBody.error || errBody.detail || "ML engine error",
+        upstreamStatus: resp.status,
+        hint: errBody.hint || `Upstream: ${ML_URL}${ML_PATH}`
+      });
+    }
+    envelope = await resp.json();
+  } catch (e) {
+    // Most common cause at this point is "ML wrapper not running on
+    // the configured URL." Surface the URL being tried, whether it
+    // came from env or default, and the exact env var name to set.
+    return res.status(503).json({
+      error: "ML engine unreachable",
+      detail: `${e.message} — tried ${ML_URL}${ML_PATH} (${ML_URL_SOURCE})`,
+      hint: ML_URL_SOURCE === "default"
+        ? `Start the ML wrapper on ${ML_ENGINE_URL_DEFAULT} (cd /Volumes/Extreme_Pro/ML && python3 ml_ui_server.py) or set ML_ENGINE_URL in .env`
+        : `Check the ML wrapper is running at ${ML_URL}${ML_PATH}; override with ML_ENGINE_URL / ML_AUTO_BUILD_PATH in .env`
+    });
+  }
+
+  // Normalize the handler's snake_case envelope to the CRM's camelCase shape.
+  // Keep the raw crm_result verbatim for audit.
+  const drafts = loadMlDrafts();
+  const draftId = "mld_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const row = {
+    id: draftId,
+    projectId,
+    designId,
+    createdAt: new Date().toISOString(),
+    status: envelope.auto_build_status || envelope.disposition || "unknown",
+    disposition: envelope.disposition || null,
+    mergePolicy: envelope.merge_policy || null,
+    autoBuildStatus: envelope.auto_build_status || null,
+    reviewPolicyReasons: envelope.review_policy_reasons || [],
+    manualDesignPreserved: envelope.manual_design_preserved === undefined ? null : envelope.manual_design_preserved,
+    mlDraftIdExternal: envelope.draft_id || null,
+    draftStored: envelope.draft_stored === undefined ? null : envelope.draft_stored,
+    crmResult: envelope.crm_result || null,
+    reason: envelope.reason || null
+  };
+  drafts.push(row);
+  saveMlDrafts(drafts);
+
+  res.json({
+    draftId,
+    status: row.status,
+    disposition: row.disposition,
+    reason: row.reason,
+    crmResult: envelope.crm_result || null
+  });
+});
+
+// ── ML drafts read endpoint (curl/manual verification — no UI yet) ─────────
+// GET /api/ml-drafts?projectId=&status=
+// Returns { drafts: [...], total }. No pagination yet.
+app.get("/api/ml-drafts", (req, res) => {
+  const all = loadMlDrafts();
+  const { projectId, status } = req.query;
+  let result = all;
+  if (projectId) result = result.filter(d => d.projectId === projectId);
+  if (status) result = result.filter(d => d.status === status);
+  res.json({ drafts: result, total: result.length });
 });
 
 // ── Shading engine: annual irradiance per roof section ───────────────────
@@ -21536,4 +25016,8 @@ app.get("/image-analysis", requireAuth, (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Solar CRM running at http://localhost:${PORT}`);
+  const _mlUrl  = process.env.ML_ENGINE_URL || ML_ENGINE_URL_DEFAULT;
+  const _mlPath = process.env.ML_AUTO_BUILD_PATH || ML_AUTO_BUILD_PATH_DEFAULT;
+  const _mlSrc  = process.env.ML_ENGINE_URL ? "env" : "default";
+  console.log(`ML Auto Build → ${_mlUrl}${_mlPath} (${_mlSrc})`);
 });

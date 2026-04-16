@@ -1,0 +1,130 @@
+{
+  "items": [
+    {
+      "id": "at-national-grid-interconnection-mo0srawd",
+      "name": "National Grid interconnection",
+      "state": "Massachusetts",
+      "attachments": [
+        "pdf-proposal",
+        "system-design"
+      ],
+      "createdAt": "2026-04-16T01:24:49.261Z",
+      "pdfFile": "1776303732338-MA_DG_Schedule_Z.pdf",
+      "pdfOriginalName": "MA_DG_Schedule_Z.pdf",
+      "description": "",
+      "utility": "",
+      "fields": [
+        {
+          "type": "fullName",
+          "page": 1,
+          "x": 291,
+          "y": 275,
+          "w": 160,
+          "h": 24
+        },
+        {
+          "type": "initials",
+          "page": 2,
+          "x": 752,
+          "y": 1092.59,
+          "w": 100,
+          "h": 24
+        },
+        {
+          "type": "initials",
+          "page": 3,
+          "x": 774,
+          "y": 1116.19,
+          "w": 100,
+          "h": 24
+        },
+        {
+          "type": "fullName",
+          "page": 4,
+          "x": 274,
+          "y": 1014.78,
+          "w": 160,
+          "h": 24
+        }
+      ]
+    },
+    {
+      "id": "at-fl-lee-county",
+      "name": "[draft - needs review] FL - Lee County Electric Cooperative - Interconnection Documents Only",
+      "utility": "Lee County Electric Cooperative",
+      "state": "Florida",
+      "createdAt": "2029-04-09T00:00:00.000Z",
+      "description": ""
+    },
+    {
+      "id": "at-fl-lakeland",
+      "name": "[draft - needs review] FL - Lakeland Electric - Interconnection Documents Only",
+      "utility": "Lakeland Electric",
+      "state": "Florida",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-fl-kissimmee",
+      "name": "[draft - needs review] FL - Kissimmee Utility Authority - Interconnection Documents Only",
+      "utility": "Kissimmee Utility Authority",
+      "state": "Florida",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-fl-gainesville",
+      "name": "[draft - needs review] FL - Gainesville Regional Utility - Interconnection Documents Only",
+      "utility": "Gainesville Regional Utility",
+      "state": "Florida",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-fl-winter-park",
+      "name": "[draft - needs review] FL - City of Winter Park - Interconnection Documents Only",
+      "utility": "City of Winter Park",
+      "state": "Florida",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-pa-west-penn",
+      "name": "[draft - needs review] PA - West Penn Power - Interconnection Documents Only",
+      "utility": "West Penn Power",
+      "state": "Pennsylvania",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-pa-ppl",
+      "name": "[draft - needs review] PA - PPL Electric Utilities - Interconnection Documents Only",
+      "utility": "PPL Electric Utilities",
+      "state": "Pennsylvania",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-pa-duquesne",
+      "name": "[draft - needs review] PA - Duquesne Light Co - Interconnection Documents Only",
+      "utility": "Duquesne Light Co",
+      "state": "Pennsylvania",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-pa-pseg",
+      "name": "[draft - needs review] PA - PSEG - Interconnection Documents Only",
+      "utility": "PSEG",
+      "state": "Pennsylvania",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-pa-met-ed",
+      "name": "[draft - needs review] PA - Met-Ed - Interconnection Documents Only",
+      "utility": "Met-Ed",
+      "state": "Pennsylvania",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    },
+    {
+      "id": "at-ma-eversource",
+      "name": "[draft - needs review] MA - Eversource Energy - Interconnection Documents Only",
+      "utility": "Eversource Energy",
+      "state": "Massachusetts",
+      "createdAt": "2029-04-09T00:00:00.000Z"
+    }
+  ]
+}
