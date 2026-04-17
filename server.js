@@ -9230,9 +9230,22 @@ app.get("/design", (req, res) => {
 
         /* Restore roof faces in 3D view */
         if (typeof clearAllRoofFaces === 'function') clearAllRoofFaces();
+        var _mlLoadedIdxs = [];
+        var _totalLoaded = 0;
+        var _mlSourceCount = 0;
         if (design.roofFaces && design.roofFaces.length > 0 && typeof THREE !== 'undefined' && typeof finalizeRoofFace === 'function') {
           design.roofFaces.forEach(function(rf) {
             var fIdx = finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
+            _totalLoaded++;
+            // Rehydrate ML provenance so single-slope + shared-edge rules
+            // apply after save/reload. Faces without the "source" field
+            // go through the manual path exactly as before — no
+            // regression for hand-drawn roofs.
+            if (rf.source === 'ml') {
+              roofFaces3d[fIdx].sourceTag = 'ml';
+              _mlLoadedIdxs.push(fIdx);
+              _mlSourceCount++;
+            }
             // Restore dormers
             if (rf.dormers && rf.dormers.length > 0) {
               var face = roofFaces3d[fIdx];
@@ -9273,6 +9286,21 @@ app.get("/design", (req, res) => {
               });
             }
           });
+          // After all faces load, rehydrate ML-only render state for any
+          // face that had source='ml' in the saved design. This mirrors
+          // the post-batch step in mlAutoBuildContinue so save/reload
+          // restores single-slope + shared-edge rendering.
+          if (_mlLoadedIdxs.length > 0 && typeof recomputeMlInternalEdges === 'function') {
+            var _mlStats = recomputeMlInternalEdges();
+            console.log('[design-load] ml rehydrate:',
+              _mlSourceCount + '/' + _totalLoaded, 'faces tagged ML;',
+              _mlStats.internal + '/' + _mlStats.total, 'edges internal across',
+              _mlStats.pairs, 'ML faces; rebuilding in single-slope mode');
+            _mlLoadedIdxs.forEach(function(i) { rebuildRoofFace(i); });
+          } else if (_totalLoaded > 0) {
+            console.log('[design-load] no ML-sourced faces found;',
+              _totalLoaded, 'faces loaded via manual render path (unchanged)');
+          }
         }
       });
     }
@@ -10390,7 +10418,7 @@ app.get("/design", (req, res) => {
 
     function serializeRoofFaces() {
       return roofFaces3d.map(function(f) {
-        return {
+        var out = {
           vertices: f.vertices, pitch: f.pitch, sectionPitches: f.sectionPitches,
           azimuth: f.azimuth, height: f.height, color: f.color, deletedSections: f.deletedSections,
           dormers: (f.dormers || []).map(function(d) {
@@ -10404,6 +10432,11 @@ app.get("/design", (req, res) => {
             };
           })
         };
+        // Persist ML provenance so save/reload preserves ML-only rendering
+        // (single-slope + shared-edge suppression). Absent => manual face,
+        // default behavior unchanged. Only stored when actually ML-sourced.
+        if (f.sourceTag === 'ml') out.source = 'ml';
+        return out;
       });
     }
 
@@ -11235,10 +11268,58 @@ app.get("/design", (req, res) => {
     }
 
     /* Build edge measurement labels. wH is the face wall height (eave Y). */
-    function buildEdgeLabels(verts, wH) {
+    /* ── ML shared-edge classifier ──
+       For each face in a batch, marks which of its 4 edges are "internal"
+       (i.e. shared with an adjacent face) so the wall / outline / label
+       renderers can suppress duplicated exterior features. Rule: an edge
+       is internal if its midpoint lies inside another face's polygon.
+       ML-only; relies on sourceTag. Pure 2D point-in-polygon ray cast. */
+    function _pointInPoly(px, pz, verts) {
+      var inside = false;
+      for (var i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+        var xi = verts[i].x, zi = verts[i].z;
+        var xj = verts[j].x, zj = verts[j].z;
+        var intersect = ((zi > pz) !== (zj > pz))
+          && (px < (xj - xi) * (pz - zi) / (zj - zi + 1e-9) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+    function _computeInternalEdgesForFace(face, otherFaces) {
+      var verts = face.vertices;
+      var n = verts.length;
+      var mask = [];
+      for (var e = 0; e < n; e++) {
+        var a = verts[e], b = verts[(e + 1) % n];
+        var mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
+        var internal = false;
+        for (var k = 0; k < otherFaces.length; k++) {
+          if (otherFaces[k] === face) continue;
+          if (_pointInPoly(mx, mz, otherFaces[k].vertices)) {
+            internal = true;
+            break;
+          }
+        }
+        mask.push(internal);
+      }
+      return mask;
+    }
+    function recomputeMlInternalEdges() {
+      if (typeof roofFaces3d === 'undefined' || !roofFaces3d) return { pairs: 0, internal: 0, total: 0 };
+      var mlFaces = roofFaces3d.filter(function(f) { return f.sourceTag === 'ml'; });
+      var internal = 0, total = 0;
+      mlFaces.forEach(function(f) {
+        f.internalEdges = _computeInternalEdgesForFace(f, mlFaces);
+        f.internalEdges.forEach(function(b) { total++; if (b) internal++; });
+      });
+      return { pairs: mlFaces.length, internal: internal, total: total };
+    }
+
+    function buildEdgeLabels(verts, wH, internalEdges) {
       var labels = [];
       var eaveY = (typeof wH === 'number') ? wH : 0;
       for (var i = 0; i < verts.length; i++) {
+        if (internalEdges && internalEdges[i]) continue; // ML shared edge: skip label
         var a = verts[i], b = verts[(i + 1) % verts.length];
         var dx = b.x - a.x, dz = b.z - a.z;
         var lenM = Math.sqrt(dx * dx + dz * dz);
@@ -11424,6 +11505,102 @@ app.get("/design", (req, res) => {
       return { v0: v0, v1: v1, v2: v2, v3: v3, r0x: r0x, r0z: r0z, r1x: r1x, r1z: r1z,
                m0x: m0x, m0z: m0z, m1x: m1x, m1z: m1z, inset: inset, ldx: ldx, ldz: ldz,
                px: px, pz: pz, mfx: mfx, mfz: mfz, mbx: mbx, mbz: mbz };
+    }
+
+    /* ── ML-only single-slope render helpers ───────────────────────────────
+       ML Auto Build returns roof PLANES (one slope each) as 4-vertex
+       rectangles + pitch + azimuth. The manual render path decomposes
+       every face into a full hip roof with its own private ridge — wrong
+       for ML faces. These helpers render an ML face as ONE tilted quad:
+       eave at y=0 (relative to face.mesh), ridge at y=(slope_span * tan(pitch)).
+       Azimuth gives downslope direction; projecting vertices onto that
+       direction ranks them from ridge (low projection) to eave (high
+       projection). Only used when face.sourceTag === 'ml'. */
+    function _computeSlopeY(verts, pitchDeg, azDeg) {
+      if (!pitchDeg || pitchDeg <= 0) return verts.map(function() { return 0; });
+      var rad = ((azDeg || 0) % 360) * Math.PI / 180;
+      // CRM frame: +x east, +z south. Azimuth 0=N (-z), 90=E (+x), 180=S (+z).
+      var dx = Math.sin(rad), dz = -Math.cos(rad);       // downslope direction
+      var projs = verts.map(function(v) { return v.x * dx + v.z * dz; });
+      var maxProj = -Infinity;
+      for (var i = 0; i < projs.length; i++) if (projs[i] > maxProj) maxProj = projs[i];
+      var tanP = Math.tan(pitchDeg * Math.PI / 180);
+      // Vertex furthest downslope (largest projection) is the eave (y=0).
+      // Vertex furthest upslope (smallest projection) is the ridge (y=max).
+      return projs.map(function(p) { return (maxProj - p) * tanP; });
+    }
+
+    function buildRoofSingleSlopeMesh(verts, slopeY, color, isSelected) {
+      var positions = [];
+      for (var i = 0; i < verts.length; i++) {
+        positions.push(verts[i].x, slopeY[i], verts[i].z);
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(positions), 3));
+      if (verts.length === 4) {
+        geo.setIndex([0, 1, 2, 0, 2, 3]);
+      } else if (verts.length >= 3) {
+        var idx = [];
+        for (var i = 1; i < verts.length - 1; i++) idx.push(0, i, i + 1);
+        geo.setIndex(idx);
+      }
+      geo.computeVertexNormals();
+      // Reuse the same material helper as hip sections so selection/texture
+      // behavior is identical. yOffset=0 — the mesh group is positioned at
+      // wH by the caller so the eave (slopeY=0) lands on the wall top.
+      return _applyRoofSectionMaterial(geo, color, 0, !!isSelected);
+    }
+
+    function buildRoofSingleSlopeWalls(verts, slopeY, wallH, internalEdges) {
+      var group = new THREE.Group();
+      var wallMat = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, side: THREE.DoubleSide });
+      function addWall(ax, ay, az, bx, by, bz) {
+        var positions = new Float32Array([
+          ax, ay, az,  bx, by, bz,  bx, 0, bz,
+          ax, ay, az,  bx, 0, bz,   ax, 0, az
+        ]);
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.computeVertexNormals();
+        group.add(new THREE.Mesh(geo, wallMat));
+      }
+      var baseY = 0.05;
+      for (var i = 0; i < verts.length; i++) {
+        if (internalEdges && internalEdges[i]) continue;
+        var a = verts[i], b = verts[(i + 1) % verts.length];
+        var yA = wallH + slopeY[i] + baseY;
+        var yB = wallH + slopeY[(i + 1) % verts.length] + baseY;
+        addWall(a.x, yA, a.z, b.x, yB, b.z);
+      }
+      return group;
+    }
+
+    function buildRoofSingleSlopeEdgeLines(verts, slopeY, wallH, color, internalEdges) {
+      var group = new THREE.Group();
+      for (var i = 0; i < verts.length; i++) {
+        var isInternal = !!(internalEdges && internalEdges[i]);
+        var edgeColor = isInternal ? 0x7a7a7a : color;
+        var mat = new THREE.MeshBasicMaterial({ color: edgeColor });
+        var a = verts[i], b = verts[(i + 1) % verts.length];
+        var ay = wallH + slopeY[i];
+        var by = wallH + slopeY[(i + 1) % verts.length];
+        var dx = b.x - a.x, dy = by - ay, dz = b.z - a.z;
+        var len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 0.001) continue;
+        var cyl = new THREE.Mesh(
+          new THREE.CylinderGeometry(EDGE_LINE_RADIUS, EDGE_LINE_RADIUS, len, 6, 1),
+          mat
+        );
+        cyl.position.set((a.x + b.x) / 2, (ay + by) / 2, (a.z + b.z) / 2);
+        var dir = new THREE.Vector3(dx, dy, dz).normalize();
+        var up = new THREE.Vector3(0, 1, 0);
+        var quat = new THREE.Quaternion();
+        quat.setFromUnitVectors(up, dir);
+        cyl.quaternion.copy(quat);
+        cyl.userData.edgeIdx = i;
+        group.add(cyl);
+      }
+      return group;
     }
 
     /* ── Build 3D hip-roof section meshes (returns array of meshes per section) ── */
@@ -12719,10 +12896,14 @@ app.get("/design", (req, res) => {
 
     /* ── Build edge outline lines (tube-based for consistent thickness) ── */
     var EDGE_LINE_RADIUS = 0.06;
-    function buildRoofEdgeLines(verts, color) {
+    function buildRoofEdgeLines(verts, color, internalEdges) {
       var group = new THREE.Group();
       for (var i = 0; i < verts.length; i++) {
-        var mat = new THREE.MeshBasicMaterial({ color: color });
+        // ML shared edges render as a faint grey joint rather than a
+        // bright exterior roof-edge. Suppression would lose the edit cue.
+        var isInternal = !!(internalEdges && internalEdges[i]);
+        var edgeColor = isInternal ? 0x7a7a7a : color;
+        var mat = new THREE.MeshBasicMaterial({ color: edgeColor });
         var a = verts[i], b = verts[(i + 1) % verts.length];
         var ax = a.x, az = a.z, bx = b.x, bz = b.z, y = 0.15;
         var dx = bx - ax, dz = bz - az;
@@ -12836,7 +13017,7 @@ app.get("/design", (req, res) => {
     }
 
     /* ── Build vertical walls beneath roof ── */
-    function buildRoofWalls(verts, pitchDeg, deletedSections, wallHeight) {
+    function buildRoofWalls(verts, pitchDeg, deletedSections, wallHeight, internalEdges) {
       var group = new THREE.Group();
       var wallMat = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, side: THREE.DoubleSide });
 
@@ -12854,6 +13035,21 @@ app.get("/design", (req, res) => {
       var pitch = pitchDeg || 10;
       var ds = deletedSections || [false, false, false, false];
       var wH = wallHeight || 3.0;
+
+      // ML-only fast path: when the caller supplied an internalEdges mask
+      // (set by recomputeMlInternalEdges), build walls around the face
+      // perimeter edge-by-edge and skip any edge flagged internal.
+      // Manual-drawn faces (no mask) fall through to the existing
+      // hip-section-based wall construction — unchanged.
+      if (internalEdges && verts.length >= 3) {
+        var baseY_ml = 0.05;
+        for (var ie = 0; ie < verts.length; ie++) {
+          if (internalEdges[ie]) continue;
+          var ea = verts[ie], eb = verts[(ie + 1) % verts.length];
+          addWall(ea.x, baseY_ml + wH, ea.z, eb.x, baseY_ml + wH, eb.z);
+        }
+        return group;
+      }
 
       if (verts.length === 4 && pitch > 0) {
         var hip = computeHipGeometry(verts, pitch);
@@ -13984,31 +14180,56 @@ app.get("/design", (req, res) => {
       var usePitch = face.pitch || 10;
       var wH = getRoofWallHeight(face);
 
-      // Build walls
-      face.wallMesh = buildRoofWalls(verts, usePitch, face.deletedSections, wH);
-      scene3d.add(face.wallMesh);
+      if (face.sourceTag === 'ml') {
+        // ML single-slope render path: each face is one planar slope, not
+        // a standalone hip roof. See _computeSlopeY / buildRoofSingleSlope*.
+        var slopeY = _computeSlopeY(verts, usePitch, face.azimuth);
+        face.slopeY = slopeY;  // cached for handle positioning + rebuild
+        face.wallMesh = buildRoofSingleSlopeWalls(verts, slopeY, wH, face.internalEdges);
+        scene3d.add(face.wallMesh);
+        face.sectionMeshes = [buildRoofSingleSlopeMesh(verts, slopeY, face.color, false)];
+        face.mesh = new THREE.Group();
+        face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
+        face.mesh.position.y = wH;
+        scene3d.add(face.mesh);
+        face.edgeLines = buildRoofSingleSlopeEdgeLines(verts, slopeY, wH, 0xffffff, face.internalEdges);
+        scene3d.add(face.edgeLines);
+        face.hipLines = null;  // ML faces: no private per-face hip geometry
+        face.handleMeshes = buildRoofHandles(verts);
+        face.handleMeshes.forEach(function(h, i) { h.position.y = wH + slopeY[i] + 0.18; h.visible = false; });
+        face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
+        face.edgeHandleMeshes.forEach(function(h, i) {
+          var yA = slopeY[i], yB = slopeY[(i + 1) % verts.length];
+          h.position.y = wH + (yA + yB) / 2 + 0.18;
+        });
+        face.labelSprites = buildEdgeLabels(verts, wH, face.internalEdges);
+      } else {
+        // Build walls (internalEdges only set for ML faces after the batch load)
+        face.wallMesh = buildRoofWalls(verts, usePitch, face.deletedSections, wH, face.internalEdges);
+        scene3d.add(face.wallMesh);
 
-      // Build roof sections (lifted by wall height)
-      face.sectionMeshes = buildRoofSectionMeshes(verts, face.color, usePitch, face.deletedSections, -1);
-      face.mesh = new THREE.Group();
-      face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
-      face.mesh.position.y = wH;
-      scene3d.add(face.mesh);
+        // Build roof sections (lifted by wall height)
+        face.sectionMeshes = buildRoofSectionMeshes(verts, face.color, usePitch, face.deletedSections, -1);
+        face.mesh = new THREE.Group();
+        face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
+        face.mesh.position.y = wH;
+        scene3d.add(face.mesh);
 
-      face.edgeLines = buildRoofEdgeLines(verts, '#ffffff');
-      face.edgeLines.position.y = wH;
-      scene3d.add(face.edgeLines);
+        face.edgeLines = buildRoofEdgeLines(verts, '#ffffff', face.internalEdges);
+        face.edgeLines.position.y = wH;
+        scene3d.add(face.edgeLines);
 
-      face.hipLines = buildHipRoofLines(verts, usePitch, face.deletedSections);
-      if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
+        face.hipLines = buildHipRoofLines(verts, usePitch, face.deletedSections);
+        if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
 
-      face.handleMeshes = buildRoofHandles(verts);
-      face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; h.visible = false; });
+        face.handleMeshes = buildRoofHandles(verts);
+        face.handleMeshes.forEach(function(h) { h.position.y = wH + 0.18; h.visible = false; });
 
-      face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
-      face.edgeHandleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
+        face.edgeHandleMeshes = buildRoofEdgeHandles(verts);
+        face.edgeHandleMeshes.forEach(function(h) { h.position.y = wH + 0.18; });
 
-      face.labelSprites = buildEdgeLabels(verts, wH);
+        face.labelSprites = buildEdgeLabels(verts, wH, face.internalEdges);
+      }
       roofFaces3d.push(face);
       refreshMeasurementLabelDedup();
       // Irradiance: a new face needs its annual kWh value — clear cache and
@@ -14030,35 +14251,67 @@ app.get("/design", (req, res) => {
       var usePitch = face.pitch || 10;
       var wH = getRoofWallHeight(face);
 
-      // Rebuild walls
-      face.wallMesh = buildRoofWalls(face.vertices, usePitch, face.deletedSections, wH);
-      scene3d.add(face.wallMesh);
+      if (face.sourceTag === 'ml') {
+        // ML single-slope rebuild path — mirrors the finalize branch.
+        var slopeY = _computeSlopeY(face.vertices, usePitch, face.azimuth);
+        face.slopeY = slopeY;
+        face.wallMesh = buildRoofSingleSlopeWalls(face.vertices, slopeY, wH, face.internalEdges);
+        scene3d.add(face.wallMesh);
+        var slopeMesh = buildRoofSingleSlopeMesh(face.vertices, slopeY, face.color,
+          face.selected && !roofEditMode);
+        face.sectionMeshes = [slopeMesh];
+        face.mesh = new THREE.Group();
+        face.mesh.add(slopeMesh);
+        face.mesh.position.y = wH;
+        scene3d.add(face.mesh);
+        face.edgeLines = buildRoofSingleSlopeEdgeLines(face.vertices, slopeY, wH,
+          face.selected ? 0x00e5ff : 0xffffff, face.internalEdges);
+        scene3d.add(face.edgeLines);
+        face.hipLines = null;
+        face.labelSprites = buildEdgeLabels(face.vertices, wH, face.internalEdges);
+      } else {
+        // Rebuild walls (internalEdges carries through on ML-loaded faces)
+        face.wallMesh = buildRoofWalls(face.vertices, usePitch, face.deletedSections, wH, face.internalEdges);
+        scene3d.add(face.wallMesh);
 
-      // Rebuild roof sections (lifted). Use -2 to highlight ALL sections in whole-structure mode
-      var selSec = (face.selected && !roofEditMode) ? -2 : face.selectedSection;
-      face.sectionMeshes = buildRoofSectionMeshes(face.vertices, face.color, usePitch, face.deletedSections, selSec);
-      face.mesh = new THREE.Group();
-      face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
-      face.mesh.position.y = wH;
-      scene3d.add(face.mesh);
+        // Rebuild roof sections (lifted). Use -2 to highlight ALL sections in whole-structure mode
+        var selSec = (face.selected && !roofEditMode) ? -2 : face.selectedSection;
+        face.sectionMeshes = buildRoofSectionMeshes(face.vertices, face.color, usePitch, face.deletedSections, selSec);
+        face.mesh = new THREE.Group();
+        face.sectionMeshes.forEach(function(m) { if (m) face.mesh.add(m); });
+        face.mesh.position.y = wH;
+        scene3d.add(face.mesh);
 
-      face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff');
-      face.edgeLines.position.y = wH;
-      scene3d.add(face.edgeLines);
+        face.edgeLines = buildRoofEdgeLines(face.vertices, face.selected ? '#00e5ff' : '#ffffff', face.internalEdges);
+        face.edgeLines.position.y = wH;
+        scene3d.add(face.edgeLines);
 
-      face.hipLines = buildHipRoofLines(face.vertices, usePitch, face.deletedSections);
-      if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
-      face.labelSprites = buildEdgeLabels(face.vertices, wH);
+        face.hipLines = buildHipRoofLines(face.vertices, usePitch, face.deletedSections);
+        if (face.hipLines) { face.hipLines.position.y = wH; scene3d.add(face.hipLines); }
+        face.labelSprites = buildEdgeLabels(face.vertices, wH, face.internalEdges);
+      }
       refreshMeasurementLabelDedup();
 
+      // ML single-slope faces: handle Y follows the slope so edit handles
+      // sit on the actual roof edge, not floating at flat wH.
+      var _hSlopeY = (face.sourceTag === 'ml' && face.slopeY)
+        ? face.slopeY
+        : null;
       face.vertices.forEach(function(v, i) {
-        face.handleMeshes[i].position.set(v.x, wH + 0.18, v.z);
+        var hy = wH + (_hSlopeY ? _hSlopeY[i] : 0) + 0.18;
+        face.handleMeshes[i].position.set(v.x, hy, v.z);
         face.handleMeshes[i].visible = !!face.selected;
       });
       if (face.edgeHandleMeshes) {
         for (var ei = 0; ei < face.vertices.length; ei++) {
           var ea = face.vertices[ei], eb = face.vertices[(ei + 1) % face.vertices.length];
-          face.edgeHandleMeshes[ei].position.set((ea.x + eb.x) / 2, wH + 0.18, (ea.z + eb.z) / 2);
+          var eyA = _hSlopeY ? _hSlopeY[ei] : 0;
+          var eyB = _hSlopeY ? _hSlopeY[(ei + 1) % face.vertices.length] : 0;
+          face.edgeHandleMeshes[ei].position.set(
+            (ea.x + eb.x) / 2,
+            wH + (eyA + eyB) / 2 + 0.18,
+            (ea.z + eb.z) / 2
+          );
         }
       }
       // Rebuild dormers on this face
@@ -14260,7 +14513,7 @@ app.get("/design", (req, res) => {
     function captureRoofSnapshot() {
       return {
         faces: roofFaces3d.map(function(f) {
-          return {
+          var snap = {
             vertices: f.vertices.map(function(v) { return {x: v.x, z: v.z}; }),
             pitch: f.pitch,
             sectionPitches: f.sectionPitches ? f.sectionPitches.slice() : null,
@@ -14284,6 +14537,10 @@ app.get("/design", (req, res) => {
               };
             })
           };
+          // Preserve ML provenance so undo/redo restores single-slope
+          // mode for ML-loaded faces. Absent for manual faces.
+          if (f.sourceTag === 'ml') snap.sourceTag = 'ml';
+          return snap;
         }),
         selectedFace: roofSelectedFace,
         selectedSection: roofSelectedSection,
@@ -14298,6 +14555,7 @@ app.get("/design", (req, res) => {
 
     function restoreRoofSnapshot(snapshot) {
       clearAllRoofFaces();
+      var _mlUndoIdxs = [];
       snapshot.faces.forEach(function(rf) {
         var fIdx = finalizeRoofFace(rf.vertices, rf.pitch, rf.azimuth, rf.height, rf.deletedSections, rf.sectionPitches);
         // Restore structural properties
@@ -14308,6 +14566,12 @@ app.get("/design", (req, res) => {
         if (rf.framingSize) restoredFace.framingSize = rf.framingSize;
         if (rf.framingSpacing) restoredFace.framingSpacing = rf.framingSpacing;
         if (rf.decking) restoredFace.decking = rf.decking;
+        // Restore ML provenance from the snapshot so the face
+        // re-enters single-slope + shared-edge render mode.
+        if (rf.sourceTag === 'ml') {
+          restoredFace.sourceTag = 'ml';
+          _mlUndoIdxs.push(fIdx);
+        }
         // Restore dormers
         if (rf.dormers && rf.dormers.length > 0) {
           var face = roofFaces3d[fIdx];
@@ -14325,6 +14589,13 @@ app.get("/design", (req, res) => {
           });
         }
       });
+      // Rehydrate ML shared-edge / single-slope render after undo/redo
+      // restores ML faces — same pattern as save/reload and the ML
+      // Auto Build batch load.
+      if (_mlUndoIdxs.length > 0 && typeof recomputeMlInternalEdges === 'function') {
+        recomputeMlInternalEdges();
+        _mlUndoIdxs.forEach(function(i) { rebuildRoofFace(i); });
+      }
       roofSelectedFace = snapshot.selectedFace;
       roofSelectedSection = snapshot.selectedSection;
       selectedDormerIdx = snapshot.selectedDormer || -1;
@@ -15927,15 +16198,36 @@ app.get("/design", (req, res) => {
     // (never /api/roof/auto-detect). Loads returned roof faces into the same
     // working preview state that finalizeRoofFace uses. The saved design on
     // disk is NOT touched — only saveCurrentDesign() does that.
+    // ML-only banner helper. Sets display + background + color + innerHTML
+    // in one call so severity is always explicit and can never leak across
+    // state transitions. Other features that share roofModeBanner keep
+    // using the element's default amber styling; the ML flow always
+    // overrides. Three severities:
+    //   'neutral'  — light blue-grey  (#f0f4ff / #1a1a2e)  progress / info
+    //   'warning'  — warm orange      (#fff7e6 / #7a4a00)  degraded but continuing
+    //   'error'    — light red        (#fff0f0 / #b91c1c)  hard failure
+    //   'success'  — light green      (#f0fdf4 / #166534)  final success
+    var _ML_BANNER_STYLES = {
+      neutral: { bg: '#f0f4ff', fg: '#1a1a2e' },
+      warning: { bg: '#fff7e6', fg: '#7a4a00' },
+      error:   { bg: '#fff0f0', fg: '#b91c1c' },
+      success: { bg: '#f0fdf4', fg: '#166534' }
+    };
+    function _mlBanner(banner, severity, html) {
+      if (!banner) return;
+      var s = _ML_BANNER_STYLES[severity] || _ML_BANNER_STYLES.neutral;
+      banner.style.display = 'flex';
+      banner.style.background = s.bg;
+      banner.style.color = s.fg;
+      banner.innerHTML = html;
+    }
+
     function mlAutoBuild() {
       if (roofDrawingMode) toggleRoofDrawingMode();
       if (treePlacingMode) toggleTreeMode();
 
       var banner = document.getElementById('roofModeBanner');
-      if (banner) {
-        banner.style.display = 'flex';
-        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: loading LiDAR...';
-      }
+      _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: loading LiDAR...');
 
       // LiDAR is helpful (real DSM-fit tilts + azimuths) but not required:
       // the ML wrapper falls back to a default-pitch scene when no points
@@ -15952,11 +16244,7 @@ app.get("/design", (req, res) => {
             mlAutoBuildContinue();
           } else if (waitCount > 20 || lidarLoadError) {
             clearInterval(waitInterval);
-            if (banner) {
-              banner.style.background = '#fff7e6';
-              banner.style.color = '#7a4a00';
-              banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a86100" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> LiDAR unavailable — running ML Auto Build without DSM; pitch/orientation may need review.';
-            }
+            _mlBanner(banner, 'warning', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> LiDAR unavailable — running ML Auto Build without DSM; pitch/orientation may need review.');
             mlAutoBuildContinue(/*withoutLidar=*/true);
           }
         }, 500);
@@ -15970,11 +16258,8 @@ app.get("/design", (req, res) => {
       // Don't overwrite the yellow "LiDAR unavailable" banner that
       // mlAutoBuild() may have just shown — let that warning stay visible
       // while the image-only ML call runs.
-      if (banner && !withoutLidar) {
-        banner.style.display = 'flex';
-        banner.style.background = '';
-        banner.style.color = '';
-        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: generating 3D roof model...';
+      if (!withoutLidar) {
+        _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build: generating 3D roof model...');
       }
 
       var pId = (typeof projectId !== 'undefined' && projectId) ? projectId : 'unknown';
@@ -16042,13 +16327,9 @@ app.get("/design", (req, res) => {
           // the banner instead of requiring a server-log dive. Log the
           // full payload for deeper diagnosis.
           console.log('ML Auto Build error payload:', mlData);
-          if (banner) {
-            var extras = [mlData.detail, mlData.hint].filter(Boolean).join(' · ');
-            banner.style.background = '';
-            banner.style.color = '';
-            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build: ' + mlData.error + (extras ? ' — ' + extras : '');
-            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 9000);
-          }
+          var extras = [mlData.detail, mlData.hint].filter(Boolean).join(' · ');
+          _mlBanner(banner, 'error', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build: ' + mlData.error + (extras ? ' — ' + extras : ''));
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 9000);
           return;
         }
         var faces = mlData.crmResult && mlData.crmResult.roof_faces;
@@ -16062,16 +16343,15 @@ app.get("/design", (req, res) => {
           var reason = mlData.reason || '';
           var detail = [dispo && ('disposition: ' + dispo), gate && ('gate: ' + gate), reason].filter(Boolean).join(' · ');
           console.log('ML Auto Build empty result:', mlData);
-          if (banner) {
-            banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build returned no roof faces' + (detail ? ' — ' + detail : '') + '.';
-            setTimeout(function() { if (banner) banner.style.display = 'none'; }, 8000);
-          }
+          _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML Auto Build returned no roof faces' + (detail ? ' — ' + detail : '') + '.');
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 8000);
           return;
         }
 
         pushUndo();
         clearAllRoofFaces();
         var faceColors = ['#f5a623', '#4a9eff', '#22c55e', '#e879f9', '#f97316', '#06b6d4'];
+        var mlStartIdx = roofFaces3d.length;
         faces.forEach(function(face, i) {
           var idx = finalizeRoofFace(
             face.vertices,
@@ -16082,20 +16362,27 @@ app.get("/design", (req, res) => {
             face.sectionPitches || null
           );
           roofFaces3d[idx].color = faceColors[i % faceColors.length];
-          rebuildRoofFace(idx);
+          roofFaces3d[idx].sourceTag = 'ml';
         });
+        // Classify shared edges across the just-loaded batch and rebuild
+        // so walls / outlines / labels reflect the internal-edge mask.
+        var mlStats = recomputeMlInternalEdges();
+        console.log('[ml-auto-build] shared-edge classifier:',
+          mlStats.internal + '/' + mlStats.total,
+          'edges marked internal across', mlStats.pairs, 'ML faces');
+        console.log('[ml-auto-build] render mode: single-slope (ML-only).',
+          mlStats.pairs, 'faces will render as planar slopes instead of hip roofs');
+        for (var ri = mlStartIdx; ri < roofFaces3d.length; ri++) {
+          rebuildRoofFace(ri);
+        }
         isDirty = true;
 
-        if (banner) {
-          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '') + '. Save to keep changes.';
-          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
-        }
+        _mlBanner(banner, 'success', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '') + '. Save to keep changes.');
+        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
       })
       .catch(function(err) {
-        if (banner) {
-          banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f44" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build failed: ' + err.message;
-          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
-        }
+        _mlBanner(banner, 'error', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build failed: ' + err.message);
+        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
       });
     }
 

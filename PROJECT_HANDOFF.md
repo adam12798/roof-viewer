@@ -1,348 +1,271 @@
 # ML Auto Build — Project Handoff
 
-This document is the single source of truth for picking up ML Auto Build work on a fresh machine or in a new session. It covers what exists, how it's wired, how to run it, what's brittle, and what to do next.
+Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-For general CRM setup (Node, npm install, `.env`, login accounts), see `SETUP.md`. This document only covers the ML Auto Build slice.
-
----
-
-## 1. Project purpose
-
-**What is ML Auto Build?**
-A one-click path inside the CRM design editor that runs a trained ML pipeline on a satellite tile + DSM grid around the active design pin and returns a preview 3D roof (plane polygons with real tilt/azimuth) the user can then edit manually.
-
-**Problem it solves.**
-Before ML Auto Build, every new design started with either (a) a blank canvas the user draws by hand or (b) the older "Auto detect roof" / "Smart roof" heuristic paths that often produced nothing useful on complex buildings. ML Auto Build gives the user a real starting geometry in ~10–60 seconds for most suburban/urban roofs, so manual editing starts from something close rather than from scratch.
-
-**What it now does inside the CRM.**
-- User clicks the ML Auto Build button in the design editor.
-- A request is built from the design pin (lat/lng), the imagery URL, and a 281×281 DSM grid sampled around the pin.
-- The request is forwarded through a thin Node orchestrator to an out-of-process Python wrapper that crops the image, fits a DSM, runs the pipeline, and returns CRM-shaped `roof_faces` (each with `{vertices, pitch, azimuth, height}`).
-- The faces are dropped into the same preview state that the existing `finalizeRoofFace` / `rebuildRoofFace` codepath uses. The user sees the 3D preview immediately.
-- **Nothing is persisted to the saved design until the user clicks Save.**
-
-**What is intentionally still not changed.**
-- Manual drawing, per-plane editing, dormer placement, tree placement, calibration flow — all untouched.
-- Save flow is untouched. `saveCurrentDesign()` is the only path that writes to `data/projects.json`.
-- No new persistent UI (no new tab, no settings panel, no review queue UI). The ML Auto Build button is the only new control that was added, and it already existed before this work started.
-- Old "Auto detect roof" and "Smart roof" buttons are still present; ML Auto Build is an additive parallel path, not a replacement.
+**Last updated:** 2026-04-17
+**Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 
 ---
 
-## 2. Current architecture
+## A. Project overview
+
+**Solar CRM design tool** — a web app (Node + Express, port 3001) for designing residential solar installations. Users place panels on a 3D roof model with LiDAR point clouds, satellite imagery, and manual drawing tools. Data lives in `data/projects.json`.
+
+**ML Auto Build** — a one-click path in the design editor that calls an external ML pipeline (Python, port 5001) on a satellite tile + DSM grid around the design pin, returning a preview 3D roof the user can then edit manually.
+
+**Manual roof path** — unchanged. Drawing, vertex edits, section splits, dormers, trees, calibration all work identically whether the starting geometry came from ML or was hand-drawn.
+
+**Product rules (already decided, do not undo):**
+- Manual workflow must never change.
+- ML Auto Build is preview-only until Save. The saved design on disk never changes outside the user's explicit Save click.
+- Standalone ML engine stays conservative by default; CRM-only overrides are allowed when they improve the product experience.
+- No new persistent UI for this flow (no tabs, settings pages, review queues). Transient banners only.
+- No retraining. Every improvement is preprocessing, policy, or plumbing.
+
+---
+
+## B. Architecture / request flow
 
 ```
- CRM browser                              CRM Node (3001)                       ML wrapper (5001)                      ML engine
- -----------                              ----------------                       -------------------                    ----------
- ML Auto Build button                                                                                                    
-   └─ mlAutoBuild()                                                                                                       
-      └─ loadLidarPoints() (best-effort)                                                                                  
-      └─ mlAutoBuildContinue()                                                                                            
-           │ JSON body: lidar.points, image.url, design_center, options            
-           ▼                                                                                                              
-         POST /api/ml/auto-build  ───────▶ forwards body to ML_ENGINE_URL        POST /api/crm/auto-build               
-                                                                                    │ ↳ resolves image bytes              
-                                                                                    │   (Google staticmap, scale=2)       
-                                                                                    │ ↳ centre-crops to 640×640           
-                                                                                    │ ↳ builds SceneInput.elevation       
-                                                                                    │   from lidar.points (optional)      
-                                                                                    │ ↳ calls handle_crm_auto_build       
-                                                                                    │                                  ┌──▶ usable_gate → outline → planes
-                                                                                    │                                  │    → orientation (DSM fit or default pitch)
-                                                                                    │                                  │    → semantic_edges → keepout
-                                                                                    │                                  │    → review_policy
-                                                                                    │◀─────────────────────────────────┘
-                                                                                    │ ↳ target-building isolation       
-                                                                                    │   (cluster ML faces,              
-                                                                                    │    keep cluster nearest origin)   
-                                                                                    │ ↳ mirror crm_faces → roof_faces   
-                                                                                    │   in CRM's {x,z}/pitch/azimuth    
-                                                                                    │                                     
-                                     appends to data/ml-drafts.json (audit)        response envelope                     
-                                     responds { draftId, status, crmResult }  ◀─── with crm_result.roof_faces            
-      ◀─ response                                                                                                         
-      └─ pushUndo()                                                                                                       
-      └─ clearAllRoofFaces()                                                                                              
-      └─ faces.forEach(finalizeRoofFace + rebuildRoofFace)    ← same preview codepath used everywhere else                
-      └─ preview visible; saved design on disk is unchanged                                                               
+CRM browser                           CRM Node (3001)                      ML wrapper (5001)                    ML engine core
+-----------                           ----------------                     ------------------                   ---------------
+ML Auto Build button                  
+  mlAutoBuild()  [~L16225]            
+    load LiDAR (best-effort, 10s)     
+    mlAutoBuildContinue()  [~L16256]  
+      POST /api/ml/auto-build ───────► forwards to ML_ENGINE_URL          POST /api/crm/auto-build [~L393]
+                                       (default 127.0.0.1:5001)             fetch image (Google staticmap)
+                                       [~L24630]                            centre-crop 1280→640 [~L240]
+                                                                            build DSM from lidar.points [~L283]
+                                                                            handle_crm_auto_build_request
+                                                                              usable_gate_min=0.20 [~L499]
+                                                                                                             ──► usable_gate
+                                                                                                                 outline
+                                                                                                                 planes
+                                                                                                                 orientation (DSM fit)
+                                                                                                                 semantic_edges
+                                                                                                                 keepout
+                                                                                                                 review_policy
+                                                                                                             ◄── MLRoofResult
+                                                                            soft-gate override (crm_auto_build.py)
+                                                                            CRM-safe face conversion (adapters/crm.py)
+                                                                            geometry cleanup [~L683]
+                                                                            target-building isolation [~L843]
+                                                                              primary grouping (0.3m tolerance)
+                                                                              subcluster refinement (0.15m)
+                                                                            coordinate shift (image-TL → pin-centre)
+                                       appends to ml-drafts.json ◄──────── response envelope
+      ◄── { crmResult.roof_faces }
+      pushUndo()
+      clearAllRoofFaces()
+      tag each face sourceTag='ml'
+      recomputeMlInternalEdges()
+      rebuild: single-slope mode       
+        (no hip decomposition)         
+        (shared edges muted grey)      
+        (walls suppressed on internal) 
+      preview visible; disk unchanged  
 ```
 
-Key property: **every arrow in this diagram is additive to what already existed.** The CRM still mutates `data/projects.json` only through the existing save path. `/api/ml/auto-build` never writes a design; it only appends to `data/ml-drafts.json` for audit.
+**Save**: `serializeRoofFaces()` [~L10419] includes `source: 'ml'` per face.
+**Reload**: `loadDesign()` [~L9169] re-tags faces with `sourceTag='ml'`, calls `recomputeMlInternalEdges()`, rebuilds in single-slope mode.
+**Undo/redo**: `captureRoofSnapshot()` [~L14513] captures `sourceTag`; `restoreRoofSnapshot()` [~L14556] re-tags + rehydrates ML faces.
 
 ---
 
-## 3. Current end-to-end status
+## C. Current implementation status
 
-| Concern | Status |
-|---|---|
-| ML Auto Build button in design editor | Exists (pre-existing) |
-| CRM → ML transport | Working; Node forwards to configurable URL |
-| Real ML pipeline used (not mock) | Yes — `use_mock=False`, warm `PipelineRunner` |
-| Vertex alignment (CRM local frame matches design pin) | Fixed (image-centre-origin shift applied in the wrapper) |
-| Target-building isolation (drop neighbours) | Working; shapely cluster filter keeps the cluster nearest origin |
-| Centre-crop around pin before inference | Working; 1280→640 (~35 m footprint) |
-| DSM elevation threading from CRM → ML | Working; real tilts/azimuths when DSM is supplied |
-| CRM-only soft usable gate (floor 0.20) | Working |
-| Preview loads into editable roof faces | Working; same `finalizeRoofFace`/`rebuildRoofFace` codepath |
-| LiDAR unavailable no longer blocks | Working; warns and continues image-only |
-| Missing ML config → actionable error | Working; banner surfaces `detail`+`hint` |
-| Auto-save on ML Auto Build | **Not implemented, not wanted** |
-| Saved design modified outside user's Save click | **Never** |
-
----
-
-## 4. Current behaviour / product rules
-
-- **ML Auto Build creates a preview only.** The in-memory `roofFaces3d` / preview state is replaced; `data/projects.json` is not touched.
-- **Manual controls stay the same.** Roof drawing, vertex edits, section splits, pitch overrides, dormers, trees — all work against the ML-produced preview exactly as they do against a hand-drawn one.
-- **Undo works.** `mlAutoBuild` calls `pushUndo()` before `clearAllRoofFaces()`, so a single undo restores whatever was on screen before the user clicked the button.
-- **Reload without saving keeps the old saved design.** Because ML Auto Build only writes to preview state, navigating away or reloading drops the preview and the on-disk design is intact.
-- **Save persists the current preview.** The existing Save button calls `saveCurrentDesign()`, which writes whatever is currently in preview — whether it came from ML, manual drawing, or a mix.
-- **Old "Auto detect roof" / "Smart roof" buttons still exist.** ML Auto Build is parallel to them; nothing was removed.
-- **Standalone ML engine behaviour is unchanged.** Every override used by the CRM (soft gate, DSM threading) is opt-in via explicit parameters; defaults reproduce the engine's original conservative behaviour.
-
----
-
-## 5. Pipeline sequence (what actually happens on a click)
-
-1. **Client gathers context** (`mlAutoBuild` / `mlAutoBuildContinue` in `server.js` ~L15930).
-   - Waits up to ~10 s for `lidarRawPoints` to populate. On timeout or error, shows a yellow warning banner and continues without LiDAR.
-   - Builds payload: `projectId`, `designId`, `anchor_dots`, `calibration_offset`, `lidar.points[]`, `image.url`, `design_center{lat,lng}`, `options.pipeline_mode="ml_v2"`.
-2. **Node orchestrator** (`POST /api/ml/auto-build` in `server.js` ~L24317).
-   - Defaults `ML_ENGINE_URL=http://127.0.0.1:5001`, `ML_AUTO_BUILD_PATH=/api/crm/auto-build`. Env vars override.
-   - Forwards the body verbatim; appends the response envelope to `data/ml-drafts.json` for audit; returns `{draftId, status, disposition, reason, crmResult}` to the client.
-3. **ML wrapper** (`ml_ui_server.py /api/crm/auto-build`).
-   - Resolves image bytes (Google Static Maps, `zoom=20`, `scale=2` → real 1280×1280).
-   - Computes `true_mpp = 156543.03392 * cos(lat) / 2^20 * 0.5` (≈ 0.055 m/px at US latitudes).
-   - **Centre-crops image bytes to 640×640** (~35 m footprint centred on the design pin).
-   - **Builds `SceneInput.elevation`** from `lidar.points[]` — rasterises 281×281 DSM, flips south→north to match image, centre-crops to match image footprint. If `lidar.points` is empty or invalid, `scene=None` and orientation falls back to default pitch (logged).
-   - Calls `handle_crm_auto_build_request` with `usable_gate_min=0.20`.
-4. **ML engine pipeline** (`ml_engine/core/pipeline.py PipelineRunner.run`).
-   - **usable_gate** — ResNet-18 image classifier. Short-circuits pipeline when `prob_usable < usable_gate_min`.
-   - **outline** — Mask R-CNN produces roof outline polygon.
-   - **planes** — Mask R-CNN produces per-plane polygons.
-   - **orientation** — DSM fit per plane when `scene.elevation` is present (real tilt+azimuth); default pitch fallback (10°, no azimuth) when absent.
-   - **semantic_edges** — edge classification (ridge/eave/valley/rake/hip). Advisory only; never blocks.
-   - **keepout** — vent/obstruction zones. Advisory only.
-   - **review_policy** — computes `auto_build_status ∈ {auto_accept, needs_review, reject}` and `review_policy_reasons[]`.
-5. **Soft-gate override** (handler, `ml_engine/api/crm_auto_build.py`).
-   - If `usable_gate_min ≤ raw_usable < 0.50` AND no other hard-reject reasons fired, strip `usable_gate_very_low`/`usable_gate_low`, prepend `crm_soft_gate_applied`, force `auto_build_status="needs_review"`. Never upgrades anything to `auto_accept`.
-6. **CRM-safe face conversion** (`ml_engine/adapters/crm.py`).
-   - Each plane → `CRMFace` with rectangle-fit vertices, tilt, azimuth, area, confidence, review reasons.
-7. **Target-building isolation** (`ml_ui_server.py _select_target_building`).
-   - Groups ML faces into connected clusters (shapely dilation ≤0.5 m). Picks the cluster whose area-weighted centroid is nearest origin (= design pin). Ties broken by total area.
-8. **Coordinate shift** (`ml_ui_server.py` after envelope).
-   - Shifts vertices from image-top-left origin to image-centre origin (= design pin). `x → x - half_w`, `z → y - half_h`. After this step, a vertex at (0,0) is the design pin.
-9. **Load into editor** (client).
-   - `pushUndo()` → `clearAllRoofFaces()` → `faces.forEach(finalizeRoofFace + rebuildRoofFace)`. Each face is coloured from a preset palette. Preview is live immediately.
-
----
-
-## 6. Important thresholds / logic
-
-### Usable gate
-
-| Band | Action | Status |
+| Feature | Status | Key location |
 |---|---|---|
-| `raw < 0.20` | Hard reject; no geometry | `reject` |
-| `0.20 ≤ raw < 0.50` | Pipeline runs; soft gate fires | `needs_review` + `crm_soft_gate_applied` |
-| `0.50 ≤ raw < 0.65` | Normal review-policy band | `needs_review` + `usable_gate_low` |
-| `raw ≥ 0.65` | Clean | `auto_accept` or `needs_review` based on other signals |
-
-CRM-only. Standalone callers keep the default `usable_gate_min=0.50`.
-
-### Soft-gate invariants
-
-- Never upgrades a result to `auto_accept`.
-- Never overrides a downstream hard error (missing outline, no planes, pipeline_error, etc.). Those still reject.
-- `crm_soft_gate_applied` always appears as the first entry in `review_policy_reasons` when the soft gate fires.
-- Observability fields on envelope: `raw_usable_score`, `effective_usable_gate_min`, `soft_gate_applied`.
-
-### Target-building selection
-
-- Dilates each face polygon by 0.5 m, unions, finds connected components → clusters.
-- Each cluster's area-weighted centroid is computed in the CRM local frame.
-- Pick the cluster with centroid Euclidean-nearest to origin (design pin).
-- Pass-through when ≤1 face exists (no filter applied).
-
-### Crop rule
-
-- 640×640 centre crop of the fetched 1280×1280 PNG.
-- Preserves `metres_per_pixel` (crop is scale-preserving).
-- At `true_mpp ≈ 0.055`, footprint ≈ 35 m × 35 m.
-- Skipped gracefully if source image is smaller than target.
+| CRM ↔ ML transport | Working | `server.js:24630`, `ml_ui_server.py:393` |
+| Default ML URL (no env needed) | `http://127.0.0.1:5001/api/crm/auto-build` | `server.js:24627-24628` |
+| Centre-crop (1280→640, ~35m) | Working | `ml_ui_server.py:240` |
+| DSM/elevation from CRM lidar | Working; falls back to default-pitch when absent | `ml_ui_server.py:283` |
+| CRM soft usable gate (floor 0.20) | Working | `ml_ui_server.py:499`, `crm_auto_build.py:301` |
+| Target-building isolation | Working; primary 0.3m + subcluster 0.15m | `ml_ui_server.py:843, 1048` |
+| Geometry cleanup (duplicate faces) | Working; IoU ≥ 0.15, Δpitch ≤ 5°, Δaz ≤ 10° | `ml_ui_server.py:683` |
+| ML-only shared-edge suppression | Working; midpoint-in-polygon classifier | `server.js:11277-11316` |
+| ML-only single-slope rendering | Working; no per-face hip decomposition | `server.js:11519-11610` |
+| Shared-edge muted grey lines | Working | `server.js:11578` |
+| Save/reload ML rehydrate | Working; `source:'ml'` persisted + re-tagged | `server.js:10419, 9244` |
+| Undo/redo ML provenance | Working; snapshot captures + restores sourceTag | `server.js:14513, 14556` |
+| LiDAR-optional (warn+continue) | Working | `server.js:16225` |
+| ML config missing → actionable 503 | Working; banner shows hint+detail | `server.js:24570-24580` |
+| Banner severity helper `_mlBanner` | Working; 4 severities: neutral/warning/error/success | `server.js:16210-16222` |
+| Design-page boot (loading overlay) | Working; 12s safety timeout + catch handler | `server.js:9614, 9624` |
+| Manual faces unchanged | Yes; all ML branches gate on `sourceTag==='ml'` | `server.js:14154, 14243` |
 
 ---
 
-## 7. What is still weak / not solved
+## D. Known limitations
 
-- **Usable gate false-negatives in the 0.15–0.20 band.** Two properties in the broad validation (Tanager at 0.16, Newton at 0.17) are visually real roofs that still reject because they fall below the 0.20 floor. Dropping the floor below 0.20 starts to risk admitting genuinely bad imagery (a few tiles hover in the 0.05–0.15 range on water/tree canopy/low-sun geometry).
-- **Target isolation edge case: house + detached garage.** One property (Cambridge SFH+garage) clustered house and garage as a single entity because the 0.5 m dilation touched both. Result preserves 15 faces including the garage. User would have to manually delete garage faces. Not broken; not ideal.
-- **Semantic edges and keepout zones are advisory only.** They never hard-block the pipeline. If edge classification or vent detection is wrong, the roof still builds — downstream review sees a warning.
-- **Orientation depends on DSM availability and quality.** When LiDAR points are absent or the tile has no DSM coverage from Google Solar, every plane gets the default pitch (10°) fallback. The review_policy surfaces `all_planes_default_pitch` when that happens; otherwise DSM-fit residuals can still be noisy on small planes and surface `orientation_high_residual` / `orientation_low_inlier` per-face.
-- **No reviewer UI.** `ml-drafts.json` accumulates every ML call with disposition/reasons for audit, but there's no in-CRM page to browse or filter it. Intentional — no reviewer UI was in scope.
-- **Old roof detection buttons coexist.** "Auto detect roof" and "Smart roof" still sit next to ML Auto Build. Not yet decided whether to remove, hide, or keep them as a legacy fallback.
-
----
-
-## 8. Validation results (latest broad pass, 18 properties)
-
-Sample spans suburban SFH, dense suburban, urban close-neighbour, multifamily, townhouse row, coastal, and a detached-garage case.
-
-- **Usable previews produced:** 10/18 (56%) before soft gate; **13/18 (72%) after** the 0.20 soft gate.
-- **Hard rejects:** 8/18 without soft gate; 5/18 with soft gate.
-  - 3 "truly bad" rejects (usable < 0.05) stay rejected — correct behaviour.
-  - 2 borderline in 0.16–0.17 band still reject — arguable false negatives below the floor.
-- **Target-isolation wins:** 9/10 usable cases filtered sensibly (15→7, 11→6, 13→7 on dense lots; pass-through on small clusters). 1 case (Cambridge SFH+garage) merged house+garage — noted above.
-- **DSM-fit orientation wins:** 10/10 usable cases used `dsm_fit`. Zero `all_planes_default_pitch` reasons fired when LiDAR was supplied. Plane tilts span a realistic 4°–43° range.
-- **Archetypes that tend to succeed:** any roof where the ResNet-18 usable classifier scores ≥ 0.70. Archetype is not predictive — SFH, triple-decker, brownstone row all succeed when imagery is clear.
-- **Archetypes that tend to fail:** properties where the Google Static Maps tile is obscured (heavy canopy, low sun angle, water). The classifier signal is the actual driver.
+- **4-vertex independent face model.** Each ML face is an independent rotated rectangle. Adjacent faces don't share vertices; ~10-30 cm gaps/overlaps at corners remain visible. A true fix requires a shared roof graph (vertex unification). Not in scope for v1.
+- **Extreme upstream pitches.** Some ML-detected planes (especially on Back Bay brownstones, Somerville triple-deckers) come back at 65-77° pitch, producing exaggerated slopes in single-slope rendering. The render is correct for what ML returns; the fix is upstream model/classification tuning.
+- **Usable gate false negatives in 0.15-0.20 band.** Two tested properties (Tanager 0.16, Newton 0.17) are visually real roofs that reject below the 0.20 floor. Lowering the floor risks letting genuinely bad tiles through.
+- **No "strip ML flag" escape hatch.** A user who wants to convert an ML-generated roof to manual rendering has no toggle. The workaround: delete all ML faces, re-draw manually.
+- **Legacy ML drafts (saved before source persistence).** Designs saved before the `source:'ml'` field was added load as manual faces (hip-roof rendering). Re-running ML Auto Build + re-saving fixes them.
+- **Semantic edges and keepout are advisory only.** They never block the pipeline. Misclassification surfaces as a warning, not a reject.
+- **Old roof buttons coexist.** "Auto detect roof" and "Smart roof" still sit next to ML Auto Build. Product decision pending.
 
 ---
 
-## 9. Key files / modules
+## E. Current blocker
 
-### CRM repo (`/Volumes/Extreme_Pro/project Interrupt`)
+### NO CURRENT BLOCKER
 
-| File | Relevant region | What it does |
-|---|---|---|
-| `server.js` | `mlAutoBuild()` ~L15930 | LiDAR-optional client flow; warn-and-continue if missing. |
-| `server.js` | `mlAutoBuildContinue()` ~L15968 | Builds `mlPayload`; posts to `/api/ml/auto-build`; loads returned `roof_faces` via existing preview codepath. Surfaces `hint`+`detail` in error banner. |
-| `server.js` | `POST /api/ml/auto-build` ~L24317 | Thin Node orchestrator. Defaults to `http://127.0.0.1:5001/api/crm/auto-build`. Appends envelope to `data/ml-drafts.json`. Returns actionable 503 on upstream failure. |
-| `server.js` | `app.listen` ~L25017 | Boot log prints the effective ML endpoint and whether it came from env or default. |
-| `server.js` | `/api/lidar/points` ~L2364 | Fetches 281×281 DSM grid from Google Solar API; used by the client to populate `lidar.points`. |
-| `server.js` | `/api/satellite` ~L2229 | Satellite image proxy; used by the ML wrapper as the fallback image source if it can reach the CRM. |
-| `data/ml-drafts.json` | — | Append-only audit log of every ML Auto Build call (status, disposition, review reasons, `crm_result`). Read by `GET /api/ml-drafts`. |
-
-### ML repo (`/Volumes/Extreme_Pro/ML`)
-
-| File | What it does |
-|---|---|
-| `ml_ui_server.py` | Flask server on port 5001. `/api/crm/auto-build` resolves image bytes, centre-crops, builds `SceneInput.elevation` from `lidar.points`, calls the handler with `usable_gate_min=0.20`, runs target-building isolation, shifts to design-pin origin, returns CRM-shaped envelope. `/frame_debug` block surfaces `crop_debug`, `dsm_debug`, `soft_gate_debug`, `target_selection`. |
-| `ml_engine/core/pipeline.py` | `run_pipeline` and `PipelineRunner.run` accept `usable_gate_min: float = 0.5`. Short-circuit uses `conf < usable_gate_min`. Default preserves historic behaviour. |
-| `ml_engine/api/crm_auto_build.py` | `CRMAutoBuildRequest.usable_gate_min` field. Post-`apply_review_policy` soft-gate override: strip `usable_gate_very_low` when raw usable is in `[usable_gate_min, 0.50)` and no other hard-errors fired; force `auto_build_status="needs_review"`; prepend `crm_soft_gate_applied`. Envelope adds `raw_usable_score`, `effective_usable_gate_min`, `soft_gate_applied`. |
-| `ml_engine/adapters/crm.py` | Rich `MLRoofResult` → CRM-safe `crm_faces`. Drops planes below `min_plane_confidence=0.40`. |
-| `ml_engine/core/review_policy.py` | Decision table for `auto_build_status`. Hard thresholds: `USABLE_GATE_REJECT=0.40`, `USABLE_GATE_REVIEW=0.65`, `OUTLINE_REJECT=0.35`, `OUTLINE_REVIEW=0.60`, `PLANES_MEAN_REVIEW=0.50`. Unchanged. |
-| `ml_engine/core/scene.py` | `SceneInput` and `ElevationSource` shape. DSM `heights_m` must be 2D float32 and image-aligned (north-up). |
-
-### Debug fields worth knowing
-
-Inside every response `envelope.crm_result.metadata.frame_debug`:
-
-- `crop_debug` — `source_wh_px`, `target_wh_px`, `crop_offset`, whether crop actually fired.
-- `dsm_debug` — `built`, `final_shape`, `finite_samples`, whether DSM was centre-cropped to match image footprint.
-- `soft_gate_debug` — `raw_usable_score`, `effective_usable_gate_min`, `soft_gate_applied`.
-- `target_selection` — raw cluster count, selected cluster size, selection reason.
-- `sample_raw_vertex` / `sample_shifted_vertex` — one vertex before/after the image-centre origin shift; fastest way to catch alignment regressions.
-
----
-
-## 10. How to run locally
-
-### Baseline CRM setup
-
-Follow `SETUP.md` for Node install, `npm install`, Google Maps API key, login accounts. That covers everything up to the point where `node server.js` boots.
-
-### ML wrapper setup (first time)
+The design-page rotating-sun boot crash (caused by a stray `}` in the `.catch` block of `mlAutoBuildContinue`'s fetch chain) has been fixed. Client JS now passes `node --check` syntax validation. Verified:
 
 ```bash
-# Python 3.12+ required (Python 3.13 also works).
-cd /Volumes/Extreme_Pro/ML           # or wherever you cloned the ML repo
-python3 -m venv .venv                # optional; the codebase also works with system Python
-source .venv/bin/activate             # if using venv
-pip install -r requirements.txt
+curl -s "http://127.0.0.1:3001/design?lat=42.6&lng=-71.3&projectId=mn9805q0ddm" \
+  -H "Cookie: session=<token>" -o /tmp/page.html
+awk '/<script>/{f=1;b="";next}/<\/script>/{if(f)print b;f=0}f{b=b"\n"$0}' /tmp/page.html > /tmp/s.js
+node --check /tmp/s.js   # exits 0 — clean parse
 ```
 
-Trained model weights live under `artifacts/`, `artifacts_outline/`, `artifacts_planes_v2/`, `artifacts_semantics_v2/`, `artifacts_obstructions_v2/`. First request after startup loads all of them (~90 s on CPU).
+The first thing to do on the new machine is confirm the design page loads (spinning sun clears within ~3s) before doing anything else.
 
-### Environment variables
+---
 
-**CRM side (`project Interrupt/.env`):**
-```
-GOOGLE_API_KEY=your-google-maps-api-key   # required for satellite + DSM
-PORT=3001                                 # optional
-ML_ENGINE_URL=http://127.0.0.1:5001       # optional; default matches this
-ML_AUTO_BUILD_PATH=/api/crm/auto-build    # optional; default matches this
-```
+## F. Local run instructions
 
-**ML side (export before starting `ml_ui_server.py`):**
-```
-GOOGLE_API_KEY=...   # or GOOGLE_MAPS_KEY; same key as the CRM uses
-```
+### Prerequisites
 
-The ML wrapper needs its own Google key because it fetches the staticmap directly; it does not proxy through the CRM's satellite endpoint (the CRM `requireAuth` middleware would block it).
+- **Node.js** (tested on v25.7.0; LTS should work)
+- **Python 3.12+** (3.13 tested)
+- **Google API key** with Maps Static API + Solar API enabled
 
-### Starting both services
+### CRM start
 
 ```bash
-# Terminal 1 — CRM
-cd "/Volumes/Extreme_Pro/project Interrupt"
+cd "/path/to/project Interrupt"
+npm install                    # first time only
+# Create .env with at minimum:
+#   GOOGLE_API_KEY=your-key
+#   PORT=3001
 node server.js
-# → "Solar CRM running at http://localhost:3001"
-# → "ML Auto Build → http://127.0.0.1:5001/api/crm/auto-build (default)"
-
-# Terminal 2 — ML wrapper
-cd /Volumes/Extreme_Pro/ML
-export GOOGLE_API_KEY=...
-python3 ml_ui_server.py
-# → "Running on http://127.0.0.1:5001"
+# Expected output:
+#   Solar CRM running at http://localhost:3001
+#   ML Auto Build → http://127.0.0.1:5001/api/crm/auto-build (default)
 ```
 
-Open `http://localhost:3001`, log in, open any project's design editor, click **ML Auto Build**.
+### ML wrapper start
+
+```bash
+cd /path/to/ML
+pip install -r requirements.txt     # first time only
+export GOOGLE_API_KEY=your-key      # same key as CRM
+export GOOGLE_MAPS_KEY=$GOOGLE_API_KEY
+python3 ml_ui_server.py
+# Expected output:
+#   Running on http://127.0.0.1:5001
+# First ML request loads all models (~90s on CPU). Subsequent requests ~10-60s.
+```
+
+### Env var reference
+
+| Var | Where | Required | Default |
+|---|---|---|---|
+| `GOOGLE_API_KEY` | CRM `.env` | Yes | — |
+| `PORT` | CRM `.env` | No | 3001 |
+| `ML_ENGINE_URL` | CRM `.env` | No | `http://127.0.0.1:5001` |
+| `ML_AUTO_BUILD_PATH` | CRM `.env` | No | `/api/crm/auto-build` |
+| `GOOGLE_API_KEY` or `GOOGLE_MAPS_KEY` | ML shell env | Yes (for ML) | — |
 
 ### Gotchas
 
-- **Restart after env changes.** Node reads env at boot; changing `ML_ENGINE_URL` in `.env` has no effect until you kill and re-start `node server.js`.
-- **Restart after ML code changes.** The Python server does not auto-reload. Edit → kill port 5001 → restart.
-- **Verify ports are free** before starting. Stale processes are a known trap (see project memory). `lsof -nP -iTCP:3001 -iTCP:5001 -sTCP:LISTEN`.
-- **DSM failures are silent-ish.** If Google Solar has no DSM for a lat/lng, `/api/lidar/points` returns `{error, points:[]}`. The client will warn and run image-only. Nothing breaks, but orientations will be default-pitch.
+- **Restart after env changes.** Node reads `.env` at boot. ML reads shell env at boot. Neither hot-reloads.
+- **Kill stale processes before starting.** `lsof -nP -iTCP:3001 -iTCP:5001 -sTCP:LISTEN` — kill any lingering PIDs.
+- **Do not use backticks in JS comments** inside the `/design` HTML template in `server.js` (lines ~5500-17600). They terminate the template literal and produce a client-side parse error that freezes the design page. Use double-quotes or plain text in comments.
+- **`data/sessions.json`, `data/users.json`, `data/projects.json` are gitignored.** On a fresh clone the app creates them at runtime. Login with admin/password (see `SETUP.md`). On an existing machine they persist on disk.
 
 ---
 
-## 11. Smoke-test checklist
+## G. Resume checklist
 
-Quick sanity pass for a fresh machine.
-
-1. **ML server up.** `curl http://127.0.0.1:5001/` returns the ML UI HTML.
-2. **CRM up.** Boot log shows `ML Auto Build → http://127.0.0.1:5001/api/crm/auto-build (…)`.
-3. **CRM env configured.** `.env` has `GOOGLE_API_KEY`. Without it, `/api/satellite` fails and DSM+image calls die.
-4. **Click ML Auto Build** on three test properties:
-   - **Good property** (e.g. 20 Meadow Dr, Lowell @ 42.6463,-71.3545). Expect: usable ≥ 0.70, 5–10 roof faces, preview visible within ~10–20 s. Pitch/azimuth varied (not all 10°).
-   - **Borderline property** (e.g. 254 Foster St, Lowell @ 42.6322,-71.3378). Expect: soft-gate fires, preview loads with `crm_soft_gate_applied` in review reasons, `needs_review` banner. Preview may need manual cleanup.
-   - **Clearly bad property** (e.g. Belmont @ 42.3959,-71.1786). Expect: yellow or red banner showing "ML Auto Build returned no roof faces — disposition: rejected · gate: reject:usable_gate(0.00)". No geometry loaded. On-disk design untouched.
-5. **Undo.** After a successful ML Auto Build, hit Undo. Prior geometry (if any) is restored. Another Undo keeps walking back the history.
-6. **Reload without saving.** Refresh the browser. The saved design on disk is what returns — not the ML preview.
-7. **Save.** Click Save. Reload. The ML-derived preview now persists as the saved design.
-8. **LiDAR-missing path.** Temporarily set an invalid `GOOGLE_API_KEY` and click ML Auto Build. Expect yellow banner "LiDAR unavailable — running ML Auto Build without DSM; pitch/orientation may need review." followed by image-only pipeline run. All plane tilts will be 10° (default pitch).
-9. **ML wrapper down.** Kill port 5001, click ML Auto Build. Expect banner "ML Auto Build: ML engine unreachable — request to http://127.0.0.1:5001/api/crm/auto-build failed … · Start the ML wrapper on http://127.0.0.1:5001 …".
+1. Clone / open both repos.
+2. Set `.env` on CRM side (GOOGLE_API_KEY at minimum).
+3. `npm install` in CRM dir.
+4. `pip install -r requirements.txt` in ML dir.
+5. Start CRM: `node server.js` — confirm boot log shows the ML endpoint line.
+6. Start ML: `export GOOGLE_API_KEY=... && python3 ml_ui_server.py` — confirm Flask is listening on 5001.
+7. Open `http://localhost:3001`, log in (admin / password).
+8. Open a project with a valid address → enter design mode → **confirm the spinning sun clears** within ~3s.
+9. Click **ML Auto Build** on 20 Meadow Dr. Wait ~10-60s. Expect 5 roof faces in single-slope mode.
+10. Click **Save**. Reload the page. Confirm ML faces re-render in single-slope mode (not hip-roof mini-houses).
+11. Click **Undo** (Cmd+Z). Confirm prior state restores. Click **Redo** (Cmd+Shift+Z). Confirm ML faces come back in single-slope mode.
+12. Continue from the next task in section I.
 
 ---
 
-## 12. Next recommended tasks (priority order)
+## H. Known validation cases
 
-1. **Broader real-property validation (continue).** Target ≥50 properties spanning more suburbs and more "previously good" coordinates. We currently have 18. Collect real usable scores, face counts, and target-isolation signals into a structured log so regressions are obvious.
-2. **Investigate merged house+garage edge case.** Cambridge SFH+garage returned 15 faces in a single cluster. Decide: tighten the 0.5 m dilation, cluster-by-area-ratio, or add a centroid-distance cutoff so a secondary structure > Nm from the pin is dropped.
-3. **Surface `ml-drafts.json` as a debug-only table.** Not a full review UI — just a read-only list at `/ml-drafts` or similar, scoped by projectId, so a developer can see which properties soft-gated, which rejected, which had missing DSM. Zero product/UI impact.
-4. **Revisit usable-gate floor only if more evidence appears.** Dropping from 0.20 to 0.15 would rescue Tanager/Newton but risks admitting a few genuinely-bad cases. Gather ~20 more borderline examples before moving the number.
-5. **Pre-ML crop tuning (only if validation shows need).** 35 m has been robust in the current dataset. If larger roofs surface and clipping shows up, move to 42 m or make it property-size-aware.
-6. **Decide what to do with legacy roof buttons.** "Auto detect roof" and "Smart roof" still exist. Options: hide behind a flag, delete, or keep as a documented fallback. This is a product call, not a technical one.
-
----
-
-## 13. Decisions already made (do not undo accidentally)
-
-- **No manual workflow changes.** Manual drawing, vertex editing, calibration, dormer placement, tree placement — all preserved bit-for-bit.
-- **No new persistent UI controls for this flow.** No new buttons, tabs, settings pages, or review queues. Transient banners only.
-- **ML Auto Build is preview-only until Save.** The saved design on disk never changes outside the user's Save click.
-- **Standalone ML engine stays conservative by default.** Every widening override (soft gate, DSM threading) is opt-in via explicit function parameters. The `run_pipeline` / `PipelineRunner.run` defaults reproduce the engine's historic behaviour exactly.
-- **CRM-only overrides are allowed** when the standalone engine's default would produce a worse product experience. The current override set: `usable_gate_min=0.20` and `SceneInput.elevation` built from CRM DSM.
-- **Target-building isolation lives in the ML wrapper**, not the ML engine core. The engine returns every plane it finds; the wrapper filters to the design-pin cluster. This keeps the engine's API purely geometric and leaves the CRM-scoped logic on the CRM side of the seam.
-- **No retraining on this track.** Every improvement is preprocessing, policy, or plumbing. Model artefacts under `artifacts/` have not been touched.
+| Property | Lat, Lng | What it tests |
+|---|---|---|
+| 20 Meadow Dr, Lowell MA | 42.6463, -71.3545 | Simple SFH; 5 ML faces; single-slope rendering; the canonical "good case" |
+| 225 Gibson St, Lowell MA | 42.6324, -71.3392 | Dense multiface (14 faces); complex target isolation |
+| 583 Westford St, Lowell MA | 42.6339, -71.3369 | Urban dense; 15 raw → 7 selected; target iso stress test |
+| Somerville triple-decker | 42.3942, -71.1022 | Attached-neighbour subcluster refinement (9→8 faces) |
+| Back Bay brownstones, Boston | 42.3499, -71.0778 | Rowhouse; 2 faces share one wall; extreme upstream pitch |
+| Cambridge SFH + garage | 42.3742, -71.1195 | Detached garage separation (TOLERANCE_M 0.3m); 15→13 after target iso+cleanup |
+| Belmont colonial | 42.3959, -71.1786 | Clear reject (usable=0.005); gate works correctly |
+| 254 Foster St, Lowell MA | 42.6322, -71.3378 | Borderline soft-gate case (usable=0.24); rescued by 0.20 floor |
 
 ---
 
-## 14. Footer
+## I. Next priorities (in order)
 
-- **Last updated:** 2026-04-16
-- **Updated by:** Claude (session on `/Volumes/Extreme_Pro/project Interrupt`, branch `main`)
-- **Current recommended next task:** Broader real-property validation — expand the dataset from 18 to ≥50 real addresses (items 1 and 2 in §12 feed each other; doing 1 first surfaces more 2-class edge cases).
+1. **Broader real-property validation (≥50 properties).** Current dataset is 18. Wider coverage would surface edge cases in the usable gate, target isolation, and geometry cleanup. Build a structured validation log.
+2. **Vertex snapping across adjacent ML faces.** Currently the biggest visual quality issue after single-slope rendering. Adjacent rectangles have 10-30 cm corner mismatches. Snapping shared-edge endpoints to a common point would make seams cleaner. Moderate risk — must not break manual editing.
+3. **Investigate extreme ML pitch values.** Back Bay and Somerville return 65-77° pitches that produce unrealistic slope heights. Likely a model/classification issue on facades vs roofs. May need upstream investigation in the ML training data or a CRM-side pitch-clamp guardrail.
+4. **Surface ml-drafts.json as a debug-only page.** Read-only list at `/ml-drafts` scoped by projectId. Zero product impact; useful for diagnosing which properties soft-gated, rejected, or had missing DSM.
+5. **Decide on legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
+
+**Do NOT touch right now (unless new evidence surfaces):**
+- Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
+- Crop size (35m is working; only adjust if larger roofs clip).
+- Core ML models (no retraining in this track).
+
+---
+
+## J. Recent milestones (newest first)
+
+| Date | Milestone |
+|---|---|
+| 2026-04-17 | Fixed design-page boot crash (stray `}` in `.catch` block killed client JS parse). Added `_mlBanner` severity helper with 4 explicit levels (neutral/warning/error/success) so banner states never leak across transitions. Fixed undo/redo dropping ML sourceTag — `captureRoofSnapshot` now includes it; `restoreRoofSnapshot` rehydrates ML faces. |
+| 2026-04-16 | ML single-slope rendering: ML faces render as tilted quads instead of standalone hip roofs. Shared-edge suppression: midpoint-in-polygon classifier marks internal edges; walls suppressed, edge lines muted grey, labels skipped. Save/reload rehydrate: `source:'ml'` persisted in `serializeRoofFaces`; `loadDesign` re-tags and recomputes on load. |
+| 2026-04-16 | Target-isolation refinements: primary tolerance tightened 0.5→0.3m (fixes Cambridge garage); subcluster pass at 0.15m (fixes Somerville attached-neighbour bleed). Geometry cleanup: duplicate faces (IoU ≥ 0.15 + tight orientation) dropped post-isolation. |
+| 2026-04-16 | CRM-only soft usable gate (floor 0.20): pipeline continues for borderline imagery; results pinned to needs_review with `crm_soft_gate_applied`. Centre-crop (1280→640) + DSM elevation threading from CRM lidar.points into ML SceneInput. LiDAR-optional: warn-and-continue instead of hard block. Default ML_ENGINE_URL for zero-config local dev. |
+| 2026-04-16 | 18-property broad validation pass. Transport, alignment, target-building isolation, and preview load verified end-to-end with real Google Static Maps + Google Solar DSM. |
+
+---
+
+## Key files reference
+
+### CRM repo (`project Interrupt/`)
+
+| File | Key areas |
+|---|---|
+| `server.js` (~25.3k lines) | `/design` template (L5500-17600): `mlAutoBuild` L16225, `mlAutoBuildContinue` L16256, `_mlBanner` L16210, `finalizeRoofFace` L14154 (ML branch), `rebuildRoofFace` L14243 (ML branch), `serializeRoofFaces` L10419 (source persistence), `loadDesign` L9169 (ML rehydrate), `captureRoofSnapshot` L14513 (sourceTag), `restoreRoofSnapshot` L14556 (ML rehydrate), shared-edge helpers L11277-11316, single-slope helpers L11519-11610. Server routes: `/api/ml/auto-build` L24630, ML defaults L24627. |
+| `SETUP.md` | General CRM setup (Node, npm, .env, login accounts). |
+| `.env` | `GOOGLE_API_KEY`, `PORT`, optionally `ML_ENGINE_URL`, `ML_AUTO_BUILD_PATH`. |
+| `.gitignore` | Excludes `data/sessions.json`, `data/users.json`, `data/projects.json`, `data/uploads/`, `data/organization.json`, `data/ml-drafts.json`, `.claude/`. |
+| `data/ml-drafts.json` | Append-only audit log of every ML Auto Build call. Not tracked in git. |
+
+### ML repo (`ML/`)
+
+| File | What it does |
+|---|---|
+| `ml_ui_server.py` (~1.9k lines) | Flask on 5001. `/api/crm/auto-build`: image fetch, centre-crop L240, DSM build L283, `usable_gate_min=0.20` L499, geometry cleanup L683, target isolation (0.3m L892, subcluster 0.15m L1048), coordinate shift, frame_debug. |
+| `ml_engine/core/pipeline.py` | `run_pipeline` + `PipelineRunner.run` accept `usable_gate_min` (default 0.5). |
+| `ml_engine/api/crm_auto_build.py` | Soft-gate override post-`apply_review_policy`. `raw_usable_score`, `effective_usable_gate_min`, `soft_gate_applied` on envelope. |
+| `ml_engine/core/review_policy.py` | Decision table: `USABLE_GATE_REJECT=0.40`, `USABLE_GATE_REVIEW=0.65`, etc. Unchanged. |
+| `ml_engine/adapters/crm.py` | MLRoofResult → CRM-safe `crm_faces`. Drops below `min_plane_confidence=0.40`. |
+| `ml_engine/core/scene.py` | `SceneInput` + `ElevationSource` shape (2D float32 numpy, north-up). |
+
+### Debug fields (in every ML response at `crm_result.metadata.frame_debug`)
+
+- `crop_debug` — source/target px, whether crop fired.
+- `dsm_debug` — built, shape, finite samples.
+- `soft_gate_debug` — raw_usable_score, effective_min, applied.
+- `target_selection` — group count, selected size, tolerance, subcluster refinement info.
+- `geometry_cleanup` — input/output counts, dropped duplicates/tiny/slivers.
