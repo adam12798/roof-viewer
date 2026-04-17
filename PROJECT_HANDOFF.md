@@ -2,8 +2,9 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-17
+**Last updated:** 2026-04-17 (late — triage pass interim close-out)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
+**Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (interim, 16 of 30 rows locked)
 
 ---
 
@@ -214,11 +215,16 @@ python3 ml_ui_server.py
 
 ## I. Next priorities (in order)
 
-1. **Broader real-property validation (≥50 properties).** Current dataset is 18. Wider coverage would surface edge cases in the usable gate, target isolation, and geometry cleanup. Build a structured validation log.
-2. **Vertex snapping across adjacent ML faces.** Currently the biggest visual quality issue after single-slope rendering. Adjacent rectangles have 10-30 cm corner mismatches. Snapping shared-edge endpoints to a common point would make seams cleaner. Moderate risk — must not break manual editing.
-3. **Investigate extreme ML pitch values.** Back Bay and Somerville return 65-77° pitches that produce unrealistic slope heights. Likely a model/classification issue on facades vs roofs. May need upstream investigation in the ML training data or a CRM-side pitch-clamp guardrail.
-4. **Surface ml-drafts.json as a debug-only page.** Read-only list at `/ml-drafts` scoped by projectId. Zero product impact; useful for diagnosing which properties soft-gated, rejected, or had missing DSM.
-5. **Decide on legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
+**Reordered 2026-04-17 based on interim 16-row triage sample** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Provisional — confirm with remaining 14 rows before committing engineering effort.
+
+1. **Finish the 30-property triage pass.** 16 of 30 rows locked. Remaining 14 should over-sample under-represented categories (multiface, urban attached, detached garage) to give `gap_overlap` and `wrong_target` a fair chance to surface. Do NOT start engineering off the interim sample alone.
+2. **Investigate extreme ML pitch values / plane quality on successful builds.** Interim leading hypothesis: `wrong_pitch` is dominant among successful builds (6 of 10 non-reject locked rows). Promoted from #3 based on triage evidence. Likely upstream ML orientation/plane-fit issue; may need CRM-side pitch-clamp guardrail as an interim mitigation. Confirm with full 30-row sample before implementing.
+3. **Vertex snapping across adjacent ML faces.** `gap_overlap` is 0 in the locked 16-row sample so far, so this track is demoted pending the remaining 14 rows. Was #2; re-promote if multiface/rowhouse rows change the distribution.
+4. **Revisit usable-gate floor (0.20) only after 30 rows.** Current locked sample shows `reject_correct` : `reject_too_strict` = 4 : 2. Not enough signal yet. 52 New Spaulding (usable ≈ 0.154) is the canonical `reject_too_strict` reference.
+5. **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
+
+**Done since last handoff:**
+- ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). No UI yet; browser-readable JSON is sufficient for triage.
 
 **Do NOT touch right now (unless new evidence surfaces):**
 - Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
@@ -231,6 +237,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-17 (late) | Interim triage pass closed out at 16 of 30 rows. Distribution (provisional): `wrong_pitch` 6, `reject_correct` 4, `ugly_but_correct_building` 3, `reject_too_strict` 2, `clean` 1; `wrong_target` / `gap_overlap` / `wrong_azimuth` / `investigate` all 0. Leading hypothesis for next engineering work is upstream ML pitch / plane quality on successful builds. Full status in `ML_AUTO_BUILD_TRIAGE_STATUS.md`, including unresolved 94 C St ↔ 52 New Spaulding mismatch and a Salem-row transcription artifact. Shipped read-only triage API (`GET /api/ml-drafts`, `GET /api/ml-drafts/:id`). |
 | 2026-04-17 | Fixed design-page boot crash (stray `}` in `.catch` block killed client JS parse). Added `_mlBanner` severity helper with 4 explicit levels (neutral/warning/error/success) so banner states never leak across transitions. Fixed undo/redo dropping ML sourceTag — `captureRoofSnapshot` now includes it; `restoreRoofSnapshot` rehydrates ML faces. |
 | 2026-04-16 | ML single-slope rendering: ML faces render as tilted quads instead of standalone hip roofs. Shared-edge suppression: midpoint-in-polygon classifier marks internal edges; walls suppressed, edge lines muted grey, labels skipped. Save/reload rehydrate: `source:'ml'` persisted in `serializeRoofFaces`; `loadDesign` re-tags and recomputes on load. |
 | 2026-04-16 | Target-isolation refinements: primary tolerance tightened 0.5→0.3m (fixes Cambridge garage); subcluster pass at 0.15m (fixes Somerville attached-neighbour bleed). Geometry cleanup: duplicate faces (IoU ≥ 0.15 + tight orientation) dropped post-isolation. |
