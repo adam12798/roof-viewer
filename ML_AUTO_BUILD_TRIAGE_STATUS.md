@@ -339,6 +339,39 @@ The fix belongs in `ml_engine/core/stages/orientation.py` because:
 3. A wrapper-level tilt cap would be a hack that doesn't fix the root cause
 4. The engine's own quality metrics already contain all the information needed for the fix
 
+### 8.7 Implementation (2026-04-18)
+
+**File changed:** `ml_engine/core/stages/orientation.py`
+
+**What was added:**
+- Constant `REFIT_INLIER_THRESHOLD = 0.60` (line ~96)
+- Two-pass inlier refit block in `_fit_plane()` (lines ~427-438):
+  - After first-pass lstsq + residual computation
+  - If `inlier_ratio < 0.60` AND `inlier_count >= 12`: extract inlier-only samples, refit lstsq, use refined tilt/azimuth
+  - Otherwise: no change to existing behavior
+
+**Diagnostics added to `orientation_diagnostics`:**
+- `refit_fired` (bool) — whether the second pass ran
+- `first_pass_tilt_deg` (float) — tilt from the contaminated first pass
+- `inlier_count` (int) — number of samples within ±15cm of first-pass plane
+
+**Synthetic validation:**
+- 75 roof pixels (20° true tilt, σ=0.04m noise) + 25 wall-slope pixels (~50° gradient, σ=0.15m)
+- First pass: 29.5° (+9.5° bias), RMSE 1.03m, inlier_ratio 0.13
+- Second pass: 20.5° (+0.5° bias), RMSE 0.04m, inlier_ratio 0.70
+- Tilt correction: −9.0° (bias reduced from +9.5° to +0.5°)
+
+**Batch harness (stored data):**
+- Output identical: 192→106 (45% dropped), clean 18, wrong_pitch 60, ugly 28
+- Expected: the refit changes upstream inference, not stored draft tilt values
+- Stored drafts were generated with the old single-pass orientation; the refit will affect new ML runs
+
+**What needs live validation:**
+- Re-run ML inference on wrong_pitch reference properties (20 Meadow, 225 Gibson, Lawrence, 254 Foster, etc.)
+- Compare per-face tilt distributions before vs after
+- Confirm clean properties remain stable (726 School, 15 Buckman, 1 Wiley, 15 Veteran)
+- Expected: 40–55° surviving faces should shift to 25–38° range
+
 ### 8.6 Alternatives considered
 
 | Alternative | Pros | Cons | Verdict |
