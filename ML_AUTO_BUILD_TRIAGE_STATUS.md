@@ -414,11 +414,41 @@ The fix belongs in `ml_engine/core/stages/orientation.py` because:
 - Combines well with existing cleanup rules (faces pushed below thresholds get dropped)
 - Safe: only fires on already-flagged poor-quality fits
 
-**Future tuning opportunities (not urgent):**
-1. Tighter inlier threshold (±10cm instead of ±15cm) to exclude mildly contaminated edge points
-2. Polygon erosion before DSM sampling (reduce contamination at source)
-3. Iterative refit (third pass) — unlikely to help much given the inlier-set contamination issue
-4. Weighted lstsq (downweight edge-proximate samples)
+**Future tuning opportunities:**
+1. ~~Tighter inlier threshold (±10cm).~~ **Tested and rejected** — see §8.9.
+2. **Polygon erosion before DSM sampling** (reduce contamination at source). **Recommended next step** — see §8.9 rationale.
+3. Iterative refit (third pass) — unlikely to help; inlier-set bias is the bottleneck, not iteration count.
+4. Edge-weighted lstsq — similar mechanism to threshold tightening; likely same failure mode.
+
+### 8.9 Inlier threshold ±10cm experiment (2026-04-18)
+
+**Hypothesis:** The ±15cm inlier threshold includes mildly contaminated near-edge points that bias the refit subset, limiting corrections to 1–4°. Tightening to ±10cm should exclude these and produce larger corrections.
+
+**Method:** Introduced `REFIT_RESIDUAL_M = 0.10` for the second-pass point selection only. First-pass quality metrics (inlier_ratio, confidence, needs_review) stayed at ±15cm. Fallback to ±15cm if ±10cm gave < 12 points (never triggered — all faces had sufficient ±10cm inliers).
+
+**Results — ±10cm is WORSE:**
+
+| Property | Plane | First pass | ±15cm | ±10cm | ±15cm better by |
+|---|---|---:|---:|---:|---:|
+| 20 Meadow | plane_06 | 39.1° | 35.4° | 37.3° | 1.9° |
+| 225 Gibson | plane_00 | 66.4° | 50.5° | 57.7° | 7.2° |
+| Lawrence | plane_11 | 43.8° | 40.1° | 41.4° | 1.3° |
+| 175 Warwick | plane_04 | 53.4° | 50.5° | 51.7° | 1.2° |
+| 15 Veteran | plane_02 | 32.2° | 28.7° | 30.2° | 1.5° |
+
+No property improved. The >40° face count was identical on all 6 properties. On 20 Meadow, ±10cm produced a +1.9° regression (35.4° → 37.3°) on the key steep face.
+
+**Root cause (revised understanding):** The ±15cm inlier window captures genuine roof points that sit slightly below the steep-biased first-pass plane. These "counter-bias" points are helpful — they pull the refit toward the true (less steep) tilt. Tightening to ±10cm EXCLUDES these counter-bias points, reducing corrections by 30–50%. The original diagnosis ("±15cm includes contaminated edge points") was wrong; the useful signal is in the ±10–15cm band, not contamination.
+
+**Verdict:** Keep `INLIER_RESIDUAL_M = 0.15`. Do not tighten.
+
+**Revised next step: polygon erosion.** Since threshold tuning attacks the wrong mechanism, the next approach should reduce contamination at the source. Eroding the plane polygon by 0.5–1m before DSM sampling would:
+- Remove the edge/wall pixels entirely (they're at the polygon boundary)
+- Produce a cleaner first-pass fit with higher inlier ratio
+- Reduce or eliminate the need for the two-pass refit on mildly contaminated faces
+- Leave the refit as a safety net for remaining severe cases
+
+This is a fundamentally different lever: it changes WHICH points are sampled, not HOW they're filtered post-sampling. Edge-weighted lstsq would not help for the same reason threshold tightening didn't — it's filtering the same contaminated point cloud differently, when the real fix is to not sample the contaminated points at all.
 
 ### 8.6 Alternatives considered
 
