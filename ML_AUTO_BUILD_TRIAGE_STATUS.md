@@ -168,9 +168,35 @@ The 1 clean catch is 15 Veteran Road face 3: 1.27m × 4.88m, tilt=9.7°, conf=0.
 | 15 Veteran Road | clean | 4 | — | 0 | 1 | 0 | 3 |
 | 15 Buckman | clean | 2 | — | 0 | 0 | 0 | 2 |
 
+### 6c. Rule F — small-relative-to-building filter
+
+**Failure mechanism:** After Rules B–E remove the worst artifacts, some faces remain that are plausible in isolation (area > 1.5m², short side > 2.0m, tilt < 60°) but are tiny relative to the building they belong to. These are chimney caps, dormer walls, fascia returns, or segmentation noise from the ML plane stage. They clutter the 3D scene and confuse panel placement.
+
+**Rule:** Drop faces where `area < SMALL_REL_THRESHOLD * max_surviving_area` (10%). Runs after Rules B–E so `max_surviving_area` reflects only already-cleaned faces. The threshold was calibrated against the 4 clean reference properties — the smallest surviving face-to-max ratio in the clean set is 15% (15 Veteran Road: 20.5m² / 136.4m²), giving 5 pp of safety margin.
+
+**Batch impact (19 reference properties, before → after Rule F):**
+
+| Metric | Before (D+E) | After (D+E+F) | Delta |
+|---|---:|---:|---:|
+| Total output faces | 127 | 119 | −8 |
+| wrong_pitch output | 75 | 69 | −6 |
+| ugly output | 34 | 32 | −2 |
+| clean output | 18 | 18 | 0 |
+| % dropped overall | 34% | 38% | +4pp |
+
+Properties affected: 20 Meadow Dr (−1), 583 Westford St (−1), Lawrence (−2), 43 Bellevue (−1), 175 Warwick (−1), 13 Richardson St (−2). Zero clean regressions.
+
 ### Files changed
 
-`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` only. Rules D and E together are ~40 lines. No CRM changes. No ML engine core changes.
+`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` only. Rules D, E, and F together are ~70 lines. No CRM changes. No ML engine core changes.
+
+### 6d. Batch validation harness
+
+`/Volumes/Extreme_Pro/ML/batch_validate.py` — offline harness that re-runs `_geometry_cleanup` on stored `ml-drafts.json` data. No network calls, no ML inference. Outputs JSON (per-face diagnostics) + markdown summary. 19 reference properties from the labeled triage set.
+
+### 6e. Per-face diagnostics
+
+Added `face_diagnostics` array to `_geometry_cleanup` debug output. Each entry: `{idx, tilt, area, short, long, aspect, conf, survived, dropped_by}`. Machine-readable, enables batch analysis without screenshots.
 
 ---
 
