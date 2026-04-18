@@ -133,30 +133,44 @@ Rows 9 & 17 share draft ID `mld_mo39na4r9jej` — see §4.2. 7 additional rows (
 
 ---
 
-## 6. Steep-face filter — IMPLEMENTED
+## 6. Geometry cleanup rules — IMPLEMENTED
 
-### What changed
+### 6a. Rule D — steep-face filter
 
-Added Rule D to `_geometry_cleanup()` in `ml_ui_server.py` (~L769): drop any face with `pitch > 60°` (constant `STEEP_TILT_CEILING_DEG = 60.0`). Runs after tiny/sliver guards, before the expensive IoU duplicate pass. Debug output includes `dropped_steep` array (idx, pitch, area per face) and a one-line log when faces are dropped.
+Drop faces with `pitch > 60°` (`STEEP_TILT_CEILING_DEG = 60.0`). Walls misclassified as roof planes.
 
-### Threshold
+### 6b. Rule E — narrow-face filter (plane dimension sanity)
 
-`STEEP_TILT_CEILING_DEG = 60.0` — no residential roof has pitch above ~55° (≈ 18/12 slope). 60° gives a small margin. Easy to tune.
+**Failure mechanism:** Faces with short side < 2.0m are eave overhangs, fascia strips, wall edges, or segmentation artifacts. They survive the existing tiny/sliver/steep rules because:
+- The sliver rule requires BOTH aspect < 0.15 AND area < 3.0m² — a 1.5m × 4m strip (asp=0.375, area=6m²) passes both gates
+- The steep filter only catches tilt > 60° — but many narrow faces are at 10–50° tilt
+- The tiny filter only catches area < 1.5m² — but these faces are 2–6m²
 
-### Validation (synthetic faces using triage tilt data)
+**Rule:** Drop faces where `short_side < MIN_SHORT_SIDE_M` (2.0m). Clean cases have minimum short side 2.20m, giving 0.20m of safety margin.
 
-| Case | Bucket | Before | After | Steep dropped | Max surviving tilt |
-|---|---|---|---|---|---|
-| 225 Gibson St | wrong_pitch | 15 | 9 | 6 (66–76°) | 56.7° |
-| 726 School St | clean | 12 | 7 | 5 (62–74°) | 50.4° |
-| 583 Westford St | ugly_but_correct | 15 | 12 | 3 (65–68°) | 59.9° |
-| 175 Warwick | wrong_pitch | 11 | 9 | 2 (68°, 84°) | 59.9° |
+**Impact across all 25 labeled triage rows (faces with short side < 2.0m):**
 
-No face below 60° was touched in any case. The clean case (726 School) also benefits — its 5 wall-like faces were noise surviving from the ML engine.
+| Bucket | Total faces | < 2.0m | New catches (not steep) | % of faces |
+|---|---:|---:|---:|---:|
+| wrong_pitch | 110 | 15 | 9 | 8% |
+| ugly | 59 | 16 | 12 | 20% |
+| clean | 23 | 1 | 1 | 4% |
 
-### File changed
+The 1 clean catch is 15 Veteran Road face 3: 1.27m × 4.88m, tilt=9.7°, conf=0.587 — the lowest-confidence face on a 4-face property, clearly an edge artifact.
 
-`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` function only. ~20 lines added. No CRM changes. No ML engine core changes.
+### Validation (synthetic faces, exact triage dimensions)
+
+| Case | Bucket | Input | After D+E | Steep | Narrow | Dup | Output |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 225 Gibson St | wrong_pitch | 15 | — | 6 | 3 | 1 | 5 |
+| 175 Warwick | wrong_pitch | 11 | — | 2 | 1 | 3 | 5 |
+| 583 Westford St | ugly | 15 | — | 3 | 1 | 5 | 6 |
+| 15 Veteran Road | clean | 4 | — | 0 | 1 | 0 | 3 |
+| 15 Buckman | clean | 2 | — | 0 | 0 | 0 | 2 |
+
+### Files changed
+
+`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` only. Rules D and E together are ~40 lines. No CRM changes. No ML engine core changes.
 
 ---
 

@@ -85,7 +85,8 @@ ML Auto Build button
 | CRM soft usable gate (floor 0.20) | Working | `ml_ui_server.py:499`, `crm_auto_build.py:301` |
 | Target-building isolation | Working; primary 0.3m + subcluster 0.15m | `ml_ui_server.py:843, 1048` |
 | Geometry cleanup (duplicate faces) | Working; IoU ≥ 0.15, Δpitch ≤ 5°, Δaz ≤ 10° | `ml_ui_server.py:683` |
-| Geometry cleanup (steep-face filter) | Working; drop pitch > 60° | `ml_ui_server.py:769` |
+| Geometry cleanup (steep-face filter) | Working; drop pitch > 60° | `ml_ui_server.py:782` |
+| Geometry cleanup (narrow-face filter) | Working; drop short side < 2.0m | `ml_ui_server.py:802` |
 | ML-only shared-edge suppression | Working; midpoint-in-polygon classifier | `server.js:11277-11316` |
 | ML-only single-slope rendering | Working; no per-face hip decomposition | `server.js:11519-11610` |
 | Shared-edge muted grey lines | Working | `server.js:11578` |
@@ -225,7 +226,8 @@ python3 ml_ui_server.py
 6. **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
 
 **Done since last handoff:**
-- ~~Steep-face filter.~~ Rule D added to `_geometry_cleanup()` in `ml_ui_server.py`: drop faces with pitch > 60° (`STEEP_TILT_CEILING_DEG = 60.0`). Validated on 4 triage reference cases. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6.
+- ~~Steep-face filter.~~ Rule D: drop pitch > 60°.
+- ~~Narrow-face filter (plane dimension sanity).~~ Rule E: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts that escape the sliver, steep, and tiny rules. Validated: removes 8% of wrong_pitch faces, 20% of ugly faces, 1 low-conf artifact from clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6b.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
 
@@ -240,6 +242,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-18 | Narrow-face filter (Rule E) in `_geometry_cleanup()`: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts surviving steep+sliver+tiny rules. Validated on 5 triage cases: 225 Gibson 15→5, 175 Warwick 11→5, 583 Westford 15→6, 15 Veteran 4→3, 15 Buckman 2→2. Impact: 8% of wrong_pitch faces, 20% of ugly faces, 1 artifact from clean. |
 | 2026-04-18 | Steep-face filter shipped in `ml_ui_server.py` `_geometry_cleanup()`. Rule D: drop faces with pitch > 60° (constant `STEEP_TILT_CEILING_DEG = 60.0`). Validated on 225 Gibson (15→9), 726 School (12→7), 583 Westford (15→12), 175 Warwick (11→9). Debug output: `dropped_steep` array in `frame_debug.geometry_cleanup`. No CRM changes. |
 | 2026-04-18 | Triage pass complete: 32 rows bucketed. Final distribution: `wrong_pitch` 14, `ugly_but_correct_building` 6, `reject_correct` 5, `clean` 4, `reject_too_strict` 3; `wrong_target` / `gap_overlap` / `wrong_azimuth` all 0. Pitch analysis: 24% of wrong_pitch faces are >55° (walls), 29% are 40-55° (too steep). All from DSM-based orientation, not default-pitch fallback. Next engineering task: steep-face filter (tilt >60°) in ml_ui_server.py cleanup. 7 labeled rows lost to paste truncation; recovery needed. |
 | 2026-04-17 (late) | Interim triage pass closed out at 16 of 30 rows. Distribution (provisional): `wrong_pitch` 6, `reject_correct` 4, `ugly_but_correct_building` 3, `reject_too_strict` 2, `clean` 1; `wrong_target` / `gap_overlap` / `wrong_azimuth` / `investigate` all 0. Leading hypothesis for next engineering work is upstream ML pitch / plane quality on successful builds. Full status in `ML_AUTO_BUILD_TRIAGE_STATUS.md`, including unresolved 94 C St ↔ 52 New Spaulding mismatch and a Salem-row transcription artifact. Shipped read-only triage API (`GET /api/ml-drafts`, `GET /api/ml-drafts/:id`). |
