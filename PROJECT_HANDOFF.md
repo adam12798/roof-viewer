@@ -88,8 +88,9 @@ ML Auto Build button
 | Geometry cleanup (steep-face filter) | Working; drop pitch > 60° | `ml_ui_server.py:782` |
 | Geometry cleanup (narrow-face filter) | Working; drop short side < 2.0m | `ml_ui_server.py:802` |
 | Geometry cleanup (small-relative filter) | Working; drop area < 10% of max surviving | `ml_ui_server.py:822` |
+| Geometry cleanup (bad-fit steep filter) | Working; RFE>0.30 + tilt>40° + ratio<0.50 | `ml_ui_server.py:859` |
 | Batch validation harness | Working; 19 ref props, offline re-run | `/ML/batch_validate.py` |
-| Per-face diagnostics | Working; face_diagnostics in cleanup debug | `ml_ui_server.py:916` |
+| Per-face diagnostics | Working; face_diagnostics in cleanup debug | `ml_ui_server.py:949` |
 | ML-only shared-edge suppression | Working; midpoint-in-polygon classifier | `server.js:11277-11316` |
 | ML-only single-slope rendering | Working; no per-face hip decomposition | `server.js:11519-11610` |
 | Shared-edge muted grey lines | Working | `server.js:11578` |
@@ -232,6 +233,7 @@ python3 ml_ui_server.py
 - ~~Steep-face filter.~~ Rule D: drop pitch > 60°.
 - ~~Narrow-face filter (plane dimension sanity).~~ Rule E: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts that escape the sliver, steep, and tiny rules. Validated: removes 8% of wrong_pitch faces, 20% of ugly faces, 1 low-conf artifact from clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6b.
 - ~~Small-relative filter.~~ Rule F: drop faces with area < 10% of max surviving face. Topology-aware (relative, not absolute). Batch validated on 19 reference properties: −6 wrong_pitch, −2 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c.
+- ~~Bad-fit steep filter (RFE-based).~~ Rule G: drop faces where RFE > 0.30 AND tilt > 40° AND area < 50% of max surviving. Three-way gate ensures no primary faces dropped. Batch: −9 wrong_pitch, −4 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c2.
 - ~~Batch validation harness + per-face diagnostics.~~ `batch_validate.py` re-runs cleanup offline on stored drafts. `face_diagnostics` array in debug output for machine-readable per-face analysis.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
@@ -247,6 +249,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-18 | Rule G (bad-fit steep filter) in `_geometry_cleanup()`: RFE>0.30 AND tilt>40° AND area<50% of max surviving. First RFE-based rule — threads `_rfe` from CRM adapter through internal faces. Three-way gate catches poorly-fit, steep, secondary faces with 0 clean false positives. Batch: 192→106 (was 192→119 before Rule G). Catches 9 wrong_pitch + 4 ugly + 0 clean. Cumulative cleanup: 192→106 (45% dropped). |
 | 2026-04-18 | Batch debug phase: (1) Per-face diagnostics in `_geometry_cleanup()` debug output — `face_diagnostics` array with idx/tilt/area/short/long/aspect/conf/survived/dropped_by. (2) Batch validation harness `batch_validate.py` — offline re-run on 19 reference properties from stored ml-drafts.json, JSON+markdown output. (3) Rule F (small-relative filter): drop faces with area < 10% of max surviving face. Topology-aware, relative threshold. Batch result: 192→119 (was 192→127). Catches 6 wrong_pitch + 2 ugly + 0 clean additional faces. |
 | 2026-04-18 | Narrow-face filter (Rule E) in `_geometry_cleanup()`: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts surviving steep+sliver+tiny rules. Validated on 5 triage cases: 225 Gibson 15→5, 175 Warwick 11→5, 583 Westford 15→6, 15 Veteran 4→3, 15 Buckman 2→2. Impact: 8% of wrong_pitch faces, 20% of ugly faces, 1 artifact from clean. |
 | 2026-04-18 | Steep-face filter shipped in `ml_ui_server.py` `_geometry_cleanup()`. Rule D: drop faces with pitch > 60° (constant `STEEP_TILT_CEILING_DEG = 60.0`). Validated on 225 Gibson (15→9), 726 School (12→7), 583 Westford (15→12), 175 Warwick (11→9). Debug output: `dropped_steep` array in `frame_debug.geometry_cleanup`. No CRM changes. |

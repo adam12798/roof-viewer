@@ -186,9 +186,34 @@ The 1 clean catch is 15 Veteran Road face 3: 1.27m × 4.88m, tilt=9.7°, conf=0.
 
 Properties affected: 20 Meadow Dr (−1), 583 Westford St (−1), Lawrence (−2), 43 Bellevue (−1), 175 Warwick (−1), 13 Richardson St (−2). Zero clean regressions.
 
+### 6c2. Rule G — bad-fit steep minor faces (RFE-based)
+
+**Signal:** Rectangle fit error (RFE) = `1 - poly_area / rect_area`. Measures how poorly the ML polygon fits the 4-vertex rotated rectangle the CRM adapter produces. Clean surviving faces: median RFE = 0.117, max = 0.399. Wrong_pitch surviving: median = 0.282.
+
+**Why RFE alone fails:** The distributions overlap — clean max (0.399) exceeds wrong_pitch median (0.282). A blunt RFE cutoff at any threshold either catches clean faces or has negligible yield.
+
+**Why the three-way gate works:** Clean faces with high RFE always have low tilt (2.6° and 6.6° — near-flat panels with complex L-shapes). Bad faces with high RFE tend to be steep AND small. The combination "poor fit + steep + minor" isolates artifacts with zero clean false positives.
+
+**Rule:** Drop faces where ALL three conditions hold:
+1. `_rfe > 0.30` (rectangle fit error above 30%)
+2. `pitch > 40°` (moderately steep)
+3. `area / max_surviving_area < 0.50` (secondary face, not the primary roof plane)
+
+**Batch impact (19 reference properties, D+E+F → D+E+F+G):**
+
+| Metric | Before (D+E+F) | After (D+E+F+G) | Delta |
+|---|---:|---:|---:|
+| Total output faces | 119 | 106 | −13 |
+| wrong_pitch output | 69 | 60 | −9 |
+| ugly output | 32 | 28 | −4 |
+| clean output | 18 | 18 | 0 |
+| % dropped overall | 38% | 45% | +7pp |
+
+Properties affected: 225 Gibson St (−2), 583 Westford St (−1), Lawrence (−1), 254 Foster St (−3), 74 Gates (−2), 43 Bellevue (−1), 22 New Spaulding (−2), 21 Stoddard (−2). Zero clean regressions.
+
 ### Files changed
 
-`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` only. Rules D, E, and F together are ~70 lines. No CRM changes. No ML engine core changes.
+`/Volumes/Extreme_Pro/ML/ml_ui_server.py` — `_geometry_cleanup()` + `_rfe` field threading. Rules D–G together are ~100 lines. No CRM changes. No ML engine core changes.
 
 ### 6d. Batch validation harness
 
