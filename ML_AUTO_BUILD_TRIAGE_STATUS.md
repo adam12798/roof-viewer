@@ -514,6 +514,58 @@ Key face-level shifts (20 Meadow, deterministic):
 
 **Erosion tuning is complete.** 0.5m is the winner. Further orientation improvement would require a fundamentally different approach (e.g., RANSAC, weighted lstsq, or DSM resolution upgrade).
 
+### 8.12 Broad validation of current best baseline (2026-04-18)
+
+**Baseline:** Rules D/E/F/G + two-pass inlier refit (cd24daf) + 0.5m polygon erosion (28538c1).
+
+**Method:** Live inference on 18 properties (10 wrong_pitch, 4 ugly, 4 clean) from the labeled triage set (§5). Each property: fresh Google satellite image + Google Solar DSM from CRM. Response includes both `crm_faces` (raw, pre-cleanup) and `roof_faces` (post target-selection + Rules D/E/F/G).
+
+**User-facing results (post-cleanup):**
+
+| Property | Bucket | Raw | Cleaned | >40° | >55° | Max tilt | Status |
+|---|---|---:|---:|---:|---:|---:|---|
+| 20 Meadow Dr | wrong_pitch | 7 | 4 | 0 | 0 | 28.2° | RESOLVED |
+| 225 Gibson St | wrong_pitch | 15 | 5 | 1 | 0 | 46.9° | Improved |
+| Lawrence | wrong_pitch | 15 | 6 | 0 | 0 | 35.7° | RESOLVED |
+| 21 Stoddard | wrong_pitch | 15 | 8 | 0 | 0 | 35.5° | RESOLVED |
+| 254 Foster St | wrong_pitch | 15 | 2 | 1 | 0 | 45.1° | Improved |
+| 22 New Spaulding | wrong_pitch | 6 | 3 | 1 | 0 | 49.9° | Improved |
+| 175 Warwick | wrong_pitch | 11 | 3 | 2 | 0 | 51.7° | Improved |
+| 11 Ash Road | wrong_pitch | 8 | 4 | 3 | 0 | 44.6° | Still failing |
+| 29 Porter St | wrong_pitch | 6 | 5 | 2 | 0 | 48.0° | Still failing |
+| 13 Richardson St | wrong_pitch | 12 | 5 | 2 | 0 | 42.0° | Still failing |
+| 583 Westford St | ugly | 15 | 5 | 0 | 0 | 27.9° | RESOLVED |
+| 74 Gates | ugly | 15 | 4 | 2 | 0 | 54.7° | Improved |
+| 43 Bellevue | ugly | 15 | 3 | 1 | 0 | 49.6° | Improved |
+| 6 Court St | ugly | 7 | 1 | 0 | 0 | 14.0° | RESOLVED |
+| 726 School St | clean | 12 | 2 | 0 | 0 | 37.5° | Stable |
+| 15 Buckman | clean | 2 | 1 | 0 | 0 | 4.0° | Stable |
+| 1 Wiley St | clean | 5 | 4 | 0 | 0 | 24.7° | Stable |
+| 15 Veteran Rd | clean | 4 | 3 | 0 | 0 | 19.3° | Stable |
+
+**Totals:** 185 raw → 68 user-facing faces. **>40°: 15 (22%). >55°: 0 (0%).**
+
+**Before/after vs stored-draft batch baseline:** >40° faces 28 → 15 (−46%). >55° faces 5 → 0 (−100%).
+
+**Per-bucket:**
+- **wrong_pitch (10 props, 45 faces):** 3 fully resolved (20 Meadow, Lawrence, 21 Stoddard). 4 improved (fewer >40° faces). 3 still failing (11 Ash Road, 29 Porter, 13 Richardson).
+- **ugly (4 props, 13 faces):** 2 fully resolved (583 Westford, 6 Court). 2 improved (74 Gates, 43 Bellevue).
+- **clean (4 props, 10 faces):** All 4 stable. 0 false positives. 0 faces >40°.
+
+**Remaining dominant failure: the 40–55° tilt band.** 15 faces across 9 properties, all in 40–55°. These are legitimate roof planes where residual edge contamination inflates tilt by ~10–20° but not enough to trigger Rule D (>60°) or Rule G (needs RFE > 0.30). The orientation tuning track (refit + erosion) has been pushed to its practical limit — further threshold/erosion adjustments tested and rejected (§8.9, §8.11). Addressing these residual faces requires either RANSAC fitting, higher-resolution DSM, or a build-level quality gate.
+
+**Tilt distribution of user-facing faces:**
+
+| Band | Count | % |
+|---|---:|---:|
+| < 20° | 23 | 34% |
+| 20–30° | 14 | 21% |
+| 30–40° | 16 | 24% |
+| 40–55° | 15 | 22% |
+| > 55° | 0 | 0% |
+
+**Recommended next phase:** The orientation tuning track is closed. The highest-ROI next step is a **build-level quality gate** — flag or reject entire builds where the surviving face tilt profile indicates an unreliable result (e.g., median surviving tilt > 40° or >50% of faces above 40°). This would catch cases like 11 Ash Road (4 faces, all 38–44.6°) where the whole roof is misrepresented. ~20 lines in the wrapper, no ML model changes.
+
 ### 8.6 Alternatives considered
 
 | Alternative | Pros | Cons | Verdict |
