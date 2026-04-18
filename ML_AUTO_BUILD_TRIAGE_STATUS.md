@@ -576,6 +576,45 @@ Key face-level shifts (20 Meadow, deterministic):
 | Wrapper tilt cap (cap to 35° when flagged) | No engine change needed | Hack, loses real tilt information, doesn't fix azimuth | Not recommended |
 | Tilt correction factor (multiply by 0.7) | Simple | No theoretical basis, varies by property | Not recommended |
 
+### 8.13 Build-level quality gate (2026-04-18)
+
+**Goal:** Flag entire builds where residual 40–55° faces dominate, indicating systematic orientation contamination the per-face rules (D-G) cannot catch.
+
+**Rule implemented:** `n_cleaned >= 2 AND (faces > 40°) / n_cleaned >= 0.40`
+
+- Inserted in `ml_ui_server.py` after `_geometry_cleanup()` produces `cleaned_roof_faces`
+- Downgrades `auto_build_status` from `auto_accept` → `needs_review`
+- Appends `"build_tilt_quality_low"` to `review_policy_reasons`
+- Debug telemetry exposed via `frame_debug.build_quality`
+- Frontend `REASON_LABELS` updated with human-readable label
+
+**18-property live validation results:**
+
+| Property | Bucket | Cleaned | >40° | Fraction | Flagged |
+|---|---|---:|---:|---:|---|
+| 11 Ash Road | wrong_pitch | 4 | 3 | 75% | **YES** |
+| 175 Warwick | wrong_pitch | 3 | 2 | 67% | **YES** |
+| 254 Foster St | wrong_pitch | 2 | 1 | 50% | **YES** |
+| 74 Gates | ugly | 4 | 2 | 50% | **YES** |
+| 29 Porter St | wrong_pitch | 5 | 2 | 40% | **YES** |
+| 13 Richardson St | wrong_pitch | 5 | 2 | 40% | **YES** |
+| 43 Bellevue | ugly | 3 | 1 | 33% | no |
+| 22 New Spaulding | wrong_pitch | 3 | 1 | 33% | no |
+| 225 Gibson St | wrong_pitch | 5 | 1 | 20% | no |
+| 20 Meadow Dr | wrong_pitch | 4 | 0 | 0% | no |
+| Lawrence | wrong_pitch | 6 | 0 | 0% | no |
+| 21 Stoddard | wrong_pitch | 8 | 0 | 0% | no |
+| 583 Westford St | ugly | 5 | 0 | 0% | no |
+| 6 Court St | ugly | 1 | 0 | 0% | no |
+| 726 School St | clean | 2 | 0 | 0% | no |
+| 15 Buckman | clean | 1 | 0 | 0% | no |
+| 1 Wiley St | clean | 4 | 0 | 0% | no |
+| 15 Veteran Rd | clean | 3 | 0 | 0% | no |
+
+**Summary:** 6 flagged (5 wrong_pitch, 1 ugly). 0 clean false positives. All 3 primary targets (11 Ash Road, 29 Porter, 13 Richardson) caught. 3 additional genuinely problematic properties also flagged (175 Warwick, 254 Foster, 74 Gates).
+
+**Baseline unchanged:** Rules D-G, two-pass refit, 0.5m erosion all locked. The gate is additive — it reads the post-cleanup face list and modifies only the envelope status/reasons.
+
 ---
 
 ## 9. Related resources
