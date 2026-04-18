@@ -267,7 +267,91 @@ No further wrapper-level geometry cleanup rule can separate the remaining wrong_
 
 ---
 
-## 8. Related resources
+## 8. DSM orientation tilt-bias investigation (2026-04-18)
+
+### 8.1 How the orientation module works
+
+The orientation module (`ml_engine/core/stages/orientation.py`) converts DSM height data into per-plane tilt and azimuth. For each plane polygon from the Mask R-CNN planes stage, it: (1) projects the polygon from metre space to pixel coordinates via the inverse registration affine, (2) rasterizes the polygon into a boolean pixel mask, (3) samples DSM heights at all mask pixels with finite values, (4) projects those pixel coords back to metre space to get a 3D point cloud `(x_m, y_m, z_m)`, (5) performs a **single** NumPy `lstsq` fit of `z = ax + by + c` to get the plane gradient, and (6) converts gradient to tilt via `arctan(sqrt(a²+b²))` and azimuth via `atan2(-a, b)`. There is no RANSAC, no inlier refit, and no polygon erosion. Minimum 12 finite DSM samples required; below that, falls back to a default 10° pitch. The gradient math is geometrically correct.
+
+### 8.2 Tilt bias quantification
+
+Orientation quality flags (`orientation_high_residual`: RMSE > 0.30m, `orientation_low_inlier`: inlier ratio < 0.60) are present on most faces across all buckets:
+
+| Bucket | Faces | High residual | Low inlier |
+|---|---:|---:|---:|
+| wrong_pitch | 110 | 85 (77%) | 91 (83%) |
+| ugly | 59 | 46 (78%) | 48 (81%) |
+| clean | 23 | 17 (74%) | 17 (74%) |
+
+**The critical finding: flagged faces have systematically higher tilt than unflagged faces in every bucket.**
+
+| Bucket | Flagged median tilt | Unflagged median tilt | Delta |
+|---|---:|---:|---:|
+| clean | 26.7° | 9.7° | +17.0° |
+| wrong_pitch | 43.8° | 28.2° | +15.6° |
+| ugly | 43.1° | 13.3° | +29.8° |
+
+Unflagged wrong_pitch faces have median tilt 28.2° — well within the normal residential range (18–34°). The flagged faces push to 43.8° median, squarely in the problematic 40–55° band.
+
+In the 40–55° band specifically: **100% of clean faces, 75% of wrong_pitch faces, and 89% of ugly faces are flagged.** Faces with poor fit quality dominate this band across all buckets.
+
+### 8.3 Root cause
+
+**Edge contamination in the single-pass lstsq fit.** The plane polygons from Mask R-CNN often extend slightly beyond the actual roof boundary. When sampled against the DSM:
+- **Wall pixels** at the roof edge drop steeply from the roofline to the ground
+- **Ground pixels** outside the roof are much lower than the roof surface
+- **Adjacent lower/higher roofs** introduce height discontinuities
+
+These contaminating samples create an artificial steep gradient. The lstsq fit is not robust to outliers — a single-pass least-squares fit treats wall/ground pixels as legitimate data, pulling the gradient steeper.
+
+The orientation module already identifies the contamination via its quality metrics (RMSE > 0.30m, inlier ratio < 0.60) but still uses the contaminated tilt value. The fit quality flags are used only for review tagging, not for tilt correction.
+
+**This is not a DSM quality problem — it's a fitting-strategy problem.** The DSM data is adequate (finite samples exist within polygon masks), but the single-pass lstsq is fundamentally vulnerable to edge contamination. The ±15cm inlier threshold correctly identifies which samples are roof surface vs contamination, but the information is discarded.
+
+### 8.4 Proposed intervention: inlier-only refit (two-pass lstsq)
+
+**Location:** `_fit_plane()` in `ml_engine/core/stages/orientation.py:403-450`
+
+**Change:** After the first lstsq pass, when `inlier_ratio < 0.60` and the number of inliers ≥ `MIN_FIT_POINTS` (12), perform a second lstsq pass on only the inlier samples (those within ±15cm of the first-pass plane). Use the refined tilt/azimuth from the second pass. Record both passes in diagnostics.
+
+**Why this works:**
+- Inlier samples are within ±15cm of the initial plane — they're predominantly roof surface, not walls/ground
+- Removing outliers should reduce the gradient magnitude, producing flatter (more accurate) tilts
+- The ±15cm threshold is already calibrated for asphalt shingles — tight enough to exclude chimneys/trees but loose enough to retain legitimate surface variation
+
+**Why it's safe:**
+- Only fires when the first pass already has poor quality (inlier_ratio < 0.60 — same threshold as the existing quality flag)
+- Requires ≥ 12 inlier points (same as original minimum)
+- For good fits (inlier_ratio ≥ 0.60), behavior is completely unchanged
+- The refit is still lstsq on a cleaner point subset — no new algorithm
+
+**Expected impact:** Based on the flagged-vs-unflagged tilt comparison, the refit should reduce typical flagged-face tilts by ~15–17° (the delta between flagged and unflagged medians). This would move most 40–55° faces into the 25–38° range — typical residential tilt.
+
+**Estimated size:** ~15 lines in `_fit_plane()`. No pipeline structure changes. No CRM or wrapper changes.
+
+**Risk:** Low. The refit only fires on poor-quality fits that are already flagged for review. Worst case: a legitimately steep roof (> 40°) with poor DSM coverage gets incorrectly flattened — but such cases are already flagged `needs_review` and would be caught by human review.
+
+### 8.5 Fix location: engine core (NOT wrapper)
+
+The fix belongs in `ml_engine/core/stages/orientation.py` because:
+1. The raw DSM point cloud is only available inside `_fit_plane()` — the wrapper never sees it
+2. The inlier identification is already computed there (line 416)
+3. A wrapper-level tilt cap would be a hack that doesn't fix the root cause
+4. The engine's own quality metrics already contain all the information needed for the fix
+
+### 8.6 Alternatives considered
+
+| Alternative | Pros | Cons | Verdict |
+|---|---|---|---|
+| Two-pass lstsq (inlier refit) | Targeted, ~15 lines, uses existing metrics | Requires engine-core change | **Recommended** |
+| Polygon erosion (shrink by 0.5–1m before sampling) | Addresses edge contamination directly | Needs buffer calibration, larger change, reduces sample count | Viable but more complex |
+| RANSAC instead of lstsq | Gold-standard robust fit | Much larger change, new dependency, slower | Overkill for now |
+| Wrapper tilt cap (cap to 35° when flagged) | No engine change needed | Hack, loses real tilt information, doesn't fix azimuth | Not recommended |
+| Tilt correction factor (multiply by 0.7) | Simple | No theoretical basis, varies by property | Not recommended |
+
+---
+
+## 9. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
