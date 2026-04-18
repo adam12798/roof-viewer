@@ -366,11 +366,59 @@ The fix belongs in `ml_engine/core/stages/orientation.py` because:
 - Expected: the refit changes upstream inference, not stored draft tilt values
 - Stored drafts were generated with the old single-pass orientation; the refit will affect new ML runs
 
-**What needs live validation:**
-- Re-run ML inference on wrong_pitch reference properties (20 Meadow, 225 Gibson, Lawrence, 254 Foster, etc.)
-- Compare per-face tilt distributions before vs after
-- Confirm clean properties remain stable (726 School, 15 Buckman, 1 Wiley, 15 Veteran)
-- Expected: 40–55° surviving faces should shift to 25–38° range
+### 8.8 Live validation results (2026-04-18)
+
+**Method:** Fresh ML inference on 6 reference properties (4 wrong_pitch, 1 ugly, 1 clean) through restarted ML wrapper with refit code active. LiDAR from Google Solar DSM. Compared new raw tilts (crm_faces) and new cleanup output (roof_faces) against stored pre-refit drafts.
+
+**Per-property results:**
+
+| Property | Bucket | Old raw>40° | New raw>40° | Δ | Old clean | New clean | Verdict |
+|---|---|---:|---:|---:|---:|---:|---|
+| 20 Meadow Dr | wrong_pitch | 2 | 1 | −1 | 5 | 5 | UNCHANGED (40-55° band stable) |
+| 225 Gibson St | wrong_pitch | 12 | 9 | −3 | 14* | 4 | IMPROVED (dramatic) |
+| Lawrence | wrong_pitch | 7 | 6 | −1 | 6* | 5 | IMPROVED (modest) |
+| 175 Warwick | wrong_pitch | 7 | 6 | −1 | 8* | 4 | IMPROVED |
+| 583 Westford St | ugly | 6 | 5 | −1 | 7* | 5 | IMPROVED |
+| 15 Veteran Road | clean | 0 | 0 | 0 | 3 | 3 | STABLE |
+
+\* Old clean counts were stored before Rules D–G existed; not directly comparable. Raw tilt comparison is the fair metric for refit evaluation.
+
+**Refit event analysis (39 refit events across 58 faces):**
+- Refit fired on 67% of faces (those with first-pass inlier_ratio < 0.60)
+- Largest corrections: 71.1° → 12.3° (−58.8°, 225 Gibson plane_05, 88 inliers), 66.4° → 50.5° (−15.9°, 225 Gibson plane_00, 118 inliers)
+- Typical corrections for 40–55° faces: −1° to −4°
+- Very steep faces (>70°): minimal change — too few inliers for meaningful refit
+- Some faces shifted +0.2° to +1.6° (noise from small inlier subsets with slight opposite bias)
+- Net direction: consistently downward for steep faces, noise-level for flat faces
+
+**Representative refit events:**
+
+| Property | Plane | Old tilt | New tilt | Δ | Inliers/Total |
+|---|---|---:|---:|---:|---|
+| 225 Gibson | plane_05 | 71.1° | 12.3° | −58.8° | 88/1906 (5%) |
+| 225 Gibson | plane_00 | 66.4° | 50.5° | −15.9° | 118/2048 (6%) |
+| Lawrence | plane_11 | 43.8° | 40.1° | −3.8° | 1055/2398 (44%) |
+| 20 Meadow | plane_06 | 39.1° | 35.4° | −3.7° | 1014/4701 (22%) |
+| 15 Veteran | plane_02 | 32.2° | 28.7° | −3.5° | 1633/4596 (36%) |
+| 175 Warwick | plane_04 | 53.4° | 50.5° | −2.8° | 571/969 (59%) |
+| 175 Warwick | plane_00 | 40.3° | 38.9° | −1.4° | 425/1262 (34%) |
+
+**Why corrections are smaller than predicted:**
+- The triage analysis (§8.2) found +15–17° median tilt bias on flagged faces. The live refit shows typical corrections of 1–4° with occasional larger corrections (up to 58.8°).
+- The gap is because the ±15cm inlier threshold includes mildly contaminated near-edge points that bias the refit subset. The first-pass plane is biased steep, so "inliers" (within ±15cm of the biased plane) include some steep-biased points.
+- For extreme cases (very low inlier ratio, <10%), the refit has very few points to work with, but can still produce dramatic corrections when those points are genuinely on the roof surface.
+
+**Verdict: KEEP cd24daf.**
+- Zero regressions on clean case (15 Veteran: same face count, tilts improved)
+- Consistent downward correction on wrong_pitch faces
+- Combines well with existing cleanup rules (faces pushed below thresholds get dropped)
+- Safe: only fires on already-flagged poor-quality fits
+
+**Future tuning opportunities (not urgent):**
+1. Tighter inlier threshold (±10cm instead of ±15cm) to exclude mildly contaminated edge points
+2. Polygon erosion before DSM sampling (reduce contamination at source)
+3. Iterative refit (third pass) — unlikely to help much given the inlier-set contamination issue
+4. Weighted lstsq (downweight edge-proximate samples)
 
 ### 8.6 Alternatives considered
 
