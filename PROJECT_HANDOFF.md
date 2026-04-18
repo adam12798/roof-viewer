@@ -221,9 +221,10 @@ python3 ml_ui_server.py
 
 ## I. Next priorities (in order)
 
-**Reordered 2026-04-18 based on completed 32-row triage pass** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds.
+**Reordered 2026-04-18 based on completed 32-row triage pass and expanded validation** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds. Geometry cleanup (Rules D–G) validated against all 91 non-rejected drafts.
 
-1. **Recover 7 missing labeled rows.** The paste lost 7 rows (4 wrong_pitch, 1 reject_correct, 1 reject_too_strict, 1 ugly). 15 unlabeled drafts from 2026-04-18 exist — re-match to addresses and buckets to complete the labeled set.
+1. **Investigate DSM orientation / plane-fit tilt bias.** The remaining wrong_pitch faces (40–55° band, 27% of surviving wrong_pitch) cannot be separated from clean faces using any signal available to the cleanup pass. Root cause is upstream: the ML orientation stage over-estimates tilt from DSM-based fitting. Next improvement must come from the ML engine orientation module, not another wrapper cleanup rule.
+2. **Recover 7 missing labeled rows.** (Deprioritized — confirmed 0 missing clean. The 7 missing are 4 wrong_pitch + 1 reject_correct + 1 reject_too_strict + 1 ugly.)
 3. **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` is labeled for both "74 Gates" and "14 Warren Ave" — only one draft exists. Identify which address is correct.
 4. **Vertex snapping across adjacent ML faces.** `gap_overlap` = 0 across all 32 rows. Deprioritized. Re-promote only if new evidence surfaces.
 5. **Revisit usable-gate floor (0.20).** 5 `reject_correct` vs 3 `reject_too_strict` (5:3). Still not enough signal. 52 New Spaulding (usable ≈ 0.154) remains the reference.
@@ -234,6 +235,7 @@ python3 ml_ui_server.py
 - ~~Narrow-face filter (plane dimension sanity).~~ Rule E: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts that escape the sliver, steep, and tiny rules. Validated: removes 8% of wrong_pitch faces, 20% of ugly faces, 1 low-conf artifact from clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6b.
 - ~~Small-relative filter.~~ Rule F: drop faces with area < 10% of max surviving face. Topology-aware (relative, not absolute). Batch validated on 19 reference properties: −6 wrong_pitch, −2 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c.
 - ~~Bad-fit steep filter (RFE-based).~~ Rule G: drop faces where RFE > 0.30 AND tilt > 40° AND area < 50% of max surviving. Three-way gate ensures no primary faces dropped. Batch: −9 wrong_pitch, −4 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c2.
+- ~~Rule G expanded validation.~~ Tested against all 91 non-rejected drafts (not just 19 labeled). 52 total BFS drops, 0 clean-profile affected. 29 clean-candidate unlabeled drafts all unaffected. Verdict: KEEP. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §7.
 - ~~Batch validation harness + per-face diagnostics.~~ `batch_validate.py` re-runs cleanup offline on stored drafts. `face_diagnostics` array in debug output for machine-readable per-face analysis.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
@@ -249,6 +251,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-18 | Rule G expanded validation: tested against all 91 non-rejected drafts in ml-drafts.json. 52 BFS drops total, 0 clean-profile affected. 29 clean-candidate unlabeled drafts all unaffected. 8 April 18 unlabeled properties analyzed — none qualify as clean (all show elevated tilt/RFE). Clean count confirmed at 4 (0 missing from triage paste). Surviving tilt analysis shows 40–55° band at 27% of wrong_pitch vs 17% of clean — overlap makes further wrapper rules unsafe. Verdict: KEEP Rule G, next phase is upstream DSM orientation investigation. |
 | 2026-04-18 | Rule G (bad-fit steep filter) in `_geometry_cleanup()`: RFE>0.30 AND tilt>40° AND area<50% of max surviving. First RFE-based rule — threads `_rfe` from CRM adapter through internal faces. Three-way gate catches poorly-fit, steep, secondary faces with 0 clean false positives. Batch: 192→106 (was 192→119 before Rule G). Catches 9 wrong_pitch + 4 ugly + 0 clean. Cumulative cleanup: 192→106 (45% dropped). |
 | 2026-04-18 | Batch debug phase: (1) Per-face diagnostics in `_geometry_cleanup()` debug output — `face_diagnostics` array with idx/tilt/area/short/long/aspect/conf/survived/dropped_by. (2) Batch validation harness `batch_validate.py` — offline re-run on 19 reference properties from stored ml-drafts.json, JSON+markdown output. (3) Rule F (small-relative filter): drop faces with area < 10% of max surviving face. Topology-aware, relative threshold. Batch result: 192→119 (was 192→127). Catches 6 wrong_pitch + 2 ugly + 0 clean additional faces. |
 | 2026-04-18 | Narrow-face filter (Rule E) in `_geometry_cleanup()`: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts surviving steep+sliver+tiny rules. Validated on 5 triage cases: 225 Gibson 15→5, 175 Warwick 11→5, 583 Westford 15→6, 15 Veteran 4→3, 15 Buckman 2→2. Impact: 8% of wrong_pitch faces, 20% of ugly faces, 1 artifact from clean. |

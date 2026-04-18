@@ -225,7 +225,49 @@ Added `face_diagnostics` array to `_geometry_cleanup` debug output. Each entry: 
 
 ---
 
-## 7. Related resources
+## 7. Expanded validation — Rule G safety (2026-04-18)
+
+### 7.1 Full-dataset test
+
+Rule G (RFE > 0.30, tilt > 40°, ratio < 0.50) was tested against ALL 91 non-rejected drafts in `ml-drafts.json` — not just the 19 labeled REFERENCE_SET.
+
+| Scope | Drafts | Rule G drops | Clean-profile affected |
+|---|---:|---:|---:|
+| Labeled non-reject (REFERENCE_SET) | 19 | 14 faces from 8 props | 0 |
+| Unlabeled non-reject | 72 | 38 faces from 24 props | 0 |
+| **Total** | **91** | **52 faces** | **0** |
+
+**Clean-candidate identification:** 29 unlabeled drafts (9 unique projectIDs) match the clean quantitative profile (max tilt < 45°, median RFE < 0.20, ≥ 2 surviving faces). **All 29 have BFS = 0** — Rule G does not touch any of them.
+
+### 7.2 Clean reference expansion attempt
+
+The 7 missing triage rows break down as: 4 wrong_pitch, 1 reject_correct, 1 reject_too_strict, 1 ugly. **Clean missing = 0.** The operator-stated 4 clean cases are all in the labeled set (§5). Clean reference count cannot be expanded without new ML runs on new addresses.
+
+8 unique April 18 unlabeled properties were analyzed for clean candidacy. All show elevated tilt (maxTilt 38–59°), high RFE (median 0.189–0.350), or heavy drop rates. None qualify as clean. The 2 April 18 rejected projectIDs (0 faces each) account for the missing reject_correct and reject_too_strict rows.
+
+### 7.3 Surviving face tilt distribution (AFTER D+E+F+G, labeled REFERENCE_SET)
+
+| Tilt band | clean (18) | wrong_pitch (60) | ugly (28) |
+|---|---:|---:|---:|
+| < 20° | 11 (61%) | 16 (27%) | 11 (39%) |
+| 20–30° | 3 (17%) | 13 (22%) | 3 (11%) |
+| 30–40° | 1 (6%) | 12 (20%) | 7 (25%) |
+| 40–55° | 3 (17%) | 16 (27%) | 5 (18%) |
+| 55–60° | 0 (0%) | 3 (5%) | 2 (7%) |
+
+The 40–55° band remains the core wrong_pitch signature (27% of surviving wrong_pitch, vs 17% of clean). However, clean has 3 faces in this band (all 726 School St: tilt 40.6°, 44.2°, 54.5° with RFE 0.062, 0.282, 0.067). These cannot be distinguished from wrong_pitch faces at the same tilt using any signal available to the cleanup pass (RFE, confidence, area, ratio all overlap).
+
+### 7.4 Rule G verdict
+
+**KEEP.** Zero clean regressions across 91 drafts. All 29 clean-profile unlabeled drafts unaffected. The 3-parameter gate (RFE + tilt + ratio) provides sufficient separation. No threshold adjustment needed.
+
+### 7.5 Next engineering direction
+
+No further wrapper-level geometry cleanup rule can separate the remaining wrong_pitch faces from clean ones. The residual wrong_pitch problem is **upstream**: the ML orientation / DSM plane-fit stage over-estimates tilt, producing plausible-looking faces in the 40–55° band that are indistinguishable from legitimate steep roof planes. The next phase should investigate the DSM orientation module, not add another cleanup rule.
+
+---
+
+## 8. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
