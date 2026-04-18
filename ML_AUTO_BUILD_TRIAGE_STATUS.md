@@ -416,9 +416,10 @@ The fix belongs in `ml_engine/core/stages/orientation.py` because:
 
 **Future tuning opportunities:**
 1. ~~Tighter inlier threshold (±10cm).~~ **Tested and rejected** — see §8.9.
-2. **Polygon erosion before DSM sampling** (reduce contamination at source). **Recommended next step** — see §8.9 rationale.
-3. Iterative refit (third pass) — unlikely to help; inlier-set bias is the bottleneck, not iteration count.
-4. Edge-weighted lstsq — similar mechanism to threshold tightening; likely same failure mode.
+2. ~~Polygon erosion 0.5m before DSM sampling.~~ **Implemented and validated** — see §8.10. >40° faces −29%, >55° −36%.
+3. **Test 1.0m erosion** — may further improve large-polygon faces; risk of over-eroding small polygons.
+4. Iterative refit (third pass) — unlikely to help; inlier-set bias is the bottleneck, not iteration count.
+5. Edge-weighted lstsq — similar mechanism to threshold tightening; likely same failure mode.
 
 ### 8.9 Inlier threshold ±10cm experiment (2026-04-18)
 
@@ -449,6 +450,42 @@ No property improved. The >40° face count was identical on all 6 properties. On
 - Leave the refit as a safety net for remaining severe cases
 
 This is a fundamentally different lever: it changes WHICH points are sampled, not HOW they're filtered post-sampling. Edge-weighted lstsq would not help for the same reason threshold tightening didn't — it's filtering the same contaminated point cloud differently, when the real fix is to not sample the contaminated points at all.
+
+### 8.10 Polygon erosion 0.5m experiment (2026-04-18)
+
+**Hypothesis:** Edge/wall contamination enters during DSM sampling at polygon boundaries. Eroding the rasterized polygon mask by 0.5m before sampling should exclude these pixels at the source, producing cleaner lstsq fits without needing post-sampling threshold tuning.
+
+**Implementation:** `EROSION_BUFFER_M = 0.5` constant in `orientation.py`. In `_sample_dsm_for_plane()`, after rasterizing the polygon mask, apply binary erosion using a separable square structuring element (pure numpy, no scipy dependency). Erosion radius in pixels = `EROSION_BUFFER_M / mpp` where `mpp` is derived from the registration affine (~0.055 m/px → ~9 pixel radius). If the eroded mask has < `MIN_FIT_POINTS` (12) pixels, fall back to the original un-eroded mask to preserve behavior for small polygons. Diagnostics added to stats dict: `erosion_buffer_m`, `erosion_px`, `erosion_applied`, `n_pre_erosion`.
+
+**Method:** Same-session A/B test. Ran all 6 reference properties with EROSION=0.0 (control), then EROSION=0.5m. Control confirmed deterministic against stored cd24daf baseline for 20 Meadow and 225 Gibson (all deltas = 0.0). Some properties had different face counts vs stored baseline due to ML model variability between sessions, but face counts were identical between control and erosion runs within the same session.
+
+**Results — 0.5m erosion is a clear improvement:**
+
+| Property | Faces | Ctrl >40° | Ero >40° | Δ>40° | Ctrl >55° | Ero >55° | Δ>55° | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 20 Meadow Dr | 7 | 1 | 0 | −1 | 0 | 0 | 0 | IMPROVED |
+| 225 Gibson St | 15 | 11 | 10 | −1 | 5 | 4 | −1 | SLIGHT |
+| Lawrence | 15 | 6 | 2 | −4 | 1 | 0 | −1 | STRONG |
+| 175 Warwick | 11 | 6 | 7 | +1 | 4 | 3 | −1 | MIXED |
+| 583 Westford St | 15 | 7 | 3 | −4 | 4 | 2 | −2 | STRONG |
+| 15 Veteran Rd | 4 | 0 | 0 | 0 | 0 | 0 | 0 | STABLE |
+| **Total** | **67** | **31** | **22** | **−9** | **14** | **9** | **−5** | |
+
+- **>40° faces: 31 → 22 (−29%)**
+- **>55° faces: 14 → 9 (−36%)**
+
+Key face-level shifts (20 Meadow, deterministic):
+- Face at 41.5° → 29.2° (−12.3°) — the only >40° face corrected below threshold
+- Face at 35.4° → 28.2° (−7.2°) — secondary contaminated face also improved
+- Face at 12.3° → 18.0° (+5.7°) — slight upward shift on one low-tilt face (sort-order artifact or minor fit change)
+
+**175 Warwick (mixed case):** >40° went from 6→7 (+1), but >55° went from 4→3 (−1). The erosion helped the worst faces while slightly inflating one borderline face. Net effect is roughly neutral — the extreme-steep category improved at the cost of one more face crossing the 40° line.
+
+**15 Veteran (clean case):** 0 faces >40° both before and after. Per-face comparison: [9.7, 15.2, 22.6, 28.7] → [9.7, 16.2, 18.6, 19.3]. Average delta = −3.1°. The 28.7° face (likely edge-contaminated) corrected to 19.3° — a genuine improvement on the clean case.
+
+**Verdict:** KEEP `EROSION_BUFFER_M = 0.5`. Erosion is the most effective single intervention in the orientation tuning track so far. Combined with the two-pass refit, it reduces the >40° face count by nearly a third.
+
+**Next step:** Test 1.0m erosion on the same 6 properties. Expect further improvement on large polygons but possible regression on small ones where 1.0m erodes too aggressively. Do not stack — test 1.0m as a standalone change against the 0.5m baseline.
 
 ### 8.6 Alternatives considered
 

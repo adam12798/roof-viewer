@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-17 (late — triage pass interim close-out)
+**Last updated:** 2026-04-18 (polygon erosion 0.5m validated)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (interim, 16 of 30 rows locked)
 
@@ -223,7 +223,7 @@ python3 ml_ui_server.py
 
 **Reordered 2026-04-18 based on completed 32-row triage pass and expanded validation** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds. Geometry cleanup (Rules D–G) validated against all 91 non-rejected drafts.
 
-1. **Polygon erosion before DSM sampling.** Tighter inlier threshold (±10cm) tested and rejected — it reduces corrections by 30–50% because the ±10–15cm band contains helpful counter-bias points, not contamination (see §8.9). The correct next lever is eroding the plane polygon by 0.5–1m before DSM sampling, removing edge/wall pixels at the source. Location: `_sample_dsm_for_plane()` in `orientation.py`.
+1. **Test 1.0m polygon erosion.** 0.5m erosion validated and shipped (see §8.10). Reduced >40° faces by 29% (31→22) and >55° by 36% (14→9) across 6 reference properties. One mixed case (175 Warwick >40° +1). Testing 1.0m may further improve steep contaminated faces but risks over-eroding small polygons. Next: re-run same 6 properties at 1.0m, compare per-face tilt shifts.
 2. **Recover 7 missing labeled rows.** (Deprioritized — confirmed 0 missing clean. The 7 missing are 4 wrong_pitch + 1 reject_correct + 1 reject_too_strict + 1 ugly.)
 3. **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` is labeled for both "74 Gates" and "14 Warren Ave" — only one draft exists. Identify which address is correct.
 4. **Vertex snapping across adjacent ML faces.** `gap_overlap` = 0 across all 32 rows. Deprioritized. Re-promote only if new evidence surfaces.
@@ -238,6 +238,7 @@ python3 ml_ui_server.py
 - ~~Rule G expanded validation.~~ Tested against all 91 non-rejected drafts (not just 19 labeled). 52 total BFS drops, 0 clean-profile affected. 29 clean-candidate unlabeled drafts all unaffected. Verdict: KEEP. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §7.
 - ~~Batch validation harness + per-face diagnostics.~~ `batch_validate.py` re-runs cleanup offline on stored drafts. `face_diagnostics` array in debug output for machine-readable per-face analysis.
 - ~~Two-pass inlier refit in orientation module.~~ `_fit_plane()` in `ml_engine/core/stages/orientation.py`. When first-pass inlier_ratio < 0.60 and inlier count ≥ 12, refits lstsq on inlier-only samples. Diagnostics: `refit_fired`, `first_pass_tilt_deg`, `inlier_count`. Synthetic: +9° bias → +0.5°. Live-validated on 6 properties: 4 improved, 1 unchanged, 1 clean stable. Typical correction: 1–4°, max 58.8° (wall→roof). Zero regressions. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §8.7–8.8.
+- ~~Polygon erosion before DSM sampling.~~ `EROSION_BUFFER_M = 0.5` in `orientation.py`. Binary mask erosion (pure numpy, separable square kernel) applied before DSM sampling in `_sample_dsm_for_plane()`. Falls back to un-eroded mask when eroded pixel count < 12. Live A/B on 6 properties: >40° faces 31→22 (−29%), >55° faces 14→9 (−36%). 4 improved, 1 mixed, 1 stable. See §8.10.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
 
@@ -252,6 +253,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-18 | Polygon erosion (0.5m) implemented and validated. `EROSION_BUFFER_M = 0.5` in `orientation.py`, applied as binary mask erosion before DSM sampling. Pure numpy separable square kernel, fallback to un-eroded mask when < 12 pixels survive. A/B test on 6 reference properties (same-session control vs erosion): >40° faces 31→22 (−29%), >55° faces 14→9 (−36%). Per-property: 20 Meadow improved (41.5°→29.2°), Lawrence strong (>40° 6→2), 583 Westford strong (>40° 7→3), 225 Gibson slight (>40° 11→10), 175 Warwick mixed (>40° +1 but >55° −1), 15 Veteran stable. Next: test 1.0m erosion. See §8.10. |
 | 2026-04-18 | Inlier threshold ±10cm experiment: tested and rejected. ±10cm reduces corrections by 30–50% vs ±15cm because the ±10–15cm band contains helpful counter-bias roof points, not contamination. Key example: 225 Gibson plane_00 went from 50.5° (±15cm) to 57.7° (±10cm) — worse. All 6 properties: no improvement, some regressions. Revised understanding: the bottleneck is upstream edge contamination in sampled points, not inlier selection. Next: polygon erosion. See §8.9. |
 | 2026-04-18 | Two-pass inlier refit live-validated. Fresh inference on 6 reference properties (4 wrong_pitch, 1 ugly, 1 clean). Refit fired on 39/58 faces (67%). Results: 4 improved, 1 unchanged (20 Meadow), 1 clean stable (15 Veteran). Typical corrections: 1–4° downward on 40–55° faces. Max correction: 71.1° → 12.3° (−58.8°, 225 Gibson wall→roof). Zero regressions. Corrections smaller than predicted (1–4° vs 15° expected) because ±15cm inlier threshold includes mildly contaminated edge points. Next: tighter inlier threshold or polygon erosion. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §8.8. |
 | 2026-04-18 | Two-pass inlier refit implemented in `_fit_plane()` (`ml_engine/core/stages/orientation.py:427`). Synthetic validation: 29.5° → 20.5°, RMSE 1.03→0.04m. See §8.7. |
