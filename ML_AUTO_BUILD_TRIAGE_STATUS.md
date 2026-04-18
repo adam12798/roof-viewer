@@ -417,7 +417,7 @@ The fix belongs in `ml_engine/core/stages/orientation.py` because:
 **Future tuning opportunities:**
 1. ~~Tighter inlier threshold (±10cm).~~ **Tested and rejected** — see §8.9.
 2. ~~Polygon erosion 0.5m before DSM sampling.~~ **Implemented and validated** — see §8.10. >40° faces −29%, >55° −36%.
-3. **Test 1.0m erosion** — may further improve large-polygon faces; risk of over-eroding small polygons.
+3. ~~Test 1.0m erosion.~~ **Tested and rejected** — see §8.11. Over-erodes small polygons, falls back to un-eroded, net worse (+18% >40°, +44% >55°).
 4. Iterative refit (third pass) — unlikely to help; inlier-set bias is the bottleneck, not iteration count.
 5. Edge-weighted lstsq — similar mechanism to threshold tightening; likely same failure mode.
 
@@ -486,6 +486,33 @@ Key face-level shifts (20 Meadow, deterministic):
 **Verdict:** KEEP `EROSION_BUFFER_M = 0.5`. Erosion is the most effective single intervention in the orientation tuning track so far. Combined with the two-pass refit, it reduces the >40° face count by nearly a third.
 
 **Next step:** Test 1.0m erosion on the same 6 properties. Expect further improvement on large polygons but possible regression on small ones where 1.0m erodes too aggressively. Do not stack — test 1.0m as a standalone change against the 0.5m baseline.
+
+### 8.11 Polygon erosion 1.0m experiment (2026-04-18)
+
+**Hypothesis:** If 0.5m erosion reduced >40° faces by 29%, 1.0m might further improve by excluding a wider edge band.
+
+**Method:** Same-session A/B. Collected 0.5m baseline, changed `EROSION_BUFFER_M` to 1.0, restarted ML server, re-ran same 6 reference properties. Face counts identical (7/15/15/11/15/4) confirming ML determinism within the session.
+
+**Results — 1.0m is WORSE than 0.5m:**
+
+| Property | 0.5m >40° | 1.0m >40° | Δ>40° | 0.5m >55° | 1.0m >55° | Δ>55° | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 20 Meadow Dr | 0 | 0 | 0 | 0 | 0 | 0 | STABLE |
+| 225 Gibson St | 10 | 12 | +2 | 4 | 5 | +1 | REGRESSED |
+| Lawrence | 2 | 2 | 0 | 0 | 1 | +1 | SLIGHT REG |
+| 175 Warwick | 7 | 6 | −1 | 3 | 3 | 0 | SLIGHT IMP |
+| 583 Westford St | 3 | 6 | +3 | 2 | 4 | +2 | REGRESSED |
+| 15 Veteran Rd | 0 | 0 | 0 | 0 | 0 | 0 | STABLE |
+| **Total** | **22** | **26** | **+4** | **9** | **13** | **+4** | |
+
+- **>40° faces: 22 → 26 (+18%) — worse**
+- **>55° faces: 9 → 13 (+44%) — much worse**
+
+**Root cause:** At 1.0m (~18 pixel radius), many polygons are too small for the erosion. The eroded mask drops below 12 pixels, triggering the fallback to the un-eroded mask. Those faces lose the 0.5m erosion benefit entirely and revert to contaminated-baseline tilts. Meanwhile, larger polygons that don't fall back lose too much interior data — the remaining central-only samples sometimes fit a different (worse) plane. Comparing 1.0m tilts to the no-erosion control baseline confirms: 225 Gibson's low faces (12.3°, 28.9°) match the no-erosion baseline (11.8°, 29.4°), proving they fell back to un-eroded.
+
+**Verdict:** REVERT. Keep `EROSION_BUFFER_M = 0.5`. The 0.5m value is the tuned optimum for this pipeline — aggressive enough to exclude edge/wall contamination, conservative enough to preserve sufficient interior samples for stable fits.
+
+**Erosion tuning is complete.** 0.5m is the winner. Further orientation improvement would require a fundamentally different approach (e.g., RANSAC, weighted lstsq, or DSM resolution upgrade).
 
 ### 8.6 Alternatives considered
 
