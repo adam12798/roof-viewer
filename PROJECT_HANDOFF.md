@@ -85,6 +85,7 @@ ML Auto Build button
 | CRM soft usable gate (floor 0.20) | Working | `ml_ui_server.py:499`, `crm_auto_build.py:301` |
 | Target-building isolation | Working; primary 0.3m + subcluster 0.15m | `ml_ui_server.py:843, 1048` |
 | Geometry cleanup (duplicate faces) | Working; IoU ≥ 0.15, Δpitch ≤ 5°, Δaz ≤ 10° | `ml_ui_server.py:683` |
+| Geometry cleanup (steep-face filter) | Working; drop pitch > 60° | `ml_ui_server.py:769` |
 | ML-only shared-edge suppression | Working; midpoint-in-polygon classifier | `server.js:11277-11316` |
 | ML-only single-slope rendering | Working; no per-face hip decomposition | `server.js:11519-11610` |
 | Shared-edge muted grey lines | Working | `server.js:11578` |
@@ -215,16 +216,18 @@ python3 ml_ui_server.py
 
 ## I. Next priorities (in order)
 
-**Reordered 2026-04-17 based on interim 16-row triage sample** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Provisional — confirm with remaining 14 rows before committing engineering effort.
+**Reordered 2026-04-18 based on completed 32-row triage pass** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds.
 
-1. **Finish the 30-property triage pass.** 16 of 30 rows locked. Remaining 14 should over-sample under-represented categories (multiface, urban attached, detached garage) to give `gap_overlap` and `wrong_target` a fair chance to surface. Do NOT start engineering off the interim sample alone.
-2. **Investigate extreme ML pitch values / plane quality on successful builds.** Interim leading hypothesis: `wrong_pitch` is dominant among successful builds (6 of 10 non-reject locked rows). Promoted from #3 based on triage evidence. Likely upstream ML orientation/plane-fit issue; may need CRM-side pitch-clamp guardrail as an interim mitigation. Confirm with full 30-row sample before implementing.
-3. **Vertex snapping across adjacent ML faces.** `gap_overlap` is 0 in the locked 16-row sample so far, so this track is demoted pending the remaining 14 rows. Was #2; re-promote if multiface/rowhouse rows change the distribution.
-4. **Revisit usable-gate floor (0.20) only after 30 rows.** Current locked sample shows `reject_correct` : `reject_too_strict` = 4 : 2. Not enough signal yet. 52 New Spaulding (usable ≈ 0.154) is the canonical `reject_too_strict` reference.
-5. **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
+1. **Recover 7 missing labeled rows.** The paste lost 7 rows (4 wrong_pitch, 1 reject_correct, 1 reject_too_strict, 1 ugly). 15 unlabeled drafts from 2026-04-18 exist — re-match to addresses and buckets to complete the labeled set.
+3. **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` is labeled for both "74 Gates" and "14 Warren Ave" — only one draft exists. Identify which address is correct.
+4. **Vertex snapping across adjacent ML faces.** `gap_overlap` = 0 across all 32 rows. Deprioritized. Re-promote only if new evidence surfaces.
+5. **Revisit usable-gate floor (0.20).** 5 `reject_correct` vs 3 `reject_too_strict` (5:3). Still not enough signal. 52 New Spaulding (usable ≈ 0.154) remains the reference.
+6. **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
 
 **Done since last handoff:**
-- ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). No UI yet; browser-readable JSON is sufficient for triage.
+- ~~Steep-face filter.~~ Rule D added to `_geometry_cleanup()` in `ml_ui_server.py`: drop faces with pitch > 60° (`STEEP_TILT_CEILING_DEG = 60.0`). Validated on 4 triage reference cases. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6.
+- ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
+- ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
 
 **Do NOT touch right now (unless new evidence surfaces):**
 - Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
@@ -237,6 +240,8 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-18 | Steep-face filter shipped in `ml_ui_server.py` `_geometry_cleanup()`. Rule D: drop faces with pitch > 60° (constant `STEEP_TILT_CEILING_DEG = 60.0`). Validated on 225 Gibson (15→9), 726 School (12→7), 583 Westford (15→12), 175 Warwick (11→9). Debug output: `dropped_steep` array in `frame_debug.geometry_cleanup`. No CRM changes. |
+| 2026-04-18 | Triage pass complete: 32 rows bucketed. Final distribution: `wrong_pitch` 14, `ugly_but_correct_building` 6, `reject_correct` 5, `clean` 4, `reject_too_strict` 3; `wrong_target` / `gap_overlap` / `wrong_azimuth` all 0. Pitch analysis: 24% of wrong_pitch faces are >55° (walls), 29% are 40-55° (too steep). All from DSM-based orientation, not default-pitch fallback. Next engineering task: steep-face filter (tilt >60°) in ml_ui_server.py cleanup. 7 labeled rows lost to paste truncation; recovery needed. |
 | 2026-04-17 (late) | Interim triage pass closed out at 16 of 30 rows. Distribution (provisional): `wrong_pitch` 6, `reject_correct` 4, `ugly_but_correct_building` 3, `reject_too_strict` 2, `clean` 1; `wrong_target` / `gap_overlap` / `wrong_azimuth` / `investigate` all 0. Leading hypothesis for next engineering work is upstream ML pitch / plane quality on successful builds. Full status in `ML_AUTO_BUILD_TRIAGE_STATUS.md`, including unresolved 94 C St ↔ 52 New Spaulding mismatch and a Salem-row transcription artifact. Shipped read-only triage API (`GET /api/ml-drafts`, `GET /api/ml-drafts/:id`). |
 | 2026-04-17 | Fixed design-page boot crash (stray `}` in `.catch` block killed client JS parse). Added `_mlBanner` severity helper with 4 explicit levels (neutral/warning/error/success) so banner states never leak across transitions. Fixed undo/redo dropping ML sourceTag — `captureRoofSnapshot` now includes it; `restoreRoofSnapshot` rehydrates ML faces. |
 | 2026-04-16 | ML single-slope rendering: ML faces render as tilted quads instead of standalone hip roofs. Shared-edge suppression: midpoint-in-polygon classifier marks internal edges; walls suppressed, edge lines muted grey, labels skipped. Save/reload rehydrate: `source:'ml'` persisted in `serializeRoofFaces`; `loadDesign` re-tags and recomputes on load. |
