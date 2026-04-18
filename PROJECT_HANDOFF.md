@@ -4,7 +4,7 @@ Single source of truth for resuming this project on a fresh machine or new sessi
 
 **Last updated:** 2026-04-18 (build-level quality gate implemented and validated)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
-**Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (interim, 16 of 30 rows locked)
+**Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
 ---
 
@@ -308,3 +308,4 @@ python3 ml_ui_server.py
 - `soft_gate_debug` — raw_usable_score, effective_min, applied.
 - `target_selection` — group count, selected size, tolerance, subcluster refinement info.
 - `geometry_cleanup` — input/output counts, dropped duplicates/tiny/slivers.
+- `build_quality` — n_cleaned, n_steep_band, steep_fraction, flagged.
