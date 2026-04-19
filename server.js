@@ -16390,7 +16390,10 @@ app.get("/design", (req, res) => {
           orientation_high_residual: 'High plane-fit residual',
           orientation_low_inlier: 'Low plane-fit inlier ratio',
           google_solar_pitch_mismatch: 'ML pitch disagrees with Google Solar roof data',
-          google_solar_pitch_corrected: 'Pitch corrected using Google Solar reference data'
+          google_solar_pitch_corrected: 'Pitch corrected using Google Solar reference data',
+          p9_build_unmatched: 'No ML faces match Google Solar roof segments',
+          p9_low_match_fraction: 'Most ML faces could not be matched to Google Solar',
+          p9_low_match_confidence: 'ML faces match Google Solar with low confidence'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -24775,15 +24778,39 @@ async function solarPitchCrossValidation(lat, lng, envelope) {
   const buildMismatch = matched.length >= 2 && largeDelta.length / matched.length >= P3_MISMATCH_FRACTION;
 
   const correctionDeltas = corrections.map(c => c.delta);
+
+  // P9: build-level fallback assessment
+  const totalFaces = matches.length;
+  const matchedCount = matched.length;
+  const matchedFraction = totalFaces > 0 ? r2(matchedCount / totalFaces) : 0;
+  const lowConfMatches = matched.filter(m => m.match_confidence < 0.3);
+  const lowConfCount = lowConfMatches.length;
+  const lowConfFraction = matchedCount > 0 ? r2(lowConfCount / matchedCount) : 0;
+
+  const buildUnmatched = totalFaces > 0 && matchedCount === 0;
+  const buildLowMatchFraction = totalFaces >= 3 && matchedFraction < 0.5;
+  const buildLowConfidence = matchedCount >= 2 && lowConfFraction >= 0.5;
+
+  let p9Verdict = 'trusted';
+  let p9Reason = null;
+  let p9Applied = false;
+  if (buildUnmatched) {
+    p9Verdict = 'unmatched'; p9Reason = 'p9_build_unmatched'; p9Applied = true;
+  } else if (buildLowMatchFraction) {
+    p9Verdict = 'low_match_fraction'; p9Reason = 'p9_low_match_fraction'; p9Applied = true;
+  } else if (buildLowConfidence) {
+    p9Verdict = 'low_confidence'; p9Reason = 'p9_low_match_confidence'; p9Applied = true;
+  }
+
   return {
     google_segments_available: segments.length,
     match_radius_m: P3_MATCH_RADIUS_M,
     matches,
     build_summary: {
-      matched_faces: matched.length,
-      unmatched_faces: matches.length - matched.length,
-      mean_abs_pitch_delta: matched.length ? r2(absDeltas.reduce((a, b) => a + b, 0) / absDeltas.length) : null,
-      max_abs_pitch_delta: matched.length ? r2(Math.max(...absDeltas)) : null,
+      matched_faces: matchedCount,
+      unmatched_faces: totalFaces - matchedCount,
+      mean_abs_pitch_delta: matchedCount ? r2(absDeltas.reduce((a, b) => a + b, 0) / absDeltas.length) : null,
+      max_abs_pitch_delta: matchedCount ? r2(Math.max(...absDeltas)) : null,
       faces_with_large_delta: largeDelta.length,
       large_delta_threshold_deg: P3_LARGE_DELTA_DEG,
       build_pitch_mismatch: buildMismatch,
@@ -24791,6 +24818,20 @@ async function solarPitchCrossValidation(lat, lng, envelope) {
       corrections,
       mean_correction_deg: correctedCount ? r2(correctionDeltas.reduce((a, b) => a + b, 0) / correctionDeltas.length) : null,
       max_correction_deg: correctedCount ? r2(Math.max(...correctionDeltas)) : null,
+    },
+    p9_build_assessment: {
+      p9_fallback_applied: p9Applied,
+      p9_fallback_reason: p9Reason,
+      fallback_verdict: p9Verdict,
+      total_faces: totalFaces,
+      matched_face_count: matchedCount,
+      matched_face_fraction: matchedFraction,
+      low_confidence_match_count: lowConfCount,
+      low_confidence_match_fraction: lowConfFraction,
+      corrected_face_count: correctedCount,
+      build_unmatched: buildUnmatched,
+      build_low_match_fraction: buildLowMatchFraction,
+      build_low_match_confidence: buildLowConfidence,
     },
   };
 }
@@ -24871,6 +24912,19 @@ app.post("/api/ml/auto-build", async (req, res) => {
             envelope.review_policy_reasons = reasons;
           }
           console.log(`[p8_pitch_correction] CORRECTED ${crossval.build_summary.faces_corrected} face(s): mean=${crossval.build_summary.mean_correction_deg}° max=${crossval.build_summary.max_correction_deg}°`);
+        }
+
+        const p9 = crossval.p9_build_assessment;
+        if (p9 && p9.p9_fallback_applied) {
+          if (envelope.auto_build_status === "auto_accept") {
+            envelope.auto_build_status = "needs_review";
+          }
+          const reasons = envelope.review_policy_reasons || [];
+          if (!reasons.includes(p9.p9_fallback_reason)) {
+            reasons.push(p9.p9_fallback_reason);
+            envelope.review_policy_reasons = reasons;
+          }
+          console.log(`[p9_fallback] ${p9.fallback_verdict}: ${p9.matched_face_count}/${p9.total_faces} matched (${p9.matched_face_fraction}), reason=${p9.p9_fallback_reason}`);
         }
       } else {
         console.log("[p3_solar_crossval] skipped: no Solar data or no faces");

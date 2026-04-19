@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19 (P8 pitch correction)
+**Last updated:** 2026-04-19 (P9 unmatched/fallback strategy)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -806,7 +806,82 @@ New review reason: `google_solar_pitch_corrected` — appended when any face is 
 
 ---
 
-## 11. Related resources
+## 11. P9 unmatched / fallback strategy (2026-04-19)
+
+### 11.1 Goal
+
+Make unmatched and low-confidence builds behave correctly and transparently instead of silently slipping through to `auto_accept`. Every build should clearly fall into one of: trusted, needs_review, or not trustworthy.
+
+### 11.2 Problem identified
+
+After P8, one critical gap remains: builds where Google Solar has segment data for the address but ML's faces don't match any segments. Example: 13 Richardson St — 1 cleaned face at 3.3°, 12 Google segments available, 0 matched, status `auto_accept`. This is a poor ML extraction that silently passes through.
+
+### 11.3 Fallback rules
+
+Three conservative rules, evaluated in priority order. When Google segments are available:
+
+**Rule 1 — Build unmatched:** `total_faces > 0 AND matched_faces == 0`
+Reason: `p9_build_unmatched`. Downgrade to `needs_review`.
+
+**Rule 2 — Low match fraction:** `total_faces >= 3 AND matched_faces / total_faces < 0.5`
+Reason: `p9_low_match_fraction`. Downgrade to `needs_review`.
+
+**Rule 3 — Low match confidence:** `matched_faces >= 2 AND (faces with confidence < 0.3) / matched_faces >= 0.5`
+Reason: `p9_low_match_confidence`. Downgrade to `needs_review`.
+
+When no Google segments are available, P9 does not fire (cannot assess without reference data).
+
+### 11.4 Debug fields added
+
+New `p9_build_assessment` object in `crm_result.metadata.p3_solar_crossval`:
+- `p9_fallback_applied` (bool)
+- `p9_fallback_reason` (string or null)
+- `fallback_verdict` (string: `trusted`, `unmatched`, `low_match_fraction`, `low_confidence`)
+- `total_faces` (int)
+- `matched_face_count` (int)
+- `matched_face_fraction` (float 0-1)
+- `low_confidence_match_count` (int, confidence < 0.3)
+- `low_confidence_match_fraction` (float 0-1)
+- `corrected_face_count` (int, from P8)
+- `build_unmatched` (bool)
+- `build_low_match_fraction` (bool)
+- `build_low_match_confidence` (bool)
+
+New client-side reason labels: `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`.
+
+### 11.5 Validation results (7 properties)
+
+| Property | Bucket | Faces | Matched | Fraction | P9 verdict | P9 reason | Status before | Status after |
+|---|---|---:|---:|---:|---|---|---|---|
+| 13 Richardson St | wrong_pitch | 1 | 0 | 0 | unmatched | p9_build_unmatched | auto_accept | **needs_review** |
+| 11 Ash Road | wrong_pitch | 1 | 0 | 0 | unmatched | p9_build_unmatched | needs_review | needs_review (+ reason) |
+| 175 Warwick | wrong_pitch | 3 | 3 | 1.0 | trusted | — | needs_review | needs_review (unchanged) |
+| 225 Gibson St | P8 corrected | 6 | 6 | 1.0 | trusted | — | needs_review | needs_review (unchanged) |
+| 20 Meadow Dr | improved | 4 | 4 | 1.0 | trusted | — | auto_accept | auto_accept |
+| Lawrence | improved | 6 | 6 | 1.0 | trusted | — | needs_review | needs_review (unchanged) |
+| 15 Veteran Rd | clean | 3 | 3 | 1.0 | trusted | — | auto_accept | auto_accept |
+
+### 11.6 Key findings
+
+1. **13 Richardson St gap closed.** Was `auto_accept` with 0 matched faces despite 12 Google segments available. Now correctly `needs_review` with `p9_build_unmatched`. This was the primary gap P9 was designed to fill.
+
+2. **11 Ash Road gets additional context.** Already `needs_review` from `crm_soft_gate_applied`, but now also shows `p9_build_unmatched` — making the reason set more explanatory for the worker.
+
+3. **175 Warwick unaffected.** 3/3 matched (fraction 1.0), P9 verdict `trusted`. The quality gate already handles this via tilt distribution. P9 and P5 are orthogonal signals.
+
+4. **225 Gibson P8 correction stable.** 6/6 matched, P8 corrected 1 face, P9 verdict `trusted`. No interference between phases.
+
+5. **Clean house (15 Veteran) zero regression.** 3/3 matched, fraction 1.0, verdict `trusted`, status remains `auto_accept`.
+
+6. **Improved houses untouched.** 20 Meadow (4/4 matched) and Lawrence (6/6 matched) both `trusted`. P9 cannot harm well-extracted builds.
+
+### 11.7 Verdict
+
+**KEEP.** P9 closes the remaining safety gap for worker design mode V1. The only status change is on 13 Richardson St (auto_accept → needs_review), which is correct. Zero false positives. Rules 2 and 3 didn't fire on the validation set but provide safety nets for hypothetical builds with poor spatial alignment.
+
+---
+
+## 12. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (P8 pitch correction implemented and validated)
+**Last updated:** 2026-04-19 (P9 unmatched/fallback strategy)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -101,7 +101,8 @@ ML Auto Build button
 | Banner severity helper `_mlBanner` | Working; 4 severities: neutral/warning/error/success | `server.js:16210-16222` |
 | Status-aware banner (needs_review) | Working; warning banner with human-readable reasons + Undo/Dismiss action buttons when `auto_build_status=needs_review` | `server.js:16380-16410` |
 | P3 solar pitch cross-validation | Working; compares ML pitch/azimuth against Google Solar roofSegmentStats per face, flags build when ≥50% of matched faces disagree by >15° | `server.js:24664-24761` |
-| P8 pitch correction | Working; corrects ML-too-steep faces using Google Solar pitch when 5 guards pass (matched, conf>0.5, delta>10°, google<45°, area>8m²). Corrected pitch = google + 2°. Adds `google_solar_pitch_corrected` review reason | `server.js:24742-24770` |
+| P8 pitch correction | Working; corrects ML-too-steep faces using Google Solar pitch when 5 guards pass (matched, conf>0.5, delta>10°, google<45°, area>8m²). Corrected pitch = google + 2°. Adds `google_solar_pitch_corrected` review reason | `server.js:24744-24770` |
+| P9 unmatched/fallback | Working; flags builds where ML faces don't match Google Solar segments. 3 rules: build_unmatched (0 matched), low_match_fraction (<50%), low_match_confidence (>=50% low conf). Adds `p9_build_assessment` debug and 3 review reasons | `server.js:24772-24815` |
 | Design-page boot (loading overlay) | Working; 12s safety timeout + catch handler | `server.js:9614, 9624` |
 | Manual faces unchanged | Yes; all ML branches gate on `sourceTag==='ml'` | `server.js:14154, 14243` |
 
@@ -333,7 +334,7 @@ python3 ml_ui_server.py
 **Debug:** Console logs for banner state transitions.
 **Bank criteria:** `needs_review` shows orange warning with reasons; `auto_accept` shows green success; Undo restores pre-ML state; Dismiss acknowledges and keeps faces; all reason labels mapped.
 **Failure types:** Banner not shown, wrong severity, user stuck without actionable path, pointer-events leak.
-**Banked config:** Status-aware banner, 9 reason labels (including `google_solar_pitch_mismatch`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
+**Banked config:** Status-aware banner, 13 reason labels (including `google_solar_pitch_mismatch`, `google_solar_pitch_corrected`, `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
 **Reopen trigger:** New review reason that needs a label; user-reported UX confusion.
 
 ---
@@ -408,6 +409,25 @@ For each matched face, correct when ALL four guards hold:
 
 ---
 
+### P9 — Unmatched / Fallback Strategy [BANKED]
+
+**Purpose:** Surface unmatched and low-confidence builds that P8 cannot validate, ensuring no bad extraction silently reaches `auto_accept`.
+**Inputs:** P8 cross-validation match data (matched count, confidence, fraction).
+**Outputs:** Build-level fallback verdict, `p9_build_assessment` debug object, review reasons for unmatched/low-confidence builds.
+**Debug:** `p9_build_assessment` in `crm_result.metadata.p3_solar_crossval` — `p9_fallback_applied`, `p9_fallback_reason`, `fallback_verdict`, `matched_face_count`, `matched_face_fraction`, `low_confidence_match_count`, `build_unmatched`, `build_low_match_fraction`, `build_low_match_confidence`.
+**Failure types:** False positive on clean build (flagging a good build as unmatched); missing a bad build that has incidental matches.
+
+**Rules:**
+1. `p9_build_unmatched` — total_faces > 0 AND matched_faces == 0 (Google has segments but none match ML)
+2. `p9_low_match_fraction` — total_faces >= 3 AND matched/total < 0.5
+3. `p9_low_match_confidence` — matched_faces >= 2 AND >=50% have confidence < 0.3
+
+**Bank criteria:** 0 clean regressions; >=1 previously-silent bad build now flagged.
+**Status:** BANKED. 13 Richardson St (auto_accept → needs_review), 0 clean regressions, 0 improved regressions. See triage §11.
+**Reopen trigger:** False positive on a clean build, or a new failure class that has incidental high-confidence matches but is still wrong.
+
+---
+
 ### Backlog (not phase-gated)
 
 These items are tracked but not tied to the active phase:
@@ -423,6 +443,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | P9 unmatched/fallback strategy. Flags builds where ML faces don't match any Google Solar segments. 3 rules: build_unmatched (0/N matched), low_match_fraction (<50% matched when >=3 faces), low_match_confidence (>=50% of matches below 0.3). Validated on 7 properties: 13 Richardson St auto_accept→needs_review (the gap), 11 Ash Road gets additional context, 0 clean regressions, 0 improved regressions, P8 corrections stable. Adds `p9_build_assessment` debug object and 3 client-side reason labels. See triage §11. |
 | 2026-04-19 | P8 conservative pitch correction. One-directional correction using Google Solar pitch as external reference. 5-guard rule: matched, confidence > 0.5, ml-google delta > 10°, google_pitch < 45°, google_area > 8m². Corrected pitch = google_pitch + 2°. Validated on 7 properties: 225 Gibson face[2] corrected 46.9°→17.3° (eliminated only >40° face), 175 Warwick correctly blocked (Google agrees steep), 0 clean regressions, 0 improved regressions. Adds `google_solar_pitch_corrected` review reason, full per-face debug. See triage §10. |
 | 2026-04-19 | Engineering phase plan restructure. Replaced organic priority list with strict P0–P8 phase map. Each phase has purpose/inputs/outputs/debug structure/bank criteria/failure types/reopen trigger. P0–P7 all BANKED (orientation, erosion, RANSAC, rules, quality gate, review banner, pipeline debug, P8 instrumentation). P8 correction ACTIVE — one-directional pitch correction using Google Solar cross-val data, 4-guard conservative design. Backlog section for non-phase items. See section I. |
 | 2026-04-19 | P3 solar pitch cross-validation. CRM server fetches Google Solar `roofSegmentStats` after ML returns, matches each cleaned face to nearest segment (8m radius), computes pitch/azimuth deltas and match confidence. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces disagree by >15°. Validated on 8 properties: clean 0.47° mean Δpitch (no flag), improved 7-9° (no flag), 225 Gibson 18.25° mean (FLAGGED, 4/6 faces >15° delta), 175 Warwick confirms genuinely steep roof (Google agrees at 47°). Non-blocking, no ML changes. See `server.js:24657-24740`. |
