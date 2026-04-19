@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (engineering phase plan restructure)
+**Last updated:** 2026-04-19 (P8 pitch correction implemented and validated)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -100,7 +100,8 @@ ML Auto Build button
 | ML config missing → actionable 503 | Working; banner shows hint+detail | `server.js:24570-24580` |
 | Banner severity helper `_mlBanner` | Working; 4 severities: neutral/warning/error/success | `server.js:16210-16222` |
 | Status-aware banner (needs_review) | Working; warning banner with human-readable reasons + Undo/Dismiss action buttons when `auto_build_status=needs_review` | `server.js:16380-16410` |
-| P3 solar pitch cross-validation | Working; compares ML pitch/azimuth against Google Solar roofSegmentStats per face, flags build when ≥50% of matched faces disagree by >15° | `server.js:24657-24740` |
+| P3 solar pitch cross-validation | Working; compares ML pitch/azimuth against Google Solar roofSegmentStats per face, flags build when ≥50% of matched faces disagree by >15° | `server.js:24664-24761` |
+| P8 pitch correction | Working; corrects ML-too-steep faces using Google Solar pitch when 5 guards pass (matched, conf>0.5, delta>10°, google<45°, area>8m²). Corrected pitch = google + 2°. Adds `google_solar_pitch_corrected` review reason | `server.js:24742-24770` |
 | Design-page boot (loading overlay) | Working; 12s safety timeout + catch handler | `server.js:9614, 9624` |
 | Manual faces unchanged | Yes; all ML branches gate on `sourceTag==='ml'` | `server.js:14154, 14243` |
 
@@ -337,7 +338,7 @@ python3 ml_ui_server.py
 
 ---
 
-### P8 — External Accuracy Cross-Validation [ACTIVE]
+### P8 — External Accuracy Cross-Validation [BANKED]
 
 **Purpose:** Use Google Solar `roofSegmentStats` as independent ground truth to detect and correct ML pitch errors.
 **Inputs:** Cleaned ML faces (from P4/P5), Google Solar `buildingInsights` for the design pin.
@@ -347,7 +348,7 @@ python3 ml_ui_server.py
 
 **Sub-phases:**
 1. **Instrumentation** [BANKED] — per-face matching and build-level mismatch flag. Validated on 8 properties: clean 0.47° mean Δpitch, 225 Gibson 18.25° FLAGGED, 0 clean false positives. See triage §9.
-2. **Pitch correction** [NEXT — not yet implemented] — substitute Google pitch on high-confidence mismatches where ML over-estimates. See implementation plan below.
+2. **Pitch correction** [BANKED] — substitute Google pitch + 2° on high-confidence mismatches where ML over-estimates by >10°. 5-guard rule: matched, confidence > 0.5, ml-google > 10°, google < 45°, area > 8m². Validated on 7 properties: 225 Gibson face[2] 46.9°→17.3°, 0 clean regressions, 175 Warwick correctly blocked. See triage §10.
 
 **Bank criteria for correction sub-phase:**
 - ≥1 wrong_pitch property measurably improved (corrected faces move into plausible residential range)
@@ -422,6 +423,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | P8 conservative pitch correction. One-directional correction using Google Solar pitch as external reference. 5-guard rule: matched, confidence > 0.5, ml-google delta > 10°, google_pitch < 45°, google_area > 8m². Corrected pitch = google_pitch + 2°. Validated on 7 properties: 225 Gibson face[2] corrected 46.9°→17.3° (eliminated only >40° face), 175 Warwick correctly blocked (Google agrees steep), 0 clean regressions, 0 improved regressions. Adds `google_solar_pitch_corrected` review reason, full per-face debug. See triage §10. |
 | 2026-04-19 | Engineering phase plan restructure. Replaced organic priority list with strict P0–P8 phase map. Each phase has purpose/inputs/outputs/debug structure/bank criteria/failure types/reopen trigger. P0–P7 all BANKED (orientation, erosion, RANSAC, rules, quality gate, review banner, pipeline debug, P8 instrumentation). P8 correction ACTIVE — one-directional pitch correction using Google Solar cross-val data, 4-guard conservative design. Backlog section for non-phase items. See section I. |
 | 2026-04-19 | P3 solar pitch cross-validation. CRM server fetches Google Solar `roofSegmentStats` after ML returns, matches each cleaned face to nearest segment (8m radius), computes pitch/azimuth deltas and match confidence. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces disagree by >15°. Validated on 8 properties: clean 0.47° mean Δpitch (no flag), improved 7-9° (no flag), 225 Gibson 18.25° mean (FLAGGED, 4/6 faces >15° delta), 175 Warwick confirms genuinely steep roof (Google agrees at 47°). Non-blocking, no ML changes. See `server.js:24657-24740`. |
 | 2026-04-19 | Post-result action buttons in needs_review banner. "Undo" (restores pre-ML state via `unifiedUndo()`) and "Dismiss" (acknowledges warning, keeps ML faces). Banner set to `pointer-events:auto` only for needs_review; all other states non-interactive. `_mlBanner()` helper resets pointer-events on every call. Solves the post-ML decision ambiguity: user now has a clear path to discard or keep a flagged result. |

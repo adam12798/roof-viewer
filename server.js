@@ -16389,7 +16389,8 @@ app.get("/design", (req, res) => {
           usable_gate_low: 'Low image usability score',
           orientation_high_residual: 'High plane-fit residual',
           orientation_low_inlier: 'Low plane-fit inlier ratio',
-          google_solar_pitch_mismatch: 'ML pitch disagrees with Google Solar roof data'
+          google_solar_pitch_mismatch: 'ML pitch disagrees with Google Solar roof data',
+          google_solar_pitch_corrected: 'Pitch corrected using Google Solar reference data'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -24663,6 +24664,13 @@ const P3_MATCH_RADIUS_M = 8.0;
 const P3_LARGE_DELTA_DEG = 15.0;
 const P3_MISMATCH_FRACTION = 0.50;
 
+// P8: Conservative one-directional pitch correction guards
+const P8_MIN_CONFIDENCE = 0.5;
+const P8_MIN_PITCH_DELTA = 10.0;   // only correct when ML is >10° steeper
+const P8_MAX_GOOGLE_PITCH = 45.0;  // don't trust Google on very steep segments
+const P8_MIN_GOOGLE_AREA = 8.0;    // skip tiny segments
+const P8_CORRECTION_BIAS = 2.0;    // corrected = google_pitch + 2° (conservative)
+
 async function solarPitchCrossValidation(lat, lng, envelope) {
   const cr = envelope.crm_result || {};
   const faces = cr.roof_faces || [];
@@ -24733,11 +24741,40 @@ async function solarPitchCrossValidation(lat, lng, envelope) {
     });
   }
 
+  // P8: conservative one-directional pitch correction
+  let correctedCount = 0;
+  const corrections = [];
+  for (const m of matches) {
+    m.correction_applied = false;
+    if (!m.matched) continue;
+    const delta = m.ml_pitch - m.google_pitch; // positive = ML steeper
+    if (m.match_confidence > P8_MIN_CONFIDENCE &&
+        delta > P8_MIN_PITCH_DELTA &&
+        m.google_pitch < P8_MAX_GOOGLE_PITCH &&
+        m.google_area_m2 > P8_MIN_GOOGLE_AREA) {
+      const correctedPitch = r2(m.google_pitch + P8_CORRECTION_BIAS);
+      m.original_ml_pitch = m.ml_pitch;
+      m.corrected_pitch = correctedPitch;
+      m.correction_applied = true;
+      m.correction_reason = `ml_pitch(${m.ml_pitch}) - google_pitch(${m.google_pitch}) = ${r2(delta)} > ${P8_MIN_PITCH_DELTA}`;
+      faces[m.face_idx].pitch = correctedPitch;
+      corrections.push({ face_idx: m.face_idx, from: m.ml_pitch, to: correctedPitch, delta: r2(m.ml_pitch - correctedPitch) });
+      correctedCount++;
+    } else if (m.matched) {
+      m.correction_reason = m.match_confidence <= P8_MIN_CONFIDENCE ? 'confidence_too_low'
+        : (m.ml_pitch - m.google_pitch) <= P8_MIN_PITCH_DELTA ? 'delta_below_threshold'
+        : m.google_pitch >= P8_MAX_GOOGLE_PITCH ? 'google_pitch_too_steep'
+        : m.google_area_m2 <= P8_MIN_GOOGLE_AREA ? 'google_segment_too_small'
+        : 'unknown';
+    }
+  }
+
   const matched = matches.filter(m => m.matched);
   const absDeltas = matched.map(m => Math.abs(m.pitch_delta));
   const largeDelta = matched.filter(m => Math.abs(m.pitch_delta) > P3_LARGE_DELTA_DEG && m.match_confidence > 0.3);
   const buildMismatch = matched.length >= 2 && largeDelta.length / matched.length >= P3_MISMATCH_FRACTION;
 
+  const correctionDeltas = corrections.map(c => c.delta);
   return {
     google_segments_available: segments.length,
     match_radius_m: P3_MATCH_RADIUS_M,
@@ -24750,6 +24787,10 @@ async function solarPitchCrossValidation(lat, lng, envelope) {
       faces_with_large_delta: largeDelta.length,
       large_delta_threshold_deg: P3_LARGE_DELTA_DEG,
       build_pitch_mismatch: buildMismatch,
+      faces_corrected: correctedCount,
+      corrections,
+      mean_correction_deg: correctedCount ? r2(correctionDeltas.reduce((a, b) => a + b, 0) / correctionDeltas.length) : null,
+      max_correction_deg: correctedCount ? r2(Math.max(...correctionDeltas)) : null,
     },
   };
 }
@@ -24818,6 +24859,18 @@ app.post("/api/ml/auto-build", async (req, res) => {
           console.log(`[p3_solar_crossval] FLAGGED: ${crossval.build_summary.faces_with_large_delta}/${crossval.build_summary.matched_faces} faces with >${P3_LARGE_DELTA_DEG}° pitch delta`);
         } else {
           console.log(`[p3_solar_crossval] OK: ${crossval.build_summary.matched_faces} matched, mean |Δpitch|=${crossval.build_summary.mean_abs_pitch_delta}°`);
+        }
+
+        if (crossval.build_summary.faces_corrected > 0) {
+          if (envelope.auto_build_status === "auto_accept") {
+            envelope.auto_build_status = "needs_review";
+          }
+          const reasons = envelope.review_policy_reasons || [];
+          if (!reasons.includes("google_solar_pitch_corrected")) {
+            reasons.push("google_solar_pitch_corrected");
+            envelope.review_policy_reasons = reasons;
+          }
+          console.log(`[p8_pitch_correction] CORRECTED ${crossval.build_summary.faces_corrected} face(s): mean=${crossval.build_summary.mean_correction_deg}° max=${crossval.build_summary.max_correction_deg}°`);
         }
       } else {
         console.log("[p3_solar_crossval] skipped: no Solar data or no faces");

@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19 (P3 solar cross-validation)
+**Last updated:** 2026-04-19 (P8 pitch correction)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -737,7 +737,76 @@ The cross-validation provides strong instrumentation. Potential future behaviors
 
 ---
 
-## 10. Related resources
+## 10. P8 pitch correction (2026-04-19)
+
+### 10.1 Goal
+
+Conservatively correct ML faces that are clearly too steep, using Google Solar pitch as external reference. One-directional only: reduce ML-too-steep, never flatten ML-too-flat.
+
+### 10.2 Correction rule
+
+Apply correction when ALL five guards hold:
+1. `matched == true` (face matched to a Google segment)
+2. `match_confidence > 0.5` (face centroid within ~4m of segment center)
+3. `ml_pitch - google_pitch > 10°` (ML is >10° steeper than Google)
+4. `google_pitch < 45°` (Google says normal residential pitch)
+5. `google_area_m2 > 8` (skip tiny segments)
+
+Corrected pitch = `google_pitch + 2°` (conservative bias toward ML).
+
+**Location:** `solarPitchCrossValidation()` in `server.js`, after match computation. Mutates `roof_faces[].pitch` on the envelope before it reaches the client.
+
+### 10.3 Debug fields added
+
+Per-match fields:
+- `correction_applied` (bool)
+- `original_ml_pitch` (float, only when corrected)
+- `corrected_pitch` (float, only when corrected)
+- `correction_reason` (string: describes which guard passed/blocked)
+
+Build summary fields:
+- `faces_corrected` (int)
+- `corrections[]` (array: `{face_idx, from, to, delta}`)
+- `mean_correction_deg` (float)
+- `max_correction_deg` (float)
+
+New review reason: `google_solar_pitch_corrected` — appended when any face is corrected; status downgraded to `needs_review`.
+
+### 10.4 Validation results (7 properties)
+
+| Property | Bucket | Faces | >40° | Corrected | Key result |
+|---|---|---:|---:|---:|---|
+| 225 Gibson St | wrong_pitch | 6 | 0 | 1 | face[2]: 46.9° → 17.3° (Δ=29.6°). Was only >40° face — now 0 |
+| 11 Ash Road | wrong_pitch | 1 | 0 | 0 | Poor extraction (1 unmatched face). Cannot help |
+| 13 Richardson St | wrong_pitch | 1 | 0 | 0 | Poor extraction (1 unmatched face). Cannot help |
+| 175 Warwick | wrong_pitch | 3 | 2 | 0 | Google agrees 47° — guard #4 blocks. Correct behavior |
+| 20 Meadow Dr | improved | 4 | 0 | 0 | All deltas <10° or ML flatter. Safe |
+| Lawrence | improved | 6 | 0 | 0 | All deltas <10° or ML flatter. Safe |
+| 15 Veteran Rd | clean | 3 | 0 | 0 | All deltas <1°. Zero regression |
+
+### 10.5 Key findings
+
+1. **225 Gibson is the prime success case.** face[2] was ML 46.92° vs Google 15.31° — a 31.6° over-estimation. Corrected to 17.31°. The property now has 0 faces >40° (was 1). All guards passed: confidence 0.70, delta +31.6°, google_pitch 15.31° < 45°, area 11m² > 8m².
+
+2. **Guards correctly blocked 5 other 225 Gibson faces.** face[0] ML 26.6° < Google 45.8° (ML flatter — one-directional guard). face[4] confidence 0.35 < 0.5. face[1,3,5] ML flatter than Google (negative delta). The correction is surgical.
+
+3. **175 Warwick guard #4 works.** Google confirms 47° pitch on all 3 faces. Delta is only +4.7° on the steepest face — well below the 10° threshold. Even without guard #4, the delta guard alone would have blocked correction.
+
+4. **Clean house (15 Veteran) has 0 corrections.** All deltas < 1°. Zero regression risk.
+
+5. **Improved houses (20 Meadow, Lawrence) untouched.** Deltas are 1–9° (below 10° threshold) or negative (ML flatter than Google). The correction cannot harm houses that are already good.
+
+6. **Stubborn poor-extraction houses (11 Ash, 13 Richardson) can't be helped.** Both produce 1 unmatched face. The correction targets pitch errors on well-matched faces, not poor ML extraction. These remain quality-gate territory.
+
+### 10.6 Verdict
+
+**KEEP.** The correction is conservative, correctly targeted, and produces no regressions. The only property that fires correction (225 Gibson) shows dramatic improvement: the worst face corrected by 29.6°, eliminating the only >40° face on the property.
+
+**Limitations:** P8 correction cannot help properties with poor ML extraction (11 Ash, 13 Richardson) — those need upstream model improvements. Properties where Google agrees with steep ML pitch (175 Warwick) are correctly left alone.
+
+---
+
+## 11. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
