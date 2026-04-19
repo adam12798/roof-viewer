@@ -16388,7 +16388,8 @@ app.get("/design", (req, res) => {
           all_planes_default_pitch: 'Pitch estimated from defaults (no DSM fit)',
           usable_gate_low: 'Low image usability score',
           orientation_high_residual: 'High plane-fit residual',
-          orientation_low_inlier: 'Low plane-fit inlier ratio'
+          orientation_low_inlier: 'Low plane-fit inlier ratio',
+          google_solar_pitch_mismatch: 'ML pitch disagrees with Google Solar roof data'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -24654,6 +24655,105 @@ app.post("/api/roof/auto-detect", async (req, res) => {
 // Defaults match the local ml_ui_server.py layout (port 5001,
 // /api/crm/auto-build). Set ML_ENGINE_URL / ML_AUTO_BUILD_PATH in .env
 // to point at a different host or path.
+// ── P3: Solar pitch cross-validation ────────────────────────────────────────
+// Compares ML-derived pitch/azimuth against Google Solar roofSegmentStats
+// to detect bad ML orientation. Non-blocking: if Solar API fails or returns
+// no segments, cross-validation silently skips.
+const P3_MATCH_RADIUS_M = 8.0;
+const P3_LARGE_DELTA_DEG = 15.0;
+const P3_MISMATCH_FRACTION = 0.50;
+
+async function solarPitchCrossValidation(lat, lng, envelope) {
+  const cr = envelope.crm_result || {};
+  const faces = cr.roof_faces || [];
+  if (!faces.length) return null;
+
+  const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=HIGH&key=${API_KEY}`;
+  const resp = await fetch(url);
+  if (!resp.ok) return null;
+  const solar = await resp.json();
+
+  const segments = ((solar.solarPotential || {}).roofSegmentStats) || [];
+  if (!segments.length) return null;
+
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  const segLocal = segments.map(seg => ({
+    x: (seg.center.longitude - lng) * 111320 * cosLat,
+    z: -(seg.center.latitude - lat) * 111320,
+    pitch: seg.pitchDegrees || 0,
+    azimuth: seg.azimuthDegrees || 0,
+    area: (seg.stats && seg.stats.areaMeters2) || 0,
+  }));
+
+  const r2 = v => Math.round(v * 100) / 100;
+  const matches = [];
+
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    const verts = face.vertices || [];
+    if (verts.length < 3) continue;
+
+    let cx = 0, cz = 0;
+    for (const v of verts) { cx += v.x; cz += v.z; }
+    cx /= verts.length;
+    cz /= verts.length;
+
+    let bestDist = Infinity, bestIdx = -1;
+    for (let si = 0; si < segLocal.length; si++) {
+      const dx = cx - segLocal[si].x;
+      const dz = cz - segLocal[si].z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < bestDist) { bestDist = d; bestIdx = si; }
+    }
+
+    if (bestIdx < 0 || bestDist > P3_MATCH_RADIUS_M) {
+      matches.push({ face_idx: fi, matched: false, ml_pitch: r2(face.pitch), ml_azimuth: r2(face.azimuth) });
+      continue;
+    }
+
+    const seg = segLocal[bestIdx];
+    const pitchDelta = face.pitch - seg.pitch;
+    let rawAz = Math.abs(face.azimuth - seg.azimuth) % 360;
+    if (rawAz > 180) rawAz = 360 - rawAz;
+
+    const distConf = Math.max(0, 1 - bestDist / P3_MATCH_RADIUS_M);
+    matches.push({
+      face_idx: fi,
+      matched: true,
+      ml_pitch: r2(face.pitch),
+      google_pitch: r2(seg.pitch),
+      pitch_delta: r2(pitchDelta),
+      ml_azimuth: r2(face.azimuth),
+      google_azimuth: r2(seg.azimuth),
+      azimuth_delta: r2(rawAz),
+      match_distance_m: r2(bestDist),
+      match_confidence: r2(distConf),
+      google_area_m2: r2(seg.area),
+      google_segment_idx: bestIdx,
+    });
+  }
+
+  const matched = matches.filter(m => m.matched);
+  const absDeltas = matched.map(m => Math.abs(m.pitch_delta));
+  const largeDelta = matched.filter(m => Math.abs(m.pitch_delta) > P3_LARGE_DELTA_DEG && m.match_confidence > 0.3);
+  const buildMismatch = matched.length >= 2 && largeDelta.length / matched.length >= P3_MISMATCH_FRACTION;
+
+  return {
+    google_segments_available: segments.length,
+    match_radius_m: P3_MATCH_RADIUS_M,
+    matches,
+    build_summary: {
+      matched_faces: matched.length,
+      unmatched_faces: matches.length - matched.length,
+      mean_abs_pitch_delta: matched.length ? r2(absDeltas.reduce((a, b) => a + b, 0) / absDeltas.length) : null,
+      max_abs_pitch_delta: matched.length ? r2(Math.max(...absDeltas)) : null,
+      faces_with_large_delta: largeDelta.length,
+      large_delta_threshold_deg: P3_LARGE_DELTA_DEG,
+      build_pitch_mismatch: buildMismatch,
+    },
+  };
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -24694,6 +24794,37 @@ app.post("/api/ml/auto-build", async (req, res) => {
         ? `Start the ML wrapper on ${ML_ENGINE_URL_DEFAULT} (cd /Volumes/Extreme_Pro/ML && python3 ml_ui_server.py) or set ML_ENGINE_URL in .env`
         : `Check the ML wrapper is running at ${ML_URL}${ML_PATH}; override with ML_ENGINE_URL / ML_AUTO_BUILD_PATH in .env`
     });
+  }
+
+  // P3 solar cross-validation (non-blocking — failure skips silently)
+  try {
+    const dc = body.design_center;
+    if (dc && dc.lat && dc.lng) {
+      const crossval = await solarPitchCrossValidation(+dc.lat, +dc.lng, envelope);
+      if (crossval) {
+        const cr = envelope.crm_result || (envelope.crm_result = {});
+        const md = cr.metadata || (cr.metadata = {});
+        md.p3_solar_crossval = crossval;
+
+        if (crossval.build_summary.build_pitch_mismatch) {
+          if (envelope.auto_build_status === "auto_accept") {
+            envelope.auto_build_status = "needs_review";
+          }
+          const reasons = envelope.review_policy_reasons || [];
+          if (!reasons.includes("google_solar_pitch_mismatch")) {
+            reasons.push("google_solar_pitch_mismatch");
+            envelope.review_policy_reasons = reasons;
+          }
+          console.log(`[p3_solar_crossval] FLAGGED: ${crossval.build_summary.faces_with_large_delta}/${crossval.build_summary.matched_faces} faces with >${P3_LARGE_DELTA_DEG}° pitch delta`);
+        } else {
+          console.log(`[p3_solar_crossval] OK: ${crossval.build_summary.matched_faces} matched, mean |Δpitch|=${crossval.build_summary.mean_abs_pitch_delta}°`);
+        }
+      } else {
+        console.log("[p3_solar_crossval] skipped: no Solar data or no faces");
+      }
+    }
+  } catch (e) {
+    console.log(`[p3_solar_crossval] skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.

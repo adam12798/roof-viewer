@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (needs_review banner action buttons)
+**Last updated:** 2026-04-19 (P3 solar pitch cross-validation)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -100,6 +100,7 @@ ML Auto Build button
 | ML config missing → actionable 503 | Working; banner shows hint+detail | `server.js:24570-24580` |
 | Banner severity helper `_mlBanner` | Working; 4 severities: neutral/warning/error/success | `server.js:16210-16222` |
 | Status-aware banner (needs_review) | Working; warning banner with human-readable reasons + Undo/Dismiss action buttons when `auto_build_status=needs_review` | `server.js:16380-16410` |
+| P3 solar pitch cross-validation | Working; compares ML pitch/azimuth against Google Solar roofSegmentStats per face, flags build when ≥50% of matched faces disagree by >15° | `server.js:24657-24740` |
 | Design-page boot (loading overlay) | Working; 12s safety timeout + catch handler | `server.js:9614, 9624` |
 | Manual faces unchanged | Yes; all ML branches gate on `sourceTag==='ml'` | `server.js:14154, 14243` |
 
@@ -247,6 +248,7 @@ python3 ml_ui_server.py
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
 - ~~Status-aware needs_review banner.~~ `mlAutoBuildContinue()` now checks `auto_build_status` from the ML response. `needs_review` → orange warning banner with human-readable reasons (8 labels mapped). Warning persists until user acts. `auto_accept` → green success banner (auto-hides after 6s). `reviewPolicyReasons` array added to server proxy response. Validated: clean → green, wrong_pitch → orange + 3 reasons, ugly → orange + 1 reason. See `server.js:16380-16396, 24712`.
 - ~~Post-result action buttons.~~ `needs_review` banner now includes "Undo" and "Dismiss" buttons. Undo calls `unifiedUndo()` to restore pre-ML state and hides banner. Dismiss hides banner (user keeps ML faces). Banner set to `pointer-events:auto` for needs_review only; all other banner states remain non-interactive. `_mlBanner()` helper resets `pointerEvents` to `none` on every call. See `server.js:16398-16410`.
+- ~~P3 solar pitch cross-validation.~~ CRM server fetches Google Solar `buildingInsights` after ML returns, converts `roofSegmentStats` to local coords, matches each ML face to nearest Google segment (8m radius). Per-face: `ml_pitch`, `google_pitch`, `pitch_delta`, `ml_azimuth`, `google_azimuth`, `azimuth_delta`, `match_confidence`. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces have |Δpitch| > 15°. Non-blocking (Solar API failure skips silently). Validated on 8 properties: clean 0.47° mean delta (no flag), improved 7-9° (no flag), 225 Gibson 18.25° (FLAGGED), 175 Warwick confirmed genuinely steep (Google agrees). Zero false positives on clean. See `server.js:24657-24740`.
 
 **Do NOT touch right now (unless new evidence surfaces):**
 - Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
@@ -260,6 +262,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | P3 solar pitch cross-validation. CRM server fetches Google Solar `roofSegmentStats` after ML returns, matches each cleaned face to nearest segment (8m radius), computes pitch/azimuth deltas and match confidence. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces disagree by >15°. Validated on 8 properties: clean 0.47° mean Δpitch (no flag), improved 7-9° (no flag), 225 Gibson 18.25° mean (FLAGGED, 4/6 faces >15° delta), 175 Warwick confirms genuinely steep roof (Google agrees at 47°). Non-blocking, no ML changes. See `server.js:24657-24740`. |
 | 2026-04-19 | Post-result action buttons in needs_review banner. "Undo" (restores pre-ML state via `unifiedUndo()`) and "Dismiss" (acknowledges warning, keeps ML faces). Banner set to `pointer-events:auto` only for needs_review; all other states non-interactive. `_mlBanner()` helper resets pointer-events on every call. Solves the post-ML decision ambiguity: user now has a clear path to discard or keep a flagged result. |
 | 2026-04-19 | Status-aware ML Auto Build banner. `needs_review` builds now show an orange warning banner with human-readable reasons (e.g., "Some roof planes have steep/uncertain pitch") instead of the default green success banner. Warning banners persist until user acts (no auto-hide). `reviewPolicyReasons` array now flows from ML envelope through server proxy to client. 8 reason labels mapped. Validated on 3 properties: clean (green), wrong_pitch (orange + 3 reasons), ugly (orange + 1 reason). Zero ML logic changes. |
 | 2026-04-19 | Pipeline phase debug framework. 7-phase structured report at `crm_result.metadata.pipeline_phases` with per-phase status/inputs/outputs/metrics/warnings and a `summary` object identifying the weakest phase. One-line server log. Zero logic changes — purely additive observability. See `ml_ui_server.py:_build_pipeline_phases()`. |
@@ -318,6 +321,21 @@ python3 ml_ui_server.py
 - `target_selection` — group count, selected size, tolerance, subcluster refinement info.
 - `geometry_cleanup` — input/output counts, dropped duplicates/tiny/slivers.
 - `build_quality` — n_cleaned, n_steep_band, steep_fraction, flagged.
+
+### P3 solar cross-validation (at `crm_result.metadata.p3_solar_crossval`)
+
+Added by CRM server (not ML wrapper) after ML returns. Compares ML pitch/azimuth against Google Solar roofSegmentStats.
+
+- `google_segments_available` — count of Google Solar roof segments for the address.
+- `match_radius_m` — max distance (8m) for face-to-segment matching.
+- `matches[]` — per-face match data:
+  - `face_idx`, `matched` (bool)
+  - If matched: `ml_pitch`, `google_pitch`, `pitch_delta`, `ml_azimuth`, `google_azimuth`, `azimuth_delta`, `match_distance_m`, `match_confidence`, `google_area_m2`, `google_segment_idx`
+- `build_summary` — aggregate:
+  - `matched_faces`, `unmatched_faces`
+  - `mean_abs_pitch_delta`, `max_abs_pitch_delta`
+  - `faces_with_large_delta` (count of faces with |Δpitch| > 15° and confidence > 0.3)
+  - `build_pitch_mismatch` (bool) — true when ≥50% of ≥2 matched faces have large delta
 
 ### Pipeline phase report (at `crm_result.metadata.pipeline_phases`)
 

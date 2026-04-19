@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19
+**Last updated:** 2026-04-19 (P3 solar cross-validation)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -673,7 +673,71 @@ Fallback: if any guard fails, the existing two-pass refit result is used unchang
 
 ---
 
-## 9. Related resources
+## 9. P3 solar pitch cross-validation (2026-04-19)
+
+### 9.1 Goal
+
+Cross-validate ML-derived pitch/azimuth against Google Solar `roofSegmentStats` to detect bad ML orientation and provide an independent confirmation signal.
+
+### 9.2 Implementation
+
+**Location:** CRM server (`server.js`), in the `/api/ml/auto-build` proxy route. No ML wrapper changes.
+
+**Flow:** After ML returns the envelope with cleaned `roof_faces`, the CRM server fetches Google Solar `buildingInsights` for the design pin lat/lng, extracts `roofSegmentStats`, and matches each ML face to the nearest Google segment.
+
+**Matching strategy:**
+1. Convert Google segment centers from lat/lng to local coordinates (metres relative to design pin)
+2. For each ML face, compute centroid as average of its 4 vertices
+3. Find nearest Google segment by Euclidean distance
+4. Match if distance < 8m (generous for residential buildings)
+5. Confidence = `max(0, 1 - distance / 8m)`
+
+**Azimuth comparison:** Both ML and Google use compass convention (0°=N, 90°=E, 180°=S, 270°=W). Minimum angular distance computed (0–180° range).
+
+**Build-level flag:** `google_solar_pitch_mismatch` appended to `review_policy_reasons` and status downgraded to `needs_review` when ALL conditions hold:
+- ≥ 2 matched faces
+- ≥ 50% of matched faces have |pitch_delta| > 15° AND match confidence > 0.3
+
+### 9.3 Validation results (8 properties)
+
+| Property | Bucket | Faces | Matched | Mean |Δpitch| | Max |Δpitch| | Flagged | Key finding |
+|---|---|---:|---:|---:|---:|---|---|
+| 15 Veteran Rd | clean | 3 | 3 | 0.47° | 0.71° | No | Near-perfect agreement |
+| 20 Meadow Dr | improved | 4 | 4 | 8.70° | 22.86° | No | 1 low-conf outlier at edge |
+| Lawrence | improved | 6 | 6 | 7.65° | 21.60° | No | 1 peripheral face outlier |
+| 175 Warwick | stubborn | 3 | 3 | 6.69° | 14.58° | No | Google AGREES on 47° steep — genuinely steep roof |
+| 225 Gibson St | wrong_pitch | 6 | 6 | 18.25° | 31.61° | **Yes** | 4/6 faces >15° delta; bidirectional errors |
+| 11 Ash Road | stubborn | 1 | 0 | — | — | No | Poor ML extraction, 1 unmatched face |
+| 13 Richardson St | stubborn | 1 | 0 | — | — | No | Poor ML extraction, 1 unmatched face |
+| 29 Porter St | wrong_pitch | 0 | — | — | — | — | Rejected by usable gate |
+
+### 9.4 Key findings
+
+1. **Clean houses show near-zero pitch delta** (0.47° mean on 15 Veteran). ML and Google Solar agree to within 1° on all 3 faces. No false positives.
+
+2. **Improved houses show moderate agreement** (7–9° mean). Most faces match well; occasional outliers are on peripheral faces with low match confidence, not on main roof planes.
+
+3. **175 Warwick reveals genuinely steep roof.** Google Solar itself reports 47° pitch — ML's 47–52° pitch is not an error but a correct measurement of an unusually steep roof. The quality gate flag (`build_tilt_quality_low`) is appropriate here as a "user should verify" signal, not a "ML is wrong" signal.
+
+4. **225 Gibson St correctly flagged as mismatch.** Mean delta 18.25°, with bidirectional errors: ML over-estimates some faces (46.9° vs Google's 15.3°) and under-estimates others (20.9° vs Google's 45.5°). The `google_solar_pitch_mismatch` flag fired correctly.
+
+5. **Stubborn properties with poor ML extraction** (11 Ash Road, 13 Richardson) produce few faces that don't match any Google segments. The cross-validation correctly reports them as unmatched rather than generating false matches.
+
+6. **Azimuth agreement is generally excellent** when pitch matches. Face[0] on 15 Veteran: ML 242.9° vs Google 244.2° (Δ = 1.3°). Azimuth diverges mainly when pitch is wrong (different planes being compared).
+
+### 9.5 Recommendation for next phase
+
+The cross-validation provides strong instrumentation. Potential future behaviors:
+
+1. **Pitch correction** (not yet implemented): When match confidence > 0.8 AND |Δpitch| > 15° AND Google pitch is in the residential range (10–45°) AND ML pitch is in the suspect 40–55° band, substitute the Google pitch. Targets the known failure mode while being conservative.
+
+2. **Per-face review badges**: Surface per-face pitch deltas in the CRM UI so users can see which faces are trustworthy vs suspect.
+
+3. **Correlation with quality gate**: When both `build_tilt_quality_low` and `google_solar_pitch_mismatch` fire on the same build, escalate to a stronger warning.
+
+---
+
+## 10. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
