@@ -16377,8 +16377,29 @@ app.get("/design", (req, res) => {
         }
         isDirty = true;
 
-        _mlBanner(banner, 'success', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '') + '. Save to keep changes.');
-        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
+        var _mlBuildStatus = mlData.status || 'auto_accept';
+        var _mlReviewReasons = mlData.reviewPolicyReasons || [];
+        var _REVIEW_REASON_LABELS = {
+          build_tilt_quality_low: 'Some roof planes have steep/uncertain pitch',
+          crm_soft_gate_applied: 'Low-confidence image detection',
+          dense_roof_anomaly: 'Dense/complex roof structure detected',
+          majority_planes_need_review: 'Most planes flagged for review',
+          all_planes_default_pitch: 'Pitch estimated from defaults (no DSM fit)',
+          usable_gate_low: 'Low image usability score',
+          orientation_high_residual: 'High plane-fit residual',
+          orientation_low_inlier: 'Low plane-fit inlier ratio'
+        };
+        var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
+        if (_mlBuildStatus === 'needs_review') {
+          var _reasonText = _mlReviewReasons
+            .map(function(r) { return _REVIEW_REASON_LABELS[r] || r; })
+            .join('; ');
+          _mlBanner(banner, 'warning', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> ' + _faceSummary + ' — needs review' + (_reasonText ? ': ' + _reasonText : '') + '. Check pitch values before saving.');
+          console.log('[ml-auto-build] needs_review:', _mlReviewReasons.join(', '));
+        } else {
+          _mlBanner(banner, 'success', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ' + _faceSummary + '. Save to keep changes.');
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
+        }
       })
       .catch(function(err) {
         _mlBanner(banner, 'error', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> ML Auto Build failed: ' + err.message);
@@ -24694,20 +24715,121 @@ app.post("/api/ml/auto-build", async (req, res) => {
     status: row.status,
     disposition: row.disposition,
     reason: row.reason,
+    reviewPolicyReasons: row.reviewPolicyReasons,
     crmResult: envelope.crm_result || null
   });
 });
 
-// ── ML drafts read endpoint (curl/manual verification — no UI yet) ─────────
-// GET /api/ml-drafts?projectId=&status=
-// Returns { drafts: [...], total }. No pagination yet.
+// ── ML drafts read endpoints (read-only triage surface) ────────────────────
+// Summarize a draft row down to the fields useful for ugly-case review,
+// without dragging along the full crmResult (crm_faces, roof_faces vertex
+// arrays, confidence_report, keepouts). Keeps list responses small enough to
+// eyeball in a browser tab while still exposing soft-gate / target-selection
+// / geometry-cleanup metadata that ML Auto Build already writes.
+function summarizeMlDraft(d) {
+  const cr = (d && d.crmResult) || {};
+  const md = cr.metadata || {};
+  const fd = md.frame_debug || {};
+  const ts = fd.target_selection || {};
+  const gc = fd.geometry_cleanup || {};
+  const sg = fd.soft_gate_debug || {};
+  const dsm = fd.dsm_debug || {};
+  const crop = fd.crop_debug || {};
+  const roofFaces = Array.isArray(cr.roof_faces) ? cr.roof_faces : [];
+  const crmFaces = Array.isArray(cr.crm_faces) ? cr.crm_faces : [];
+  return {
+    id: d.id,
+    projectId: d.projectId,
+    designId: d.designId,
+    createdAt: d.createdAt,
+    status: d.status,
+    disposition: d.disposition,
+    autoBuildStatus: d.autoBuildStatus,
+    mergePolicy: d.mergePolicy,
+    reviewPolicyReasons: d.reviewPolicyReasons || [],
+    reason: d.reason,
+    manualDesignPreserved: d.manualDesignPreserved,
+    crmResultStatus: cr.status || null,
+    softGate: {
+      rawUsableScore: sg.raw_usable_score == null ? null : sg.raw_usable_score,
+      effectiveUsableGateMin: sg.effective_usable_gate_min == null ? null : sg.effective_usable_gate_min,
+      applied: sg.soft_gate_applied === undefined ? null : !!sg.soft_gate_applied
+    },
+    faceCounts: {
+      raw: ts.raw_face_count == null ? null : ts.raw_face_count,
+      afterCleanup: gc.output_face_count == null ? null : gc.output_face_count,
+      selected: roofFaces.length,
+      crmFaces: crmFaces.length
+    },
+    targetSelection: {
+      groupCount: ts.group_count == null ? null : ts.group_count,
+      selectedGroupSize: ts.selected_group_size == null ? null : ts.selected_group_size,
+      selectedDistanceM: ts.selected_distance_m == null ? null : ts.selected_distance_m,
+      selectedAreaM2: ts.selected_area_m2 == null ? null : ts.selected_area_m2,
+      selectionReason: ts.selection_reason || null,
+      toleranceM: ts.tolerance_m == null ? null : ts.tolerance_m,
+      subclusterRefined: !!ts.subcluster_refinement,
+      pinInside: ts.selected_pin_inside === undefined ? null : !!ts.selected_pin_inside,
+      excludedGroupCount: ts.excluded_group_count == null ? null : ts.excluded_group_count,
+      excludedFaceCount: ts.excluded_face_count == null ? null : ts.excluded_face_count
+    },
+    geometryCleanup: {
+      inputFaceCount: gc.input_face_count == null ? null : gc.input_face_count,
+      outputFaceCount: gc.output_face_count == null ? null : gc.output_face_count,
+      droppedDuplicate: gc.dropped_duplicate == null ? null : gc.dropped_duplicate,
+      droppedTiny: gc.dropped_tiny == null ? null : gc.dropped_tiny,
+      droppedSliver: gc.dropped_sliver == null ? null : gc.dropped_sliver
+    },
+    dsm: {
+      built: dsm.built === undefined ? null : !!dsm.built,
+      finiteSamples: dsm.finite_samples == null ? null : dsm.finite_samples,
+      resolutionMPerCell: dsm.resolution_m_per_cell == null ? null : dsm.resolution_m_per_cell,
+      sourcePointCount: dsm.source_point_count == null ? null : dsm.source_point_count
+    },
+    crop: {
+      cropped: crop.cropped === undefined ? null : !!crop.cropped,
+      sourceWhPx: crop.source_wh_px || null,
+      targetWhPx: crop.target_wh_px || null
+    },
+    processingTimeS: md.processing_time_s == null ? null : md.processing_time_s,
+    pipelineMode: md.pipeline_mode || null,
+    pipelineVersion: md.pipeline_version || null,
+    imageSource: md.image_source || null,
+    detailUrl: "/api/ml-drafts/" + d.id
+  };
+}
+
+// GET /api/ml-drafts?projectId=&status=&disposition=&limit=&order=
+//   order: 'desc' (default, newest first) | 'asc'
+//   limit: clamp 1..500 (default 100)
+// Returns { drafts: [summary...], total, returned }. Read-only, no mutation.
 app.get("/api/ml-drafts", (req, res) => {
   const all = loadMlDrafts();
-  const { projectId, status } = req.query;
+  const { projectId, status, disposition } = req.query;
   let result = all;
   if (projectId) result = result.filter(d => d.projectId === projectId);
   if (status) result = result.filter(d => d.status === status);
-  res.json({ drafts: result, total: result.length });
+  if (disposition) result = result.filter(d => d.disposition === disposition);
+  const total = result.length;
+  const order = (req.query.order === "asc") ? "asc" : "desc";
+  result = result.slice();
+  result.sort((a, b) => {
+    const av = a.createdAt || "", bv = b.createdAt || "";
+    return order === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+  let limit = parseInt(req.query.limit, 10);
+  if (!Number.isFinite(limit) || limit <= 0) limit = 100;
+  if (limit > 500) limit = 500;
+  const page = result.slice(0, limit).map(summarizeMlDraft);
+  res.json({ drafts: page, total, returned: page.length, order, limit });
+});
+
+// GET /api/ml-drafts/:id — full unredacted row for deep-dive on an ugly case.
+app.get("/api/ml-drafts/:id", (req, res) => {
+  const all = loadMlDrafts();
+  const row = all.find(d => d.id === req.params.id);
+  if (!row) return res.status(404).json({ error: "draft not found" });
+  res.json(row);
 });
 
 // ── Shading engine: annual irradiance per roof section ───────────────────

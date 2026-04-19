@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (pipeline phase debug framework)
+**Last updated:** 2026-04-19 (needs_review banner UX)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -99,6 +99,7 @@ ML Auto Build button
 | LiDAR-optional (warn+continue) | Working | `server.js:16225` |
 | ML config missing → actionable 503 | Working; banner shows hint+detail | `server.js:24570-24580` |
 | Banner severity helper `_mlBanner` | Working; 4 severities: neutral/warning/error/success | `server.js:16210-16222` |
+| Status-aware banner (needs_review) | Working; warning banner with human-readable reasons when `auto_build_status=needs_review` | `server.js:16380-16396` |
 | Design-page boot (loading overlay) | Working; 12s safety timeout + catch handler | `server.js:9614, 9624` |
 | Manual faces unchanged | Yes; all ML branches gate on `sourceTag==='ml'` | `server.js:14154, 14243` |
 
@@ -244,6 +245,7 @@ python3 ml_ui_server.py
 - ~~RANSAC robust plane fitting.~~ `_fit_plane_ransac()` in `orientation.py`. 100 iterations, deterministic (seed=42). Fires when first-pass inlier ratio < 0.60. Three-guard acceptance: better ir AND flatter tilt AND tilt < 40°. Falls back to two-pass refit if any guard fails. 18-property validation: >40° faces 15→9 (−40%), 0 clean regressions, +4 genuine faces rescued. See §8.14.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
+- ~~Status-aware needs_review banner.~~ `mlAutoBuildContinue()` now checks `auto_build_status` from the ML response. `needs_review` → orange warning banner with human-readable reasons (8 labels mapped). Warning persists until user acts. `auto_accept` → green success banner (auto-hides after 6s). `reviewPolicyReasons` array added to server proxy response. Validated: clean → green, wrong_pitch → orange + 3 reasons, ugly → orange + 1 reason. See `server.js:16380-16396, 24712`.
 
 **Do NOT touch right now (unless new evidence surfaces):**
 - Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
@@ -257,6 +259,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | Status-aware ML Auto Build banner. `needs_review` builds now show an orange warning banner with human-readable reasons (e.g., "Some roof planes have steep/uncertain pitch") instead of the default green success banner. Warning banners persist until user acts (no auto-hide). `reviewPolicyReasons` array now flows from ML envelope through server proxy to client. 8 reason labels mapped. Validated on 3 properties: clean (green), wrong_pitch (orange + 3 reasons), ugly (orange + 1 reason). Zero ML logic changes. |
 | 2026-04-19 | Pipeline phase debug framework. 7-phase structured report at `crm_result.metadata.pipeline_phases` with per-phase status/inputs/outputs/metrics/warnings and a `summary` object identifying the weakest phase. One-line server log. Zero logic changes — purely additive observability. See `ml_ui_server.py:_build_pipeline_phases()`. |
 | 2026-04-19 | RANSAC robust plane fitting in orientation module. Three-guard acceptance (better ir + flatter tilt + tilt < 40°). 18-property validation: >40° faces 15→9 (−40%), 40–55° band 22%→12%. +4 genuine faces rescued from wall-dropping. 0 clean regressions. 5 properties improved (254 Foster, 22 New Spaulding, 29 Porter, 74 Gates, 43 Bellevue). See §8.14. |
 | 2026-04-18 | Build-level quality gate implemented and validated. Rule: `n_cleaned >= 2 AND pct_above_40° >= 40%`. Downgrades auto_accept → needs_review, appends `build_tilt_quality_low`. 18-property live validation: 6 flagged (11 Ash Road 75%, 175 Warwick 67%, 254 Foster 50%, 74 Gates 50%, 29 Porter 40%, 13 Richardson 40%). 0 clean false positives. All 3 primary targets caught. See §8.13. |
