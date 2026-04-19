@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-18 (build-level quality gate implemented and validated)
+**Last updated:** 2026-04-19 (RANSAC robust plane fitting implemented and validated)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -241,6 +241,7 @@ python3 ml_ui_server.py
 - ~~Polygon erosion before DSM sampling.~~ `EROSION_BUFFER_M = 0.5` in `orientation.py`. Binary mask erosion (pure numpy, separable square kernel) applied before DSM sampling in `_sample_dsm_for_plane()`. Falls back to un-eroded mask when eroded pixel count < 12. Live A/B on 6 properties: >40° faces 31→22 (−29%), >55° faces 14→9 (−36%). 4 improved, 1 mixed, 1 stable. See §8.10.
 - ~~Orientation tuning track.~~ Complete. Refit (±15cm, two-pass) + erosion (0.5m) are final settings. ±10cm tested and rejected (§8.9). 1.0m erosion tested and rejected (§8.11). Broad validation on 18 properties (§8.12): user-facing >40° faces −46% vs stored baseline, >55° faces −100%. Residual: 15 faces in 40–55° band (22% of cleaned). Cannot improve further without RANSAC or DSM upgrade.
 - ~~Build-level quality gate.~~ `STEEP_BAND_DEG=40°, STEEP_FRACTION_GATE=0.40, n_cleaned>=2` in `ml_ui_server.py`. Downgrades `auto_accept` → `needs_review`, appends `build_tilt_quality_low` to `review_policy_reasons`. Frontend label added to `REASON_LABELS`. Debug telemetry in `frame_debug.build_quality`. Live-validated: 6/18 flagged (all genuinely problematic), 0 clean false positives. See §8.13.
+- ~~RANSAC robust plane fitting.~~ `_fit_plane_ransac()` in `orientation.py`. 100 iterations, deterministic (seed=42). Fires when first-pass inlier ratio < 0.60. Three-guard acceptance: better ir AND flatter tilt AND tilt < 40°. Falls back to two-pass refit if any guard fails. 18-property validation: >40° faces 15→9 (−40%), 0 clean regressions, +4 genuine faces rescued. See §8.14.
 - ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
 - ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
 
@@ -255,6 +256,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | RANSAC robust plane fitting in orientation module. Three-guard acceptance (better ir + flatter tilt + tilt < 40°). 18-property validation: >40° faces 15→9 (−40%), 40–55° band 22%→12%. +4 genuine faces rescued from wall-dropping. 0 clean regressions. 5 properties improved (254 Foster, 22 New Spaulding, 29 Porter, 74 Gates, 43 Bellevue). See §8.14. |
 | 2026-04-18 | Build-level quality gate implemented and validated. Rule: `n_cleaned >= 2 AND pct_above_40° >= 40%`. Downgrades auto_accept → needs_review, appends `build_tilt_quality_low`. 18-property live validation: 6 flagged (11 Ash Road 75%, 175 Warwick 67%, 254 Foster 50%, 74 Gates 50%, 29 Porter 40%, 13 Richardson 40%). 0 clean false positives. All 3 primary targets caught. See §8.13. |
 | 2026-04-18 | Broad validation of current best baseline (18 properties). User-facing: 185 raw → 68 cleaned faces. >40° faces: 15 (22%). >55° faces: 0 (0%). 3/10 wrong_pitch RESOLVED (20 Meadow, Lawrence, 21 Stoddard). 2/4 ugly RESOLVED (583 Westford, 6 Court). All 4 clean stable. Before/after: >40° −46%, >55° −100%. Remaining failure: 40–55° residual tilt band (15 faces). Orientation tuning track closed. Next: build-level quality gate. See §8.12. |
 | 2026-04-18 | 1.0m erosion tested and rejected. Same-session A/B: >40° faces 22→26 (+18%), >55° faces 9→13 (+44%) vs 0.5m. Root cause: at ~18px radius, many polygons fall back to un-eroded mask (< 12 pixels survive), losing the 0.5m benefit. Larger polygons over-eroded. Verdict: 0.5m is the tuned optimum. Orientation tuning track closed. See §8.11. |

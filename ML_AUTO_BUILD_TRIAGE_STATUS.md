@@ -615,6 +615,46 @@ Key face-level shifts (20 Meadow, deterministic):
 
 **Baseline unchanged:** Rules D-G, two-pass refit, 0.5m erosion all locked. The gate is additive — it reads the post-cleanup face list and modifies only the envelope status/reasons.
 
+### 8.14 RANSAC robust plane fitting (2026-04-19)
+
+**Goal:** Reduce the residual 40–55° tilt band (15 faces, 22% of cleaned) using RANSAC to find the true roof plane under edge/wall contamination.
+
+**Implementation:** `_fit_plane_ransac()` in `orientation.py`. 100 iterations, 3-point samples, deterministic (seed=42). Triggered only when first-pass inlier ratio < 0.60 (same condition as existing two-pass refit). After RANSAC finds the best consensus inlier set, a final lstsq refit on those inliers produces the tilt/azimuth.
+
+**Three-guard acceptance rule — RANSAC result used only when ALL hold:**
+1. `ransac_ir > refit_ir` — RANSAC has better consensus than two-pass refit
+2. `ransac_tilt < refit_tilt` — RANSAC found a flatter plane (respects known steep-bias prior)
+3. `ransac_tilt < 40°` — prevents RANSAC from rescuing wall faces (>60°) into the 40–55° band
+
+Fallback: if any guard fails, the existing two-pass refit result is used unchanged.
+
+**Diagnostics added to `orientation_diagnostics`:** `ransac_fired`, `ransac_tilt_deg`, `ransac_inlier_ratio`.
+
+**18-property live validation (vs previous baseline without RANSAC):**
+
+| Metric | Previous | RANSAC | Change |
+|---|---:|---:|---|
+| Total cleaned faces | 68 | 72 | +4 rescued |
+| >40° faces (cleaned) | 15 | 9 | **−40%** |
+| >55° faces | 0 | 0 | stable |
+| 40–55° band | 15 (22%) | 9 (12%) | **−40%** |
+| Median tilt | 27.9° | 25.8° | −2.1° |
+| Clean >40° | 0 | 0 | zero regressions |
+
+**Properties improved (>40° reduced):**
+
+| Property | Bucket | Prev >40° | RANSAC >40° | Key correction |
+|---|---|---:|---:|---|
+| 254 Foster St | wrong_pitch | 1 | 0 | 45.1° → 30.7° |
+| 22 New Spaulding | wrong_pitch | 1 | 0 | 49.9° → 38.8° |
+| 29 Porter St | wrong_pitch | 2 | 0 | 47.6°→21.9°, 48.0°→35.6° |
+| 74 Gates | ugly | 2 | 1 | 54.7°→36.0°, +1 face rescued |
+| 43 Bellevue | ugly | 1 | 0 | 49.6° → 10.6° |
+
+**Properties unchanged:** 20 Meadow (0→0), 225 Gibson (1→1, +1 rescued face), Lawrence (0→0), 175 Warwick (2→2), 583 Westford (0→0), all 4 clean stable.
+
+**RANSAC event statistics:** 88 suspicious planes triggered the refit/RANSAC path. RANSAC fired on all 88 (always finds a consensus). 33 passed all three guards and were accepted. 55 rejected (steeper than refit or ≥40°).
+
 ---
 
 ## 9. Related resources
