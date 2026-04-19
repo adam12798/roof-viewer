@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (P3 solar pitch cross-validation)
+**Last updated:** 2026-04-19 (engineering phase plan restructure)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -221,40 +221,200 @@ python3 ml_ui_server.py
 
 ---
 
-## I. Next priorities (in order)
+## I. Engineering Phase Map
 
-**Reordered 2026-04-18 based on completed 32-row triage pass and expanded validation** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds. Geometry cleanup (Rules D–G) validated against all 91 non-rejected drafts. **Orientation tuning track fully closed 2026-04-19** — two-pass refit, 0.5m erosion, RANSAC all banked. Residual >40° faces reduced by 68%; remaining 9 faces in 3 stubborn properties are caught by the build-level quality gate.
+**Last restructured:** 2026-04-19.
 
-1. ~~Build-level quality gate.~~ **DONE** — see §8.13. Rule: `n_cleaned >= 2 AND faces_above_40° / n_cleaned >= 0.40`. Downgrades `auto_accept` → `needs_review`, appends `build_tilt_quality_low` reason. Live-validated on 18 properties: 6 flagged (5 wrong_pitch, 1 ugly), 0 clean false positives. All 3 primary targets caught.
-2. **Recover 7 missing labeled rows.** (Deprioritized — confirmed 0 missing clean. The 7 missing are 4 wrong_pitch + 1 reject_correct + 1 reject_too_strict + 1 ugly.)
-3. **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` is labeled for both "74 Gates" and "14 Warren Ave" — only one draft exists. Identify which address is correct.
-4. **Vertex snapping across adjacent ML faces.** `gap_overlap` = 0 across all 32 rows. Deprioritized. Re-promote only if new evidence surfaces.
-5. **Revisit usable-gate floor (0.20).** 5 `reject_correct` vs 3 `reject_too_strict` (5:3). Still not enough signal. 52 New Spaulding (usable ≈ 0.154) remains the reference.
-6. **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist with ML Auto Build. Product decision: hide, remove, or keep as fallback.
+**Discipline rules:**
+1. Only one phase is ACTIVE at a time.
+2. Banked phases are NOT reopened unless new debug evidence proves they are the bottleneck.
+3. Every code change names the phase it belongs to.
+4. Prefer real forward progress over repeated local tuning.
+5. Core ML models are never retrained in this track. Every improvement is preprocessing, policy, or plumbing.
 
-**Done since last handoff:**
-- ~~Steep-face filter.~~ Rule D: drop pitch > 60°.
-- ~~Narrow-face filter (plane dimension sanity).~~ Rule E: drop faces with short side < 2.0m. Catches eave/fascia/edge artifacts that escape the sliver, steep, and tiny rules. Validated: removes 8% of wrong_pitch faces, 20% of ugly faces, 1 low-conf artifact from clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6b.
-- ~~Small-relative filter.~~ Rule F: drop faces with area < 10% of max surviving face. Topology-aware (relative, not absolute). Batch validated on 19 reference properties: −6 wrong_pitch, −2 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c.
-- ~~Bad-fit steep filter (RFE-based).~~ Rule G: drop faces where RFE > 0.30 AND tilt > 40° AND area < 50% of max surviving. Three-way gate ensures no primary faces dropped. Batch: −9 wrong_pitch, −4 ugly, 0 clean. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §6c2.
-- ~~Rule G expanded validation.~~ Tested against all 91 non-rejected drafts (not just 19 labeled). 52 total BFS drops, 0 clean-profile affected. 29 clean-candidate unlabeled drafts all unaffected. Verdict: KEEP. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §7.
-- ~~Batch validation harness + per-face diagnostics.~~ `batch_validate.py` re-runs cleanup offline on stored drafts. `face_diagnostics` array in debug output for machine-readable per-face analysis.
-- ~~Two-pass inlier refit in orientation module.~~ `_fit_plane()` in `ml_engine/core/stages/orientation.py`. When first-pass inlier_ratio < 0.60 and inlier count ≥ 12, refits lstsq on inlier-only samples. Diagnostics: `refit_fired`, `first_pass_tilt_deg`, `inlier_count`. Synthetic: +9° bias → +0.5°. Live-validated on 6 properties: 4 improved, 1 unchanged, 1 clean stable. Typical correction: 1–4°, max 58.8° (wall→roof). Zero regressions. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §8.7–8.8.
-- ~~Polygon erosion before DSM sampling.~~ `EROSION_BUFFER_M = 0.5` in `orientation.py`. Binary mask erosion (pure numpy, separable square kernel) applied before DSM sampling in `_sample_dsm_for_plane()`. Falls back to un-eroded mask when eroded pixel count < 12. Live A/B on 6 properties: >40° faces 31→22 (−29%), >55° faces 14→9 (−36%). 4 improved, 1 mixed, 1 stable. See §8.10.
-- ~~Orientation tuning track.~~ Complete. Refit (±15cm, two-pass) + erosion (0.5m) are final settings. ±10cm tested and rejected (§8.9). 1.0m erosion tested and rejected (§8.11). Broad validation on 18 properties (§8.12): user-facing >40° faces −46% vs stored baseline, >55° faces −100%. Residual: 15 faces in 40–55° band (22% of cleaned). Cannot improve further without RANSAC or DSM upgrade.
-- ~~Build-level quality gate.~~ `STEEP_BAND_DEG=40°, STEEP_FRACTION_GATE=0.40, n_cleaned>=2` in `ml_ui_server.py`. Downgrades `auto_accept` → `needs_review`, appends `build_tilt_quality_low` to `review_policy_reasons`. Frontend label added to `REASON_LABELS`. Debug telemetry in `frame_debug.build_quality`. Live-validated: 6/18 flagged (all genuinely problematic), 0 clean false positives. See §8.13.
-- ~~RANSAC robust plane fitting.~~ `_fit_plane_ransac()` in `orientation.py`. 100 iterations, deterministic (seed=42). Fires when first-pass inlier ratio < 0.60. Three-guard acceptance: better ir AND flatter tilt AND tilt < 40°. Falls back to two-pass refit if any guard fails. 18-property validation: >40° faces 15→9 (−40%), 0 clean regressions, +4 genuine faces rescued. See §8.14.
-- ~~Finish the 30-property triage pass.~~ 32 rows bucketed (excluding 94 C St). `wrong_pitch` confirmed dominant at 14/32.
-- ~~Surface ml-drafts.json as a debug-only page.~~ Read-only JSON triage surface shipped as `GET /api/ml-drafts` (summary + filters) and `GET /api/ml-drafts/:id` (full detail). Enhanced with `summarizeMlDraft()`, disposition filter, sorting, pagination (uncommitted in server.js).
-- ~~Status-aware needs_review banner.~~ `mlAutoBuildContinue()` now checks `auto_build_status` from the ML response. `needs_review` → orange warning banner with human-readable reasons (8 labels mapped). Warning persists until user acts. `auto_accept` → green success banner (auto-hides after 6s). `reviewPolicyReasons` array added to server proxy response. Validated: clean → green, wrong_pitch → orange + 3 reasons, ugly → orange + 1 reason. See `server.js:16380-16396, 24712`.
-- ~~Post-result action buttons.~~ `needs_review` banner now includes "Undo" and "Dismiss" buttons. Undo calls `unifiedUndo()` to restore pre-ML state and hides banner. Dismiss hides banner (user keeps ML faces). Banner set to `pointer-events:auto` for needs_review only; all other banner states remain non-interactive. `_mlBanner()` helper resets `pointerEvents` to `none` on every call. See `server.js:16398-16410`.
-- ~~P3 solar pitch cross-validation.~~ CRM server fetches Google Solar `buildingInsights` after ML returns, converts `roofSegmentStats` to local coords, matches each ML face to nearest Google segment (8m radius). Per-face: `ml_pitch`, `google_pitch`, `pitch_delta`, `ml_azimuth`, `google_azimuth`, `azimuth_delta`, `match_confidence`. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces have |Δpitch| > 15°. Non-blocking (Solar API failure skips silently). Validated on 8 properties: clean 0.47° mean delta (no flag), improved 7-9° (no flag), 225 Gibson 18.25° (FLAGGED), 175 Warwick confirmed genuinely steep (Google agrees). Zero false positives on clean. See `server.js:24657-24740`.
+---
 
-**Do NOT touch right now (unless new evidence surfaces):**
-- Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
-- Crop size (35m is working; only adjust if larger roofs clip).
-- Core ML models (no retraining in this track).
-- Orientation fitting pipeline (erosion 0.5m, refit ±15cm/0.60, RANSAC 3-guard — all tuned to optimum; see triage §8.15).
+### P0 — Baseline Control [BANKED]
+
+**Purpose:** Triage, observability, and validation infrastructure.
+**Inputs:** Production ML drafts, operator labels.
+**Outputs:** 32-row bucket distribution, batch validation harness, per-face diagnostics, pipeline phase debug framework (7-phase), ml-drafts audit log, triage API.
+**Debug:** `pipeline_phases` summary, `face_diagnostics`, `frame_debug`, `GET /api/ml-drafts`.
+**Bank criteria:** ≥30 labeled rows bucketed; batch harness covers all labeled rows; pipeline phases report emitted for every build.
+**Status:** BANKED. 32 rows bucketed, 91-draft expanded validation, 7-phase pipeline report. See `ML_AUTO_BUILD_TRIAGE_STATUS.md` §1–§7.
+
+---
+
+### P1 — Imagery & DSM Acquisition [BANKED]
+
+**Purpose:** Deliver a usable satellite tile and DSM elevation grid to the ML pipeline.
+**Inputs:** Design pin lat/lng, Google API key.
+**Outputs:** Centre-cropped 640×640 satellite image, DSM grid from LiDAR, usable gate score.
+**Debug:** `crop_debug`, `dsm_debug`, `soft_gate_debug`.
+**Bank criteria:** Centre-crop working; DSM built from CRM LiDAR; usable gate floor calibrated; LiDAR-optional fallback tested.
+**Failure types:** Blurry/clouded imagery, missing DSM, usable gate too strict (reject_too_strict) or too loose.
+**Banked config:** Centre-crop 1280→640, DSM from LiDAR, usable gate floor 0.20, LiDAR-optional warn-and-continue.
+**Reopen trigger:** ≥20 new borderline usable-gate examples that shift the 5:3 reject ratio.
+
+---
+
+### P2 — Target Isolation [BANKED]
+
+**Purpose:** Select the single building under the design pin from the full-tile ML output.
+**Inputs:** All CRM-adapted faces from the full satellite tile.
+**Outputs:** Faces belonging to the target building only.
+**Debug:** `target_selection` in `frame_debug`.
+**Bank criteria:** `wrong_target` = 0 in labeled triage set; garage separation working; attached-neighbour suppression working.
+**Failure types:** Wrong building selected, detached garage included, attached-neighbour bleed.
+**Banked config:** Primary grouping 0.3m + subcluster refinement 0.15m. `wrong_target` = 0 across 32 rows.
+**Reopen trigger:** Any confirmed `wrong_target` failure on a new property.
+
+---
+
+### P3 — Plane Orientation Accuracy [BANKED]
+
+**Purpose:** Convert DSM heights into accurate per-plane tilt and azimuth.
+**Inputs:** Eroded polygon masks, DSM samples.
+**Outputs:** Per-face `tilt_deg`, `azimuth_deg` with `orientation_diagnostics`.
+**Debug:** `orientation_diagnostics` per face (`refit_fired`, `first_pass_tilt_deg`, `ransac_fired`, `ransac_tilt_deg`, `ransac_inlier_ratio`).
+**Bank criteria:** >40° faces reduced ≥60% from pre-tuning baseline; >55° faces = 0; 0 clean regressions.
+**Failure types:** Systematic tilt over-estimation from edge/wall DSM contamination.
+**Banked config:** Two-pass inlier refit (±15cm, threshold 0.60) + 0.5m polygon erosion + RANSAC (100 iter, 3-guard acceptance). >40° faces −68%, >55° −100%, 0 clean regressions. See triage §8.7–§8.15.
+**Dead ends explored:** ±10cm inlier threshold (rejected §8.9), 1.0m erosion (rejected §8.11).
+**Reopen trigger:** New DSM source or model retrain that changes the contamination profile.
+
+---
+
+### P4 — Geometry Cleanup [BANKED]
+
+**Purpose:** Remove artifact faces (walls, slivers, edge fragments) without touching good faces.
+**Inputs:** Target-isolated faces with tilt, area, aspect, RFE, confidence.
+**Outputs:** Cleaned face set with per-face diagnostics.
+**Debug:** `geometry_cleanup` in `frame_debug`, `face_diagnostics` array.
+**Bank criteria:** Rules validated on ≥90 drafts; 0 clean-profile affected; overall drop rate >40%.
+**Failure types:** Artifact faces surviving all rules; false positives on clean faces.
+**Banked config:** Rule D (pitch > 60°), Rule E (short side < 2.0m), Rule F (area < 10% of max), Rule G (RFE > 0.30 + tilt > 40° + ratio < 0.50). 192→106 faces (45% dropped), 0 clean regressions across 91 drafts. See triage §6–§7.
+**Reopen trigger:** New artifact class that escapes all four rules AND appears in ≥3 labeled properties.
+
+---
+
+### P5 — Build Quality Decision [BANKED]
+
+**Purpose:** Flag or downgrade entire builds that are unreliable despite per-face cleanup.
+**Inputs:** Cleaned face set, review policy from ML engine core.
+**Outputs:** `auto_build_status` (auto_accept / needs_review / reject), `review_policy_reasons[]`.
+**Debug:** `build_quality` in `frame_debug`.
+**Bank criteria:** All primary stubborn targets caught; 0 clean false positives.
+**Failure types:** Gate too strict (flagging good builds); gate too loose (missing bad builds).
+**Banked config:** `STEEP_BAND_DEG=40°, STEEP_FRACTION_GATE=0.40, n_cleaned>=2`. 6/18 flagged (5 wrong_pitch, 1 ugly), 0 clean false positives. See triage §8.13.
+**Reopen trigger:** ≥2 clean false positives confirmed, or a new failure class that the tilt-fraction gate misses.
+
+---
+
+### P6 — Output & CRM Injection [BANKED]
+
+**Purpose:** Deliver ML faces to the CRM 3D scene in the correct coordinate frame and rendering mode.
+**Inputs:** Cleaned faces, coordinate registration.
+**Outputs:** CRM-rendered single-slope faces with shared-edge suppression, correct save/reload/undo.
+**Debug:** `frame_debug` alignment fields (half_w, half_h, sample vertices).
+**Bank criteria:** Faces render at correct position; single-slope mode; shared edges grey; save/reload/undo preserve ML provenance.
+**Failure types:** Coordinate misalignment, rendering mode bugs, save/reload data loss.
+**Banked config:** Coordinate shift (image-TL → pin-centre), single-slope rendering (no hip decomposition), shared-edge suppression (midpoint-in-polygon), `source:'ml'` persistence, undo/redo sourceTag capture.
+**Reopen trigger:** A rendering or persistence bug confirmed in production.
+
+---
+
+### P7 — Product Workflow / User Decision Layer [BANKED]
+
+**Purpose:** Help the user understand and act on ML results through transient banners and action buttons.
+**Inputs:** Build status, review reasons, face data.
+**Outputs:** Banner with appropriate severity, action buttons (Undo/Dismiss), human-readable reason labels.
+**Debug:** Console logs for banner state transitions.
+**Bank criteria:** `needs_review` shows orange warning with reasons; `auto_accept` shows green success; Undo restores pre-ML state; Dismiss acknowledges and keeps faces; all reason labels mapped.
+**Failure types:** Banner not shown, wrong severity, user stuck without actionable path, pointer-events leak.
+**Banked config:** Status-aware banner, 9 reason labels (including `google_solar_pitch_mismatch`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
+**Reopen trigger:** New review reason that needs a label; user-reported UX confusion.
+
+---
+
+### P8 — External Accuracy Cross-Validation [ACTIVE]
+
+**Purpose:** Use Google Solar `roofSegmentStats` as independent ground truth to detect and correct ML pitch errors.
+**Inputs:** Cleaned ML faces (from P4/P5), Google Solar `buildingInsights` for the design pin.
+**Outputs:** Per-face cross-validation data (pitch/azimuth deltas, match confidence), build-level mismatch flag, pitch correction on qualifying faces.
+**Debug:** `p3_solar_crossval` in `crm_result.metadata` (matches array, build_summary).
+**Failure types:** Wrong Google segment matched to ML face; correction makes pitch worse; correction fires on a clean house.
+
+**Sub-phases:**
+1. **Instrumentation** [BANKED] — per-face matching and build-level mismatch flag. Validated on 8 properties: clean 0.47° mean Δpitch, 225 Gibson 18.25° FLAGGED, 0 clean false positives. See triage §9.
+2. **Pitch correction** [NEXT — not yet implemented] — substitute Google pitch on high-confidence mismatches where ML over-estimates. See implementation plan below.
+
+**Bank criteria for correction sub-phase:**
+- ≥1 wrong_pitch property measurably improved (corrected faces move into plausible residential range)
+- 0 clean regressions (no correction fires on clean houses)
+- 0 cases where correction makes pitch worse (ML was right, Google was wrong)
+- All corrected builds automatically flagged `needs_review` so user can verify
+
+**Reopen trigger for instrumentation:** Matching strategy found to be unreliable (wrong segments matched consistently).
+
+#### P8 Pitch Correction — Implementation Plan
+
+**What the data shows:**
+- Clean houses: 0.47° mean delta. Correction guards will never fire. Safe.
+- Improved houses (20 Meadow, Lawrence): 7–9° mean delta. Below threshold. Safe.
+- 175 Warwick: Google AGREES at 47°. Not an ML error — genuinely steep. Guards prevent correction.
+- 225 Gibson: 18.25° mean delta, 4/6 faces >15°. face[2]: ML=46.9° vs Google=15.3°. Prime correction candidate.
+- Stubborn poor-extraction (11 Ash Road, 13 Richardson): Too few faces, unmatched. Cannot help.
+
+**Correction rule (conservative, one-directional):**
+For each matched face, correct when ALL four guards hold:
+1. `match_confidence >= 0.70` (face centroid within ~2.4m of Google segment center)
+2. `abs(pitch_delta) > 10°` (significant disagreement)
+3. `ml_pitch > 40°` (ML pitch is in the known suspect band)
+4. `google_pitch < 35°` (Google says it is normal residential)
+
+**Why one-directional (only correct ML-too-steep, never ML-too-flat):**
+- ML's dominant systematic error is over-estimation due to DSM edge contamination (§8.2–8.3)
+- The orientation tuning track (P3) already corrects in the flatter direction; this extends that
+- 175 Warwick proves that genuinely steep roofs exist — Google agrees at 47° — so we must not flatten everything
+- Guard #3 (`ml_pitch > 40°`) ensures only suspect-band faces are candidates
+- Guard #4 (`google_pitch < 35°`) ensures we only substitute a plausible residential value
+
+**What to build (in `server.js`, `solarPitchCrossValidation()`):**
+1. After computing matches, loop over matched faces and apply the 4-guard correction
+2. When correcting: set `face.pitch = google_pitch` on the `roof_faces` array (mutates the envelope before it reaches the client)
+3. Record in the match entry: `corrected: true`, `original_ml_pitch`, `correction_source: "google_solar"`
+4. Add to `build_summary`: `faces_corrected`, `mean_correction_deg`, `max_correction_deg`
+5. When any face is corrected: add `google_solar_pitch_corrected` to `review_policy_reasons`, ensure status is `needs_review`
+6. Add the new reason label in the client `_REVIEW_REASON_LABELS`
+
+**What NOT to build:**
+- No azimuth correction (azimuth is accurate when pitch is correct — §9.4 finding #6)
+- No "ML too flat" correction (don't fight the orientation tuning that pushes tilts down)
+- No correction when `match_confidence < 0.70` (uncertain spatial match)
+- No correction when `google_pitch >= 35°` (don't replace one steep value with another steep value)
+
+**Validation plan:**
+- 225 Gibson St: expect face[2] corrected (46.9° → 15.3°). face[3] NOT corrected (ML=20.9°, not in >40° band).
+- 175 Warwick: expect NO correction (Google agrees on steep ≥47°, guard #4 blocks).
+- 11 Ash Road: expect NO correction (unmatched face).
+- 20 Meadow Dr: expect NO correction (all faces <40° post-orientation-tuning).
+- Lawrence: expect NO correction (all faces <40°).
+- 15 Veteran Rd: expect NO correction (delta 0.47°).
+- Full 18-property sweep to catch edge cases.
+
+**Estimated size:** ~25 lines added to `solarPitchCrossValidation()` + 1 label in client code.
+
+---
+
+### Backlog (not phase-gated)
+
+These items are tracked but not tied to the active phase:
+- **Recover 7 missing labeled rows.** 0 missing clean confirmed. Low priority.
+- **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` labels 74 Gates and 14 Warren Ave. One is a phantom.
+- **Vertex snapping across adjacent ML faces.** `gap_overlap` = 0 across 32 rows. Dormant.
+- **Revisit usable-gate floor (0.20).** 5:3 ratio, not enough signal. Needs ≥20 more borderline examples. Dormant.
+- **Legacy roof buttons.** "Auto detect roof" and "Smart roof" coexist. Product decision pending.
 
 ---
 
@@ -262,6 +422,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | Engineering phase plan restructure. Replaced organic priority list with strict P0–P8 phase map. Each phase has purpose/inputs/outputs/debug structure/bank criteria/failure types/reopen trigger. P0–P7 all BANKED (orientation, erosion, RANSAC, rules, quality gate, review banner, pipeline debug, P8 instrumentation). P8 correction ACTIVE — one-directional pitch correction using Google Solar cross-val data, 4-guard conservative design. Backlog section for non-phase items. See section I. |
 | 2026-04-19 | P3 solar pitch cross-validation. CRM server fetches Google Solar `roofSegmentStats` after ML returns, matches each cleaned face to nearest segment (8m radius), computes pitch/azimuth deltas and match confidence. Build-level flag: `google_solar_pitch_mismatch` when ≥50% of matched faces disagree by >15°. Validated on 8 properties: clean 0.47° mean Δpitch (no flag), improved 7-9° (no flag), 225 Gibson 18.25° mean (FLAGGED, 4/6 faces >15° delta), 175 Warwick confirms genuinely steep roof (Google agrees at 47°). Non-blocking, no ML changes. See `server.js:24657-24740`. |
 | 2026-04-19 | Post-result action buttons in needs_review banner. "Undo" (restores pre-ML state via `unifiedUndo()`) and "Dismiss" (acknowledges warning, keeps ML faces). Banner set to `pointer-events:auto` only for needs_review; all other states non-interactive. `_mlBanner()` helper resets pointer-events on every call. Solves the post-ML decision ambiguity: user now has a clear path to discard or keep a flagged result. |
 | 2026-04-19 | Status-aware ML Auto Build banner. `needs_review` builds now show an orange warning banner with human-readable reasons (e.g., "Some roof planes have steep/uncertain pitch") instead of the default green success banner. Warning banners persist until user acts (no auto-hide). `reviewPolicyReasons` array now flows from ML envelope through server proxy to client. 8 reason labels mapped. Validated on 3 properties: clean (green), wrong_pitch (orange + 3 reasons), ugly (orange + 1 reason). Zero ML logic changes. |
