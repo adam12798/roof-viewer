@@ -16219,6 +16219,7 @@ app.get("/design", (req, res) => {
       banner.style.display = 'flex';
       banner.style.background = s.bg;
       banner.style.color = s.fg;
+      banner.style.pointerEvents = 'none';
       banner.innerHTML = html;
     }
 
@@ -16394,10 +16395,18 @@ app.get("/design", (req, res) => {
           var _reasonText = _mlReviewReasons
             .map(function(r) { return _REVIEW_REASON_LABELS[r] || r; })
             .join('; ');
-          _mlBanner(banner, 'warning', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> ' + _faceSummary + ' — needs review' + (_reasonText ? ': ' + _reasonText : '') + '. Check pitch values before saving.');
+          var _btnStyle = 'border:none;border-radius:4px;padding:4px 10px;font-size:0.78rem;font-weight:600;cursor:pointer;';
+          _mlBanner(banner, 'warning',
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> '
+            + '<span style="flex:1;">' + _faceSummary + ' — needs review' + (_reasonText ? ': ' + _reasonText : '') + '.</span>'
+            + '<button onclick="unifiedUndo();var _b=document.getElementById(\\\'roofModeBanner\\\');if(_b){_b.style.display=\\\'none\\\';_b.style.pointerEvents=\\\'none\\\';}" style="' + _btnStyle + 'background:#7a4a00;color:#fff;">Undo</button>'
+            + '<button onclick="var _b=document.getElementById(\\\'roofModeBanner\\\');if(_b){_b.style.display=\\\'none\\\';_b.style.pointerEvents=\\\'none\\\';}" style="' + _btnStyle + 'background:transparent;color:#7a4a00;text-decoration:underline;">Dismiss</button>'
+          );
+          banner.style.pointerEvents = 'auto';
           console.log('[ml-auto-build] needs_review:', _mlReviewReasons.join(', '));
         } else {
           _mlBanner(banner, 'success', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg> ' + _faceSummary + '. Save to keep changes.');
+          banner.style.pointerEvents = 'none';
           setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
         }
       })
