@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-18
+**Last updated:** 2026-04-19
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -269,7 +269,9 @@ No further wrapper-level geometry cleanup rule can separate the remaining wrong_
 
 ## 8. DSM orientation tilt-bias investigation (2026-04-18)
 
-### 8.1 How the orientation module works
+### 8.1 How the orientation module works (original baseline, pre-tuning)
+
+> **Note:** This section describes the orientation module as it existed at the start of the investigation (pre-refit, pre-erosion, pre-RANSAC). For the current state of the module after the complete tuning track, see §8.7 (refit), §8.10 (erosion), and §8.14 (RANSAC).
 
 The orientation module (`ml_engine/core/stages/orientation.py`) converts DSM height data into per-plane tilt and azimuth. For each plane polygon from the Mask R-CNN planes stage, it: (1) projects the polygon from metre space to pixel coordinates via the inverse registration affine, (2) rasterizes the polygon into a boolean pixel mask, (3) samples DSM heights at all mask pixels with finite values, (4) projects those pixel coords back to metre space to get a 3D point cloud `(x_m, y_m, z_m)`, (5) performs a **single** NumPy `lstsq` fit of `z = ax + by + c` to get the plane gradient, and (6) converts gradient to tilt via `arctan(sqrt(a²+b²))` and azimuth via `atan2(-a, b)`. There is no RANSAC, no inlier refit, and no polygon erosion. Minimum 12 finite DSM samples required; below that, falls back to a default 10° pitch. The gradient math is geometrically correct.
 
@@ -572,7 +574,7 @@ Key face-level shifts (20 Meadow, deterministic):
 |---|---|---|---|
 | Two-pass lstsq (inlier refit) | Targeted, ~15 lines, uses existing metrics | Requires engine-core change | **Recommended** |
 | Polygon erosion (shrink by 0.5–1m before sampling) | Addresses edge contamination directly | Needs buffer calibration, larger change, reduces sample count | Viable but more complex |
-| RANSAC instead of lstsq | Gold-standard robust fit | Much larger change, new dependency, slower | Overkill for now |
+| RANSAC instead of lstsq | Gold-standard robust fit | Much larger change, new dependency, slower | **DONE** — see §8.14 |
 | Wrapper tilt cap (cap to 35° when flagged) | No engine change needed | Hack, loses real tilt information, doesn't fix azimuth | Not recommended |
 | Tilt correction factor (multiply by 0.7) | Simple | No theoretical basis, varies by property | Not recommended |
 
@@ -654,6 +656,20 @@ Fallback: if any guard fails, the existing two-pass refit result is used unchang
 **Properties unchanged:** 20 Meadow (0→0), 225 Gibson (1→1, +1 rescued face), Lawrence (0→0), 175 Warwick (2→2), 583 Westford (0→0), all 4 clean stable.
 
 **RANSAC event statistics:** 88 suspicious planes triggered the refit/RANSAC path. RANSAC fired on all 88 (always finds a consensus). 33 passed all three guards and were accepted. 55 rejected (steeper than refit or ≥40°).
+
+### 8.15 Orientation tuning track — closed and banked (2026-04-19)
+
+**Banked baseline (commit 51c969b):** Two-pass inlier refit + 0.5m polygon erosion + RANSAC robust plane fitting. This is the final orientation fitting strategy for the current pipeline.
+
+**Cumulative improvement from pre-tuning baseline:**
+- >40° faces: 28 → 9 (−68%)
+- >55° faces: 5 → 0 (−100%)
+- 40–55° band: dominant failure mode reduced from 29% to 12% of cleaned faces
+- Clean properties: 0 regressions across all 4 references
+
+**Remaining 9 faces >40° are in 3 stubborn properties** (11 Ash Road, 175 Warwick, 13 Richardson) where DSM contamination is pervasive — not edge-only. All 3 are caught by the build-level quality gate (§8.13). Further improvement requires higher-resolution DSM data or model retraining, not fitting-strategy changes.
+
+**Track progression:** single-pass lstsq → two-pass inlier refit (§8.7) → 0.5m erosion (§8.10) → RANSAC (§8.14). Dead ends explored and rejected: ±10cm inlier threshold (§8.9), 1.0m erosion (§8.11).
 
 ---
 
