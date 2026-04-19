@@ -221,7 +221,7 @@ python3 ml_ui_server.py
 
 ## I. Next priorities (in order)
 
-**Reordered 2026-04-18 based on completed 32-row triage pass and expanded validation** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds. Geometry cleanup (Rules D–G) validated against all 91 non-rejected drafts.
+**Reordered 2026-04-18 based on completed 32-row triage pass and expanded validation** (see `ML_AUTO_BUILD_TRIAGE_STATUS.md`). Distribution confirmed — `wrong_pitch` is the dominant failure mode at 58% of successful builds. Geometry cleanup (Rules D–G) validated against all 91 non-rejected drafts. **Orientation tuning track fully closed 2026-04-19** — two-pass refit, 0.5m erosion, RANSAC all banked. Residual >40° faces reduced by 68%; remaining 9 faces in 3 stubborn properties are caught by the build-level quality gate.
 
 1. ~~Build-level quality gate.~~ **DONE** — see §8.13. Rule: `n_cleaned >= 2 AND faces_above_40° / n_cleaned >= 0.40`. Downgrades `auto_accept` → `needs_review`, appends `build_tilt_quality_low` reason. Live-validated on 18 properties: 6 flagged (5 wrong_pitch, 1 ugly), 0 clean false positives. All 3 primary targets caught.
 2. **Recover 7 missing labeled rows.** (Deprioritized — confirmed 0 missing clean. The 7 missing are 4 wrong_pitch + 1 reject_correct + 1 reject_too_strict + 1 ugly.)
@@ -249,6 +249,7 @@ python3 ml_ui_server.py
 - Usable gate floor (0.20 is well-calibrated; only move with ≥20 more borderline examples).
 - Crop size (35m is working; only adjust if larger roofs clip).
 - Core ML models (no retraining in this track).
+- Orientation fitting pipeline (erosion 0.5m, refit ±15cm/0.60, RANSAC 3-guard — all tuned to optimum; see triage §8.15).
 
 ---
 
