@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (RANSAC robust plane fitting implemented and validated)
+**Last updated:** 2026-04-19 (pipeline phase debug framework)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -257,6 +257,7 @@ python3 ml_ui_server.py
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | Pipeline phase debug framework. 7-phase structured report at `crm_result.metadata.pipeline_phases` with per-phase status/inputs/outputs/metrics/warnings and a `summary` object identifying the weakest phase. One-line server log. Zero logic changes — purely additive observability. See `ml_ui_server.py:_build_pipeline_phases()`. |
 | 2026-04-19 | RANSAC robust plane fitting in orientation module. Three-guard acceptance (better ir + flatter tilt + tilt < 40°). 18-property validation: >40° faces 15→9 (−40%), 40–55° band 22%→12%. +4 genuine faces rescued from wall-dropping. 0 clean regressions. 5 properties improved (254 Foster, 22 New Spaulding, 29 Porter, 74 Gates, 43 Bellevue). See §8.14. |
 | 2026-04-18 | Build-level quality gate implemented and validated. Rule: `n_cleaned >= 2 AND pct_above_40° >= 40%`. Downgrades auto_accept → needs_review, appends `build_tilt_quality_low`. 18-property live validation: 6 flagged (11 Ash Road 75%, 175 Warwick 67%, 254 Foster 50%, 74 Gates 50%, 29 Porter 40%, 13 Richardson 40%). 0 clean false positives. All 3 primary targets caught. See §8.13. |
 | 2026-04-18 | Broad validation of current best baseline (18 properties). User-facing: 185 raw → 68 cleaned faces. >40° faces: 15 (22%). >55° faces: 0 (0%). 3/10 wrong_pitch RESOLVED (20 Meadow, Lawrence, 21 Stoddard). 2/4 ugly RESOLVED (583 Westford, 6 Court). All 4 clean stable. Before/after: >40° −46%, >55° −100%. Remaining failure: 40–55° residual tilt band (15 faces). Orientation tuning track closed. Next: build-level quality gate. See §8.12. |
@@ -312,3 +313,21 @@ python3 ml_ui_server.py
 - `target_selection` — group count, selected size, tolerance, subcluster refinement info.
 - `geometry_cleanup` — input/output counts, dropped duplicates/tiny/slivers.
 - `build_quality` — n_cleaned, n_steep_band, steep_fraction, flagged.
+
+### Pipeline phase report (at `crm_result.metadata.pipeline_phases`)
+
+Structured per-phase debug report. Each phase has `name`, `status` (ok/warn/fail/skip), `inputs`, `outputs`, `metrics`, `warnings`. Top-level `summary` identifies the weakest phase at a glance.
+
+| Phase | Key | What it covers | Key metrics |
+|---|---|---|---|
+| P1 | `p1_imagery` | Satellite image fetch + centre crop | footprint_m, mpp |
+| P2 | `p2_dsm` | DSM grid construction from LiDAR points | finite_samples, coverage_pct |
+| P3 | `p3_ml_inference` | ML pipeline + usable gate | usable_score, raw_faces |
+| P4 | `p4_target_isolation` | Building grouping + subcluster refinement | isolation_ratio, groups |
+| P5 | `p5_geometry_cleanup` | Rules B-G + duplicate removal | drop_rate, drops_by_rule, dominant_drop_rule |
+| P6 | `p6_quality_gate` | Build-level tilt quality gate | steep_fraction, flagged |
+| P7 | `p7_output` | Final CRM face assembly | tilt_distribution, median_pitch |
+
+**Summary object** (`pipeline_phases.summary`): `verdict` (ok/warn/fail), `weakest_phase`, `face_counts` (raw→isolation→cleanup→final), `warnings[]`.
+
+Server log emits a one-line summary: `[crm_auto_build] pipeline: verdict=ok weakest=none faces=15→5→4→4 warnings=0`.
