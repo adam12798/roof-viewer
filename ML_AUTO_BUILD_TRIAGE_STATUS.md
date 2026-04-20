@@ -1175,7 +1175,85 @@ Classify each surviving roof face as `main_roof_candidate`, `secondary_roof_cand
 
 ---
 
-## 15. Related resources
+## 15. V2P3 — Ridge / Hip / Valley Relationship Logic
+
+**Date:** 2026-04-19
+**Phase:** V2 Phase 3 (after V2P0/V2P0.1/V2P1/V2P2)
+**Pipeline placement:** After V2P2 in proxy route. Classification/debug only — no geometry mutation.
+
+### 15.1 Method
+
+Classify structural relationships between adjacent face pairs (edge gap < 4m) using 6 signal families:
+
+| Signal | What it measures |
+|---|---|
+| A. Azimuth relationship | opposing (≥140° diff) → ridge candidate; oblique (30-140°) → hip/valley candidate; near_parallel (<30°) → seam/step candidate |
+| B. Pitch compatibility | Pitch delta between faces; lower delta supports ridge/seam, higher delta supports step |
+| C. Edge gap closeness | Nearest edge distance; tighter gaps → stronger relationships |
+| D. Meeting point geometry | Midpoint of closest edge samples between the two faces |
+| E. Convex/concave hint | Dot product of each face's downslope direction with centroid-to-meeting-point vector; both negative → convex (hip/ridge); both positive → concave (valley); otherwise mixed |
+| F. Main-roof participation | From V2P2: main/main, main/secondary, secondary/secondary patterns |
+
+**Classification rules:**
+- **ridge_like:** opposing azimuths, pitch delta < 15°, gap < 3m. Convex confirmation boosts confidence; concave halves it.
+- **hip_like:** oblique azimuths, convex hint, gap < 3m
+- **valley_like:** oblique azimuths, concave hint, gap < 3m
+- **seam_like:** near-parallel azimuths, pitch delta < 8°, gap < 2m
+- **step_like:** parallel or oblique with pitch delta ≥ 15°, gap < 3m
+- **uncertain:** insufficient evidence for any classification
+
+### 15.2 Constants
+
+`V2P3_CANDIDATE_GAP_M=4.0`, `V2P3_RIDGE_MIN_AZ_OPPOSITION=140`, `V2P3_SEAM_MAX_AZ_PARALLEL=30`, `V2P3_RIDGE_MAX_PITCH_DELTA=15`, `V2P3_SEAM_MAX_PITCH_DELTA=8`, `V2P3_STEP_MIN_PITCH_DELTA=15`, `V2P3_STRONG_REL_CONF=0.6`, `V2P3_MODERATE_REL_CONF=0.35`.
+
+### 15.3 Per-pair debug fields
+
+`face_a_idx`, `face_b_idx`, `pair_is_main_relevant`, `both_main`, `azimuth_a`, `azimuth_b`, `azimuth_relationship`, `azimuth_diff`, `azimuth_opposition_error`, `pitch_a`, `pitch_b`, `pitch_delta`, `edge_gap_m`, `shared_or_near_edge_score`, `convexity_hint`, `relationship_confidence`, `relationship_type`, `relationship_reasons[]`, `main_secondary_pattern`.
+
+### 15.4 Build-level debug fields
+
+`v2_relationship_logic_applied`, `candidate_relationship_count`, `ridge_like_count`, `hip_like_count`, `valley_like_count`, `seam_like_count`, `step_like_count`, `uncertain_relationship_count`, `main_relationship_count`, `dominant_relationship_family`, `best_relationship_confidence`, `weak_relationship_count`, `roof_relationship_coherence_score`, `relationship_warnings[]`, `relationship_phase_notes[]`, `relationship_details[]`.
+
+### 15.5 Warnings emitted
+
+`main_faces_mostly_uncertain`, `no_clear_main_relationships`, `excessive_seam_like_main_pairs`, `weak_ridge_hip_valley_evidence`, `fragmented_main_body_relationships`.
+
+### 15.6 Validation results (8 properties)
+
+| Property | Bucket | Faces | Cands | Ridge | Hip | Valley | Seam | Step | Unc | Coherence | Warnings |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 15 Veteran Rd | clean_gable | 3 | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0.99 | none |
+| 20 Meadow Dr | improved_simple | 3 | 3 | 2 | 0 | 1 | 0 | 0 | 0 | 0.65 | weak_ridge_hip_valley_evidence |
+| 225 Gibson St | complex_corrected | 6 | 9 | 2 | 1 | 0 | 0 | 2 | 4 | 0.59 | none |
+| 175 Warwick | steep_real | 3 | 3 | 1 | 1 | 1 | 0 | 0 | 0 | 0.88 | none |
+| Lawrence | improved_complex | 6 | 12 | 2 | 2 | 0 | 1 | 1 | 6 | 0.55 | none |
+| 13 Richardson St | single_ground | 1 | — | — | — | — | — | — | — | — | (skipped, 1 face) |
+| 11 Ash Road | target_strip | 1 | — | — | — | — | — | — | — | — | (skipped, 1 face) |
+| 583 Westford St | rejected | 0 | — | — | — | — | — | — | — | — | (skipped, 0 faces) |
+
+### 15.7 Key findings
+
+1. **Clean gable gets dominant ridge structure.** 15 Veteran: coherence=0.99. Two ridge_like pairs both confirmed convex (faces slope away from crest). Seam between faces [1,2] correctly identified — near-identical azimuths (Δ=1.96°) and pitches (Δ=0.7°). Best confidence=0.96.
+
+2. **Convexity hint correctly differentiates hip from valley.** 175 Warwick: face[0] (108m², the large face) meets face[1] with concave geometry → valley_like. Same face[0] meets face[2] with convex geometry → hip_like. The ridge between [1,2] is correctly convex-confirmed.
+
+3. **Complex roofs remain conservative.** 225 Gibson: 4 of 9 relationships are uncertain — these are oblique pairs with mixed convexity where the system correctly refuses to claim hip or valley. Lawrence: 6 of 12 uncertain — all are oblique with mixed convexity hints. This is honest behavior, not overclaiming.
+
+4. **Step relationships identified.** 225 Gibson: faces [3,5] (Δpitch=17.77°, parallel azimuths) and [1,2] (Δpitch=19.26°) correctly classified as step_like — large pitch differences between parallel-facing planes suggest level transitions.
+
+5. **Hip-like relationship at 90° oblique confirmed.** 225 Gibson: face[3] (89.6m², the dominant face) meets face[4] (15.4m²) at exactly 90.37° azimuth difference with convex geometry → hip_like, conf=0.93. This is the highest-confidence relationship in the complex roof.
+
+6. **20 Meadow warns appropriately.** The best confidence is 0.59, just below the 0.6 strong threshold → warns `weak_ridge_hip_valley_evidence`. Both ridge pairs have weaker evidence (opposition errors of 8.99° and 38.2°) than the clean 15 Veteran gable.
+
+7. **No geometry mutation, no status changes.** V2P3 is classification/debug only. All prior phase outputs preserved.
+
+### 15.8 Verdict
+
+**KEEP.** V2P3 produces interpretable structural relationship labels that correctly identify ridge-like, hip-like, valley-like, seam-like, and step-like relationships. The convexity hint using downslope vector geometry successfully differentiates hip from valley. Complex roofs are handled conservatively with honest uncertainty rather than overclaiming. Simple gable roofs get near-perfect coherence with dominant ridge classification. Zero production risk (debug-only, no geometry mutation, no status changes).
+
+---
+
+## 16. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

@@ -25560,6 +25560,255 @@ function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndice
   return v2p2SummarizeMainRoof(scored, components, compIds, totalArea, v2p1Data);
 }
 
+// ── V2 Phase 3: Ridge / Hip / Valley Relationship Logic ──────────────────
+const V2P3_CANDIDATE_GAP_M = 4.0;
+const V2P3_RIDGE_MIN_AZ_OPPOSITION = 140;
+const V2P3_SEAM_MAX_AZ_PARALLEL = 30;
+const V2P3_RIDGE_MAX_PITCH_DELTA = 15;
+const V2P3_SEAM_MAX_PITCH_DELTA = 8;
+const V2P3_STEP_MIN_PITCH_DELTA = 15;
+const V2P3_STRONG_REL_CONF = 0.6;
+const V2P3_MODERATE_REL_CONF = 0.35;
+
+function v2p3AzimuthRelationship(azA, azB) {
+  const diff = v2p1AngularDistance(azA, azB);
+  const oppositionError = v2p1AngularDistance(azB, (azA + 180) % 360);
+  if (oppositionError < (180 - V2P3_RIDGE_MIN_AZ_OPPOSITION)) {
+    return { type: 'opposing', angular_diff: _r2(diff), opposition_error: _r2(oppositionError) };
+  } else if (diff < V2P3_SEAM_MAX_AZ_PARALLEL) {
+    return { type: 'near_parallel', angular_diff: _r2(diff), opposition_error: _r2(oppositionError) };
+  } else {
+    return { type: 'oblique', angular_diff: _r2(diff), opposition_error: _r2(oppositionError) };
+  }
+}
+
+function v2p3FindMeetingPoint(vertsA, vertsB) {
+  function edgeSamples(verts) {
+    const pts = [];
+    for (let i = 0; i < verts.length; i++) {
+      pts.push(verts[i]);
+      const j = (i + 1) % verts.length;
+      pts.push({ x: (verts[i].x + verts[j].x) / 2, z: (verts[i].z + verts[j].z) / 2 });
+    }
+    return pts;
+  }
+  const ptsA = edgeSamples(vertsA), ptsB = edgeSamples(vertsB);
+  let minD = Infinity, bestA = null, bestB = null;
+  for (const a of ptsA) {
+    for (const b of ptsB) {
+      const d = Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2);
+      if (d < minD) { minD = d; bestA = a; bestB = b; }
+    }
+  }
+  if (!bestA || !bestB) return { x: 0, z: 0 };
+  return { x: (bestA.x + bestB.x) / 2, z: (bestA.z + bestB.z) / 2 };
+}
+
+function v2p3ConvexityHint(faceA, faceB, meetPt) {
+  const azRadA = faceA.azimuth * Math.PI / 180;
+  const azRadB = faceB.azimuth * Math.PI / 180;
+  const dsxA = Math.sin(azRadA), dszA = -Math.cos(azRadA);
+  const dsxB = Math.sin(azRadB), dszB = -Math.cos(azRadB);
+  const toMeetAx = meetPt.x - faceA.centroid.x, toMeetAz = meetPt.z - faceA.centroid.z;
+  const toMeetBx = meetPt.x - faceB.centroid.x, toMeetBz = meetPt.z - faceB.centroid.z;
+  const dotA = dsxA * toMeetAx + dszA * toMeetAz;
+  const dotB = dsxB * toMeetBx + dszB * toMeetBz;
+  if (dotA < 0 && dotB < 0) return 'convex';
+  if (dotA > 0 && dotB > 0) return 'concave';
+  return 'mixed';
+}
+
+function v2p3ClassifyRelationship(azRel, pitchDelta, edgeGap, convexHint) {
+  const gapScore = Math.max(0, 1 - edgeGap / V2P3_CANDIDATE_GAP_M);
+  const pitchMatch = Math.max(0, 1 - pitchDelta / 20);
+  let relType = 'uncertain';
+  let confidence = 0;
+  const reasons = [];
+
+  if (azRel.type === 'opposing') {
+    const azQuality = Math.max(0, 1 - azRel.opposition_error / 40);
+    if (pitchDelta < V2P3_RIDGE_MAX_PITCH_DELTA && edgeGap < 3.0) {
+      relType = 'ridge_like';
+      confidence = _r2(azQuality * 0.40 + pitchMatch * 0.25 + gapScore * 0.35);
+      reasons.push(`opposing_az(err=${azRel.opposition_error}°)`);
+      reasons.push(`pitch_compatible(Δ=${_r2(pitchDelta)}°)`);
+      if (convexHint === 'convex') reasons.push('convex_confirmed');
+      else if (convexHint === 'concave') {
+        confidence = _r2(confidence * 0.5);
+        reasons.push('concave_contradicts_ridge');
+      }
+    } else {
+      relType = 'uncertain';
+      confidence = _r2(azQuality * 0.3);
+      reasons.push(`opposing_but_weak(Δpitch=${_r2(pitchDelta)}°,gap=${_r2(edgeGap)}m)`);
+    }
+  } else if (azRel.type === 'oblique') {
+    const azQuality = Math.max(0, 1 - Math.abs(azRel.angular_diff - 90) / 60);
+    if (convexHint === 'convex' && edgeGap < 3.0) {
+      relType = 'hip_like';
+      confidence = _r2(azQuality * 0.30 + pitchMatch * 0.20 + gapScore * 0.30 + 0.20);
+      reasons.push(`oblique_az(${azRel.angular_diff}°)`);
+      reasons.push('convex_geometry');
+    } else if (convexHint === 'concave' && edgeGap < 3.0) {
+      relType = 'valley_like';
+      confidence = _r2(azQuality * 0.30 + pitchMatch * 0.20 + gapScore * 0.30 + 0.20);
+      reasons.push(`oblique_az(${azRel.angular_diff}°)`);
+      reasons.push('concave_geometry');
+    } else if (pitchDelta >= V2P3_STEP_MIN_PITCH_DELTA && edgeGap < 3.0) {
+      relType = 'step_like';
+      confidence = _r2(gapScore * 0.40 + 0.20);
+      reasons.push(`oblique_large_pitch_delta(${_r2(pitchDelta)}°)`);
+    } else {
+      relType = 'uncertain';
+      confidence = _r2(azQuality * 0.2 + gapScore * 0.2);
+      reasons.push(`oblique_insufficient(az=${azRel.angular_diff}°,cvx=${convexHint})`);
+    }
+  } else if (azRel.type === 'near_parallel') {
+    const azQuality = Math.max(0, 1 - azRel.angular_diff / V2P3_SEAM_MAX_AZ_PARALLEL);
+    if (pitchDelta < V2P3_SEAM_MAX_PITCH_DELTA && edgeGap < 2.0) {
+      relType = 'seam_like';
+      confidence = _r2(azQuality * 0.30 + pitchMatch * 0.30 + gapScore * 0.40);
+      reasons.push(`parallel_az(Δ=${azRel.angular_diff}°)`);
+      reasons.push(`similar_pitch(Δ=${_r2(pitchDelta)}°)`);
+    } else if (pitchDelta >= V2P3_SEAM_MAX_PITCH_DELTA) {
+      relType = 'step_like';
+      confidence = _r2(gapScore * 0.40 + 0.15);
+      reasons.push(`parallel_different_pitch(Δ=${_r2(pitchDelta)}°)`);
+    } else {
+      relType = 'seam_like';
+      confidence = _r2(azQuality * 0.20 + gapScore * 0.30);
+      reasons.push(`parallel_weak_seam(gap=${_r2(edgeGap)}m)`);
+    }
+  }
+
+  return { relType, confidence, reasons };
+}
+
+function v2p3CollectCandidatePairs(faces, v2p2Data) {
+  const n = faces.length;
+  const faceData = faces.map((f, i) => {
+    const verts = f.vertices || [];
+    return {
+      idx: i, area: v2p0PolygonArea(verts),
+      centroid: verts.length >= 3 ? v2p1Centroid(verts) : { x: 0, z: 0 },
+      pitch: f.pitch || 0, azimuth: f.azimuth || 0, vertices: verts,
+    };
+  });
+
+  const v2p2Cls = {};
+  if (v2p2Data && v2p2Data.face_assessments) {
+    for (const fa of v2p2Data.face_assessments) v2p2Cls[fa.face_idx] = fa.main_roof_classification;
+  }
+
+  const relationships = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
+      const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
+      if (gap >= V2P3_CANDIDATE_GAP_M) continue;
+
+      const fA = faceData[i], fB = faceData[j];
+      const azRel = v2p3AzimuthRelationship(fA.azimuth, fB.azimuth);
+      const pitchDelta = Math.abs(fA.pitch - fB.pitch);
+      const meetPt = v2p3FindMeetingPoint(fA.vertices, fB.vertices);
+      const convexHint = v2p3ConvexityHint(fA, fB, meetPt);
+      const clsA = v2p2Cls[i] || 'uncertain';
+      const clsB = v2p2Cls[j] || 'uncertain';
+      const isMainRelevant = clsA === 'main_roof_candidate' || clsB === 'main_roof_candidate';
+      const bothMain = clsA === 'main_roof_candidate' && clsB === 'main_roof_candidate';
+
+      const { relType, confidence, reasons } = v2p3ClassifyRelationship(azRel, pitchDelta, gap, convexHint);
+
+      relationships.push({
+        face_a_idx: i, face_b_idx: j,
+        pair_is_main_relevant: isMainRelevant, both_main: bothMain,
+        azimuth_a: _r2(fA.azimuth), azimuth_b: _r2(fB.azimuth),
+        azimuth_relationship: azRel.type,
+        azimuth_diff: azRel.angular_diff,
+        azimuth_opposition_error: azRel.opposition_error,
+        pitch_a: _r2(fA.pitch), pitch_b: _r2(fB.pitch),
+        pitch_delta: _r2(pitchDelta),
+        edge_gap_m: _r2(gap),
+        shared_or_near_edge_score: _r2(Math.max(0, 1 - gap / V2P3_CANDIDATE_GAP_M)),
+        convexity_hint: convexHint,
+        relationship_confidence: confidence,
+        relationship_type: relType,
+        relationship_reasons: reasons,
+        main_secondary_pattern: `${clsA.replace('_roof_candidate', '').replace('_candidate', '')}/${clsB.replace('_roof_candidate', '').replace('_candidate', '')}`,
+      });
+    }
+  }
+  relationships.sort((a, b) => b.relationship_confidence - a.relationship_confidence);
+  return relationships;
+}
+
+function v2p3SummarizeRelationships(relationships, totalFaces, v2p2Data) {
+  const counts = { ridge_like: 0, hip_like: 0, valley_like: 0, seam_like: 0, step_like: 0, uncertain: 0 };
+  for (const r of relationships) counts[r.relationship_type]++;
+
+  const mainRels = relationships.filter(r => r.pair_is_main_relevant);
+  const strongRels = relationships.filter(r => r.relationship_confidence >= V2P3_STRONG_REL_CONF);
+  const interpreted = relationships.length - counts.uncertain;
+
+  let dominantFamily = 'none';
+  let maxCount = 0;
+  for (const [type, count] of Object.entries(counts)) {
+    if (type !== 'uncertain' && count > maxCount) { maxCount = count; dominantFamily = type; }
+  }
+
+  let coherenceScore;
+  if (relationships.length === 0 || totalFaces <= 1) {
+    coherenceScore = 0;
+  } else {
+    const interpretedFrac = interpreted / relationships.length;
+    const strongFrac = strongRels.length / Math.max(1, relationships.length);
+    const mainInterpreted = mainRels.filter(r => r.relationship_type !== 'uncertain').length;
+    const mainInterpretedFrac = mainRels.length > 0 ? mainInterpreted / mainRels.length : 0;
+    const bestConf = relationships[0].relationship_confidence;
+    coherenceScore = _r2(interpretedFrac * 0.25 + strongFrac * 0.25 + mainInterpretedFrac * 0.25 + bestConf * 0.25);
+  }
+
+  const warnings = [];
+  if (mainRels.length > 0 && mainRels.every(r => r.relationship_type === 'uncertain'))
+    warnings.push('main_faces_mostly_uncertain');
+  if (relationships.length >= 2 && interpreted === 0)
+    warnings.push('no_clear_main_relationships');
+  if (mainRels.length >= 2 && mainRels.filter(r => r.relationship_type === 'seam_like').length > mainRels.length * 0.7)
+    warnings.push('excessive_seam_like_main_pairs');
+  if (relationships.length >= 3 && strongRels.length === 0)
+    warnings.push('weak_ridge_hip_valley_evidence');
+  if (v2p2Data && v2p2Data.main_roof_candidate_count >= 3) {
+    const bothMainRels = mainRels.filter(r => r.both_main && r.relationship_type !== 'uncertain');
+    if (bothMainRels.length === 0 && mainRels.length > 0)
+      warnings.push('fragmented_main_body_relationships');
+  }
+
+  return {
+    v2_relationship_logic_applied: true,
+    candidate_relationship_count: relationships.length,
+    ridge_like_count: counts.ridge_like,
+    hip_like_count: counts.hip_like,
+    valley_like_count: counts.valley_like,
+    seam_like_count: counts.seam_like,
+    step_like_count: counts.step_like,
+    uncertain_relationship_count: counts.uncertain,
+    main_relationship_count: mainRels.length,
+    dominant_relationship_family: dominantFamily,
+    best_relationship_confidence: relationships.length > 0 ? relationships[0].relationship_confidence : null,
+    weak_relationship_count: relationships.filter(r => r.relationship_confidence < V2P3_MODERATE_REL_CONF && r.relationship_type !== 'uncertain').length,
+    roof_relationship_coherence_score: coherenceScore,
+    relationship_warnings: warnings,
+    relationship_phase_notes: [],
+    relationship_details: relationships,
+  };
+}
+
+function roofRelationshipAssessment(faces, v2p2Data, v2p1Data) {
+  if (!faces || faces.length < 2) return null;
+  const relationships = v2p3CollectCandidatePairs(faces, v2p2Data);
+  return v2p3SummarizeRelationships(relationships, faces.length, v2p2Data);
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -25744,6 +25993,28 @@ app.post("/api/ml/auto-build", async (req, res) => {
     }
   } catch (e) {
     console.log(`[v2p2_main_roof] skipped: ${e.message}`);
+  }
+
+  // V2P3: Ridge / Hip / Valley Relationship Logic (non-blocking, debug-only)
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 2) {
+      const md = cr.metadata || (cr.metadata = {});
+      const v2p2 = md.v2p2_main_roof_coherence || null;
+      const v2p1 = md.v2p1_structural_coherence || null;
+      const v2p3 = roofRelationshipAssessment(roofFaces, v2p2, v2p1);
+      if (v2p3) {
+        md.v2p3_roof_relationships = v2p3;
+        if (v2p3.relationship_warnings.length > 0) {
+          console.log(`[v2p3_relationships] warnings=[${v2p3.relationship_warnings.join(',')}] coherence=${v2p3.roof_relationship_coherence_score} ridge=${v2p3.ridge_like_count} hip=${v2p3.hip_like_count} valley=${v2p3.valley_like_count}`);
+        } else {
+          console.log(`[v2p3_relationships] OK: coherence=${v2p3.roof_relationship_coherence_score} ridge=${v2p3.ridge_like_count} hip=${v2p3.hip_like_count} valley=${v2p3.valley_like_count} seam=${v2p3.seam_like_count} step=${v2p3.step_like_count} unc=${v2p3.uncertain_relationship_count}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p3_relationships] skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.

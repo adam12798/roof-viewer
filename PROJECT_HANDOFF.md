@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (V2P2 main roof coherence / main-vs-secondary plane logic)
+**Last updated:** 2026-04-19 (V2P3 ridge / hip / valley relationship logic)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -513,6 +513,34 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
+### V2P3 — Ridge / Hip / Valley Relationship Logic [BANKED]
+
+**Purpose:** Classify structural relationships between adjacent surviving face pairs as ridge_like, hip_like, valley_like, seam_like, step_like, or uncertain.
+
+**Inputs:** Final post-suppression roof faces, V2P2 main/secondary classifications.
+
+**Outputs:** Per-pair: azimuth relationship (opposing/oblique/near_parallel), pitch delta, edge gap, convexity hint (convex/concave/mixed), relationship confidence, relationship type, reasons. Build-level: relationship counts by type, dominant family, roof_relationship_coherence_score, warnings.
+
+**Pipeline placement:** After V2P2 in proxy route. Classification/debug only — no geometry mutation, no face deletion, no status changes.
+
+**Signal families (6):** A. Azimuth relationship (opposing → ridge, oblique → hip/valley, near_parallel → seam/step). B. Pitch compatibility. C. Edge gap closeness. D. Approximate meeting edge via closest points. E. Convex vs concave hint from downslope vectors relative to meeting point. F. Main-roof participation from V2P2.
+
+**Classification logic:** Opposing + pitch<15° + gap<3m → ridge_like. Oblique + convex → hip_like. Oblique + concave → valley_like. Near-parallel + pitch<8° + gap<2m → seam_like. Parallel or oblique + pitch>=15° → step_like. Insufficient evidence → uncertain.
+
+**Constants:** `V2P3_CANDIDATE_GAP_M=4.0`, `V2P3_RIDGE_MIN_AZ_OPPOSITION=140`, `V2P3_SEAM_MAX_AZ_PARALLEL=30`, `V2P3_RIDGE_MAX_PITCH_DELTA=15`, `V2P3_SEAM_MAX_PITCH_DELTA=8`, `V2P3_STEP_MIN_PITCH_DELTA=15`, `V2P3_STRONG_REL_CONF=0.6`, `V2P3_MODERATE_REL_CONF=0.35`.
+
+**Coherence score formula:** interpreted_fraction × 0.25 + strong_fraction × 0.25 + main_interpreted_fraction × 0.25 + best_confidence × 0.25.
+
+**Warnings emitted:** `main_faces_mostly_uncertain`, `no_clear_main_relationships`, `excessive_seam_like_main_pairs`, `weak_ridge_hip_valley_evidence`, `fragmented_main_body_relationships`.
+
+**Bank criteria:** Simple gable roofs produce dominant ridge_like relationships with high confidence; complex roofs remain conservative (uncertain when evidence is mixed); convexity hint correctly differentiates hip from valley; no geometry rewritten; no status changes.
+
+**Status:** BANKED. 15 Veteran (clean gable): coherence=0.99, 2 ridge + 1 seam, dominant=ridge_like, best conf=0.96 (convex_confirmed). 20 Meadow: coherence=0.65, 2 ridge + 1 valley, warns weak_ridge_hip_valley_evidence. 225 Gibson (complex): coherence=0.59, 2 ridge + 1 hip + 2 step + 4 uncertain — conservative. 175 Warwick (steep): coherence=0.88, 1 ridge + 1 hip + 1 valley — convexity correctly differentiates. Lawrence (complex): coherence=0.55, 2 ridge + 2 hip + 1 seam + 1 step + 6 uncertain — 6 uncertain is honest for ambiguous oblique pairs. 0 geometry changes, 0 status flips. See triage §15.
+
+**Reopen trigger:** V2P3 relationship types proven misleading on a new property class, or convexity hint found systematically wrong.
+
+---
+
 ### Backlog (not phase-gated)
 
 These items are tracked but not tied to the active phase:
@@ -528,6 +556,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P3 Ridge / Hip / Valley Relationship Logic. Classifies structural relationships between adjacent face pairs using 6 signal families: azimuth relationship, pitch compatibility, edge gap, meeting point geometry, convex/concave hint from downslope vectors, and V2P2 main-roof relevance. 6 relationship types: ridge_like, hip_like, valley_like, seam_like, step_like, uncertain. Convexity detection uses dot product of downslope direction with centroid-to-meeting-point vector to differentiate hip (convex) from valley (concave). Validated on 8 properties: 15 Veteran coherence=0.99 (2 ridge+1 seam, dominant=ridge_like), 225 Gibson coherence=0.59 (2 ridge+1 hip+2 step+4 uncertain), Lawrence coherence=0.55 (2 ridge+2 hip+6 uncertain — conservative). No geometry mutation, no status changes. See triage §15. |
 | 2026-04-19 | V2P2 Main Roof Coherence / Main-vs-Secondary Plane Logic. Classifies surviving faces as main_roof_candidate / secondary_roof_candidate / uncertain using 5 weighted signal families: area importance (0.30), structural participation from V2P1 pairs (0.25), adjacency via edge gap (0.20), centrality (0.10), V2P0 realism (0.15). Build-level main_roof_coherence_score rewards area concentration, dominance, and structural coverage. Validated on 8 properties: 15 Veteran coherence=0.94 (all main), 20 Meadow coherence=0.88 (2 main+1 uncertain), 225 Gibson coherence=0.77 (4 main+1 secondary+1 uncertain), Lawrence coherence=0.80 (4 main+2 uncertain), 175 Warwick coherence=0.84 (steep, all main). 13 Richardson correctly warns no_clear_dominant_roof_body. No geometry mutation, no status changes. See triage §14. |
 | 2026-04-19 | V2P0.1 Ground suppression hardening. 4-way conjunction rule removes obviously ground-like elongated faces: height<1.5m AND elongation>4.0 AND pitch<15° AND not structure_like. Uses eigenvalue-based elongation ratio. Validated on 8 properties: 20 Meadow face[3] suppressed (elong=7.61, removed from roof_faces), 0 false positives on clean/steep/complex/improved roofs. Adds `v2p0_ground_surface_suppressed` review reason and per-face elongation debug. See triage §12. |
 | 2026-04-19 | V2P1 Structural Coherence / Mirrored-Pair Logic. Debug-first evaluation of whether surviving roof faces form plausible mirrored/ridge-paired relationships. 4 signal families (azimuth opposition, pitch similarity, spatial edge gap, area ratio), 5 pair types, 6 warning codes. Validated on 8 properties: 15 Veteran coherence=0.92 (2 gable pairs, 0 warnings), Lawrence coherence=0.81 (2 gable pairs), 225 Gibson coherence=0.44 (correct poor coverage warning), 175 Warwick coherence=0.5 (steep roof not catastrophically scored). No status changes (debug-only). No V1/V2P0 interference. See triage §13. |
