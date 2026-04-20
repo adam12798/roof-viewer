@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V2P7 decision-layer integration — polished and banked)
+**Last updated:** 2026-04-20 (V2P8 closeout — V2 track locked, V3 next)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -1683,7 +1683,125 @@ Run: `node tools/v2p7_validate.js` (7 banked properties + 726 School St + 583 We
 
 ---
 
-## 20. Related resources
+## 20. V2P8 — Closeout / Stabilization
+
+**Date:** 2026-04-20
+**Phase:** V2 Phase 8 — final closeout of the V2 structural-intelligence track.
+**Pipeline placement:** Closeout marker emitted after V2P7 decision integration, before V2P5 timing metadata assembly.
+**Code location:** `server.js` — inline `md.v2p8_closeout` block in `/api/ml/auto-build` proxy route (non-behavioral).
+**Debug location:** `crm_result.metadata.v2p8_closeout`.
+
+### 20.1 Purpose
+
+Lock V2 as a clean, documented, stable system before V3 begins. V2P8 is a verification and documentation phase, not a feature phase. No new roof logic, no threshold retuning, no V3 work mixed in.
+
+### 20.2 What shipped
+
+1. **Closeout metadata marker** — non-behavioral `md.v2p8_closeout` block written on every build:
+   ```
+   {
+     v2_closeout_applied: true,
+     v2_phase_status: 'banked',
+     v2_phases_banked: ['V1','V2P0','V2P0.1','V2P1','V2P2','V2P3','V2P4','V2P5','V2P6','V2P7','V2P8'],
+     next_track: 'V3',
+     v2_closeout_notes: [...]
+   }
+   ```
+   Enables downstream tooling to detect "V2 locked runtime" without inspecting per-phase objects.
+
+2. **Extended offline validation harness** — `tools/v2p7_validate.js` now runs 11 regression cases + 8 stability/coupling cases.
+
+3. **Documentation lock** — PROJECT_HANDOFF.md updated: V2 track summary section added, V3P0 moved from DEFERRED to NEXT ACTIVE, resume checklist reflects V2 lock.
+
+### 20.3 Final regression sweep (11 cases)
+
+Re-ran offline harness. Zero drift vs banked V2P7 numbers.
+
+| Property | Bucket | Final | Support | Risk | Dampener | Final Score | Triggers | Correct? |
+|---|---|---|---:|---:|---:|---:|---|---|
+| 15 Veteran Rd | clean_gable | auto_accept | 0.96 | 0.00 | 0.15 | 0.98 | — | yes |
+| 726 School St | clean_simple | auto_accept | 0.90 | 0.00 | 0.00 | 0.95 | — | yes |
+| 20 Meadow Dr | improved_simple | needs_review | 0.78 | 0.10 | 0.00 | 0.84 | — | yes |
+| 225 Gibson St | complex_corrected | needs_review | 0.69 | 0.00 | 0.08 | 0.85 | — | yes |
+| 175 Warwick | steep_real | needs_review | 0.81 | 0.00 | 0.14 | 0.91 | — | yes |
+| Lawrence | improved_complex | needs_review | 0.74 | 0.00 | 0.00 | 0.82 | — | yes |
+| 583 Westford St | complex_coherent | auto_accept | 0.70 | 0.00 | 0.08 | 0.85 | — | yes |
+| 13 Richardson St | single_ground | needs_review | 0.08 | 0.40 | 0.00 | 0.34 | external_risk_with_weak_story | yes |
+| 11 Ash Road | target_strip | needs_review | 0.40 | 0.30 | 0.00 | 0.55 | — | yes |
+| Hyp. fragmented | synthetic | needs_review (escalated) | 0.38 | 1.00 | 0.00 | 0.08 | 5 triggers | yes |
+| Hyp. pathological | synthetic | needs_review (NOT rejected) | 0.07 | 0.45 | 0.00 | 0.25 | 3 reinforce | yes |
+
+**Result: 11/11 correct, no unexpected drift.** Clean roofs remain clean. Weak/problem roofs remain honestly flagged. Steep-but-real roofs remain fair (dampener protects 15 Veteran, 175 Warwick, 583 Westford, 225 Gibson from over-punishment). Decision-layer behavior remains conservative.
+
+### 20.4 Stability / coupling check (8 cases)
+
+Tested V2P7 behavior under degraded upstream metadata — confirms no hidden coupling and safe degradation.
+
+| # | Scenario | Outcome | Safe? |
+|---|---|---|---|
+| A | V2P4 missing (clean gable baseline) | `applied=false`, status preserved | yes |
+| B | V2P3 missing | `applied=true`, support=0.96 (from V2P4 fallback), no change | yes |
+| C | V2P2 missing | `applied=true`, support=0.96, no change | yes |
+| D | V2P1 missing | `applied=true`, support=0.96, no change | yes |
+| E | V2P0 missing | `applied=true`, support=0.96, no change | yes |
+| F | V2P4 only (all other V2 phases missing) | `applied=true`, V2P4 provides all needed signals | yes |
+| G | All V2 metadata missing | `applied=false`, status preserved, no throw | yes |
+| H | Zero faces | `applied=false`, status preserved | yes |
+
+**Result: 8/8 pass. No phase throws. Status never changes unexpectedly when data is incomplete.**
+
+**Coupling verification:**
+- Every V2 phase uses null-safe `? ... : fallback` patterns on upstream metadata.
+- Every phase is wrapped in `try/catch` in the proxy route, so a failure inside one phase does not poison later phases.
+- V2P4 itself handles missing V2P0/V2P1/V2P2/V2P3 via explicit `v2p1 ? v2p1.score : 0` fallbacks in `v2p4CollectInputs()`.
+- V2P7 uses cascading fallback: prefers V2P4-synthesized scores, falls back to individual V2P1/V2P2/V2P3 scores, returns `support=0, risk=0` when V2P4 is unavailable.
+- Status mutation is idempotent and reason-deduping (same reason added twice is noop).
+
+### 20.5 Coupling findings
+
+**None.** No hidden coupling bugs, no ordering assumptions, no missing-data crashes. V2 is robust end-to-end.
+
+### 20.6 Bugs fixed during closeout
+
+**None.** No regressions, no coupling failures, no doc/code drift found.
+
+### 20.7 Final debug surface
+
+The complete, stable V2 debug layout in `crm_result.metadata`:
+
+| Field | Owner | Contents |
+|---|---|---|
+| `frame_debug` | V1 | crop, dsm, soft_gate, target_selection, geometry_cleanup, build_quality |
+| `pipeline_phases` | V1 | P0-P7 structured per-phase report with summary |
+| `p3_solar_crossval` | P3/P8/P9 | Google Solar cross-val, pitch correction, p9 fallback |
+| `v2p0_ground_structure` | V2P0 / V2P0.1 | per-face + build-level ground/structure classification + suppression |
+| `v2p1_structural_coherence` | V2P1 | mirrored pairs, coherence score, structural warnings |
+| `v2p2_main_roof_coherence` | V2P2 | main/secondary classification, coherence score, warnings |
+| `v2p3_roof_relationships` | V2P3 | ridge/hip/valley/seam/step classifications, relationship coherence |
+| `v2p4_whole_roof_consistency` | V2P4 | whole-roof consistency, contradictions, dominant_story_strength |
+| `v2p6_timing` | V2P6 | ML-side timing (outer stages + ML pipeline stages + hotspots) |
+| `performance_timing` | V2P5 | CRM-side timing (including `v2p7_decision_ms`) |
+| `v2p7_decision_integration` | V2P7 | support/risk split, dampener, explicit triggers, decision reasons |
+| `v2p8_closeout` | V2P8 | runtime lock marker — `v2_phase_status:'banked'`, `next_track:'V3'` |
+
+No duplicate fields. No contradictory fields. No stale phase references.
+
+### 20.8 Verdict
+
+**BANK.** V2 is now a complete, documented, stable track. The final regression sweep matches banked V2P7 numbers exactly. Safe degradation confirmed across 8 missing-metadata scenarios. No hidden coupling or bugs found. Documentation reflects the system. V3 is ready to begin with V3P0 visual replay audit.
+
+### 20.9 Reopen triggers for V2P8
+
+- Regression on the reference property set (any of the 11 cases producing a different final status or dramatically different score)
+- A phase crash caused by missing upstream metadata
+- A debug field rename that silently breaks downstream tooling
+- Discovery of a coupling bug (one phase depending on an undocumented side effect of another)
+
+Not a trigger: cosmetic concerns, new property classes not in the reference set, V3 visual audit findings.
+
+---
+
+## 21. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

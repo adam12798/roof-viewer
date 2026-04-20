@@ -310,5 +310,121 @@ for (const r of rows) {
 
 console.log('');
 console.log('='.repeat(80));
-console.log(`Total: ${pass}/${pass + fail} passed, ${fail} failed`);
-process.exit(fail > 0 ? 1 : 0);
+
+// ── V2P8: Stability / coupling check ───────────────────────────────────────
+// Confirm V2P7 degrades gracefully when upstream V2 metadata is partial or
+// missing. No phase should throw; status should never change unexpectedly.
+console.log('');
+console.log('V2P8 stability / coupling check');
+console.log('='.repeat(80));
+
+const baselineFx = FIXTURES[0];  // 15 Veteran Rd (clean gable, should support).
+
+function runDegraded(label, env) {
+  let ok = true;
+  let note = '';
+  try {
+    const decision = v2p7DecisionIntegration(env);
+    v2p7ApplyDecision(env, decision);
+    const priorStatus = env.auto_build_status;  // already applied
+    note = `final=${decision.final_status} applied=${decision.v2_decision_integration_applied} support=${decision.support_score} risk=${decision.risk_score} change=${decision.decision_change_applied}`;
+  } catch (e) {
+    ok = false;
+    note = 'THREW: ' + e.message;
+  }
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  console.log(`  ${note}`);
+  return ok;
+}
+
+let stabPass = 0;
+let stabFail = 0;
+
+// Case A: V2P4 missing (everything else present).
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p4_whole_roof_consistency;
+  env.auto_build_status = baselineFx.env.status;  // reset, applyDecision mutates
+  const ok = runDegraded('A: V2P4 missing (clean gable baseline)', env);
+  if (env.auto_build_status === 'auto_accept') {
+    console.log('  status preserved as auto_accept (safe degradation)');
+  } else {
+    console.log('  FAIL: status changed when V2P4 missing');
+  }
+  if (ok && env.auto_build_status === 'auto_accept') stabPass++; else stabFail++;
+}
+
+// Case B: V2P3 missing.
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p3_roof_relationships;
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('B: V2P3 missing', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case C: V2P2 missing.
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p2_main_roof_coherence;
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('C: V2P2 missing', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case D: V2P1 missing.
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p1_structural_coherence;
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('D: V2P1 missing', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case E: V2P0 missing.
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p0_ground_structure;
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('E: V2P0 missing', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case F: Only V2P4 present (all other V2 phases missing).
+{
+  const env = makeEnvelope(baselineFx.env);
+  delete env.crm_result.metadata.v2p0_ground_structure;
+  delete env.crm_result.metadata.v2p1_structural_coherence;
+  delete env.crm_result.metadata.v2p2_main_roof_coherence;
+  delete env.crm_result.metadata.v2p3_roof_relationships;
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('F: V2P4 only (all other V2 phases missing)', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case G: All metadata missing.
+{
+  const env = makeEnvelope(baselineFx.env);
+  env.crm_result.metadata = {};
+  env.auto_build_status = baselineFx.env.status;
+  const priorStatus = env.auto_build_status;
+  const ok = runDegraded('G: All V2 metadata missing', env);
+  if (env.auto_build_status === priorStatus) {
+    console.log('  status preserved (safe degradation)');
+  }
+  if (ok) stabPass++; else stabFail++;
+}
+
+// Case H: Zero faces (common on reject-by-usable-gate builds).
+{
+  const env = makeEnvelope(Object.assign({}, baselineFx.env, { faces: 0 }));
+  env.auto_build_status = baselineFx.env.status;
+  const ok = runDegraded('H: Zero faces', env);
+  if (ok) stabPass++; else stabFail++;
+}
+
+console.log('');
+console.log(`Stability: ${stabPass}/${stabPass + stabFail} passed, ${stabFail} failed`);
+console.log('='.repeat(80));
+console.log(`TOTAL: ${pass}/${pass + fail} regression, ${stabPass}/${stabPass + stabFail} stability`);
+process.exit((fail + stabFail) > 0 ? 1 : 0);

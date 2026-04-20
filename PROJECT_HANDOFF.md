@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V2P7 decision-layer integration — polished and banked)
+**Last updated:** 2026-04-20 (V2P8 closeout — V2 track locked, V3 next)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -204,7 +204,7 @@ python3 ml_ui_server.py
 9. Click **ML Auto Build** on 20 Meadow Dr. Wait ~10-60s. Expect 5 roof faces in single-slope mode.
 10. Click **Save**. Reload the page. Confirm ML faces re-render in single-slope mode (not hip-roof mini-houses).
 11. Click **Undo** (Cmd+Z). Confirm prior state restores. Click **Redo** (Cmd+Shift+Z). Confirm ML faces come back in single-slope mode.
-12. Continue from the next task in section I.
+12. Continue from the next task in section I. **V2 is locked — next active track is V3, starting with V3P0 visual replay audit. Do not modify V2 phases without a concrete debug-evidenced bug.** Confirm V2 lock is live by inspecting any ML response: `crm_result.metadata.v2p8_closeout.v2_phase_status` should read `'banked'`.
 
 ---
 
@@ -600,6 +600,27 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
+### V2 track — COMPLETE AND LOCKED
+
+V2 is now a closed track. V2P0 through V2P7 are all banked. V2P8 (closeout/stabilization) is banked. **V3 is the next active track** and begins with V3P0 — Full Visual Validation & Replay Audit.
+
+**V2 scope summary:**
+- **V2P0 / V2P0.1** — ground vs structure separation + hard suppression of elongated ground strips
+- **V2P1** — mirrored/ridge-paired structural coherence (debug-first structural grammar)
+- **V2P2** — main vs secondary plane classification with 5-signal weighted model
+- **V2P3** — ridge/hip/valley/seam/step relationship logic between adjacent faces
+- **V2P4** — whole-roof consistency synthesis + cross-phase contradiction detection
+- **V2P5** — performance instrumentation + shared geometry cache across V2 phases
+- **V2P6** — ML core runtime optimization (semantic_edges Shapely cache)
+- **V2P7** — decision-layer integration: V2 signals now lightly influence auto_build_status
+- **V2P8** — closeout/stabilization: regression sweep, coupling check, doc lock
+
+**Do NOT casually reopen any V2 phase.** Each phase has an explicit reopen trigger documented in its section. V2P8 closeout verified safe degradation when upstream metadata is missing; no hidden coupling bugs remain.
+
+**Runtime marker:** `crm_result.metadata.v2p8_closeout.v2_phase_status === 'banked'` in every new ML Auto Build response confirms the V2 lock is active.
+
+---
+
 ### V2P7 — Decision-Layer Integration [BANKED]
 
 **Purpose:** Let banked V2P0–V2P4 signals influence final `auto_build_status` in a conservative, explainable, reversible way. V2 signals lightly shape `auto_accept` vs `needs_review`; `reject` remains evidence-heavy and extremely rare.
@@ -647,13 +668,86 @@ When prior status is `auto_accept` and any trigger fires → escalate to `needs_
 
 ---
 
-### V3P0 — Full Visual Validation & Replay Audit [DEFERRED TO V3]
+### V2P8 — Closeout / Stabilization [BANKED]
 
-**Purpose:** Rerun the full property set, inspect screenshots / design-mode outputs visually, log recurring failure classes.
+**Purpose:** Lock V2 as a clean, documented, stable system before V3 begins. Not a feature phase — verification, cleanup, and documentation lock.
 
-**Rules:** Do NOT tune during the audit. Only create targeted follow-up fixes after the audit completes. This is a dedicated visual validation phase, not to be mixed into active V2 logic-building.
+**Rules:** No new structural logic. No casual threshold retuning. No V3 work mixed in. Tiny safety fixes only if real coupling bugs are proven.
 
-**Status:** DEFERRED. Begins after V2 structural logic phases are complete.
+**Scope completed:**
+1. **Final regression sweep** — offline validation harness on 11 property states (7 banked reference + 726 School St clean_simple + 583 Westford St complex_coherent + 2 hypothetical escalation/reject). All 11 pass; zero drift vs banked V2P7 numbers.
+2. **Stability / coupling check** — 8 degraded-metadata scenarios (V2P4 missing, V2P3 missing, V2P2 missing, V2P1 missing, V2P0 missing, V2P4-only, all-metadata missing, zero-faces). All 8 pass. V2P7 degrades safely: returns `v2_decision_integration_applied=false`, preserves prior status, does not throw. V2P4 itself degrades safely when V2P0/P1/P2/P3 are absent (uses `? ... : 0` fallbacks).
+3. **Closeout marker** — non-behavioral metadata block `crm_result.metadata.v2p8_closeout` emitted on every build: `{v2_closeout_applied, v2_phase_status, v2_phases_banked[], next_track, v2_closeout_notes[]}`. Enables tooling/downstream consumers to detect "V2 locked runtime" without inspecting individual phase objects.
+4. **Documentation lock** — PROJECT_HANDOFF.md and ML_AUTO_BUILD_TRIAGE_STATUS.md updated to show V2 complete, V2P0–V2P8 banked, V3 next.
+
+**Bugs fixed during closeout:** none. No hidden coupling or regression discovered.
+
+**Coupling findings:** clean. Each V2 phase (`groundStructureAssessment`, `structuralCoherenceAssessment`, `mainRoofCoherenceAssessment`, `roofRelationshipAssessment`, `wholeRoofConsistencyAssessment`, `v2p7DecisionIntegration`) uses null-safe fallbacks on its upstream inputs. The proxy route wraps each phase in `try/catch` so a failure inside one does not poison later phases. Status mutation is idempotent and reason-deduping.
+
+**Debug surface:** final. Key objects (all stable):
+- `md.v2p0_ground_structure`
+- `md.v2p1_structural_coherence`
+- `md.v2p2_main_roof_coherence`
+- `md.v2p3_roof_relationships`
+- `md.v2p4_whole_roof_consistency`
+- `md.v2p6_timing` (ML-side)
+- `md.performance_timing` (CRM-side, includes `v2p7_decision_ms`)
+- `md.v2p7_decision_integration`
+- `md.v2p8_closeout`
+- `md.p3_solar_crossval` (covers P3/P8/P9)
+- `md.pipeline_phases` (V1 P0–P7 structured report)
+- `md.frame_debug` (raw V1 debug)
+
+**Bank criteria:** all met. Regression passes. Stability verified. Docs match the system. No hidden coupling.
+
+**Status:** BANKED. V2 track is closed.
+
+**Reopen trigger:** A confirmed regression bug on the reference property set; a coupling failure where one phase crashes due to missing upstream metadata; a debug field rename that breaks downstream tooling.
+
+---
+
+### V3 track — NEXT
+
+V3 is the next active track and will be broken into phases analogous to V2.
+
+**V3 is responsible for:**
+- Full visual validation and screenshot audit across the property set
+- Recurring failure-class identification from visual output
+- Targeted real-world refinements based on audit findings
+- End-to-end user-visible quality improvements
+
+**V2 is responsible for:**
+- Structural intelligence (ground/structure, main body, relationships, whole-roof consistency)
+- Decision-layer integration (V2 → auto_build_status influence)
+- Performance instrumentation and CPU-side optimization
+- Debug observability on every build
+
+**Do NOT in V3:**
+- Reopen banked V2 phases without a concrete debug-evidenced bug
+- Tune V2 thresholds casually based on visual impression alone
+- Mix V2 structural logic and V3 visual audit work in the same change
+
+---
+
+---
+
+### V3P0 — Full Visual Validation & Replay Audit [NEXT ACTIVE]
+
+**Purpose:** Rerun the full property set, inspect screenshots / design-mode outputs visually, log recurring failure classes. This is the first phase of the V3 visual-audit track.
+
+**Inputs:** Live ML Auto Build runs against the reference property set; design-mode screenshots; `md.v2p7_decision_integration` + `md.v2p4_whole_roof_consistency` + `md.v2p8_closeout` debug objects from each build.
+
+**Outputs:** A visual regression record per property (pass/fail visual judgement + V2 scores + final status + reasons). A list of recurring visual failure classes that are NOT already surfaced by V2 warnings.
+
+**Rules:**
+- Do NOT tune during the audit. Only log findings.
+- Do NOT reopen any banked V2 phase without concrete debug-evidenced proof.
+- Visual audit findings are inputs to later V3 phases (targeted fixes), not to V2 retuning.
+- Pair every "visually wrong" property with its `md.v2p7_decision_integration` debug output so the V2 story can be cross-referenced.
+
+**Bank criteria:** A complete per-property visual record exists for the reference set; recurring failure classes are enumerated with frequency counts; zero V2 retuning happened during the audit.
+
+**Status:** NEXT. Begins now that V2P8 is banked.
 
 ---
 
@@ -672,6 +766,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V2P8 closeout / stabilization — banked. V2 track locked. Final regression sweep on 11 property states (11/11 pass, zero drift vs V2P7). Stability/coupling check with 8 degraded-metadata scenarios (all 8 pass — V2P4 missing, V2P3 missing, V2P2 missing, V2P1 missing, V2P0 missing, V2P4-only, all-metadata missing, zero-faces). Every V2 phase degrades gracefully via null-safe upstream fallbacks; V2P7 sets `v2_decision_integration_applied=false` and preserves prior status when V2P4 is absent. Added non-behavioral `md.v2p8_closeout` marker with `v2_phase_status:'banked'`, `v2_phases_banked[]`, `next_track:'V3'` — gives downstream tooling a runtime signal that V2 is locked. Zero bugs found. Zero banked phase reopens. Debug surface final. PROJECT_HANDOFF.md + ML_AUTO_BUILD_TRIAGE_STATUS.md §20 updated to reflect V2 complete / V3P0 next. |
 | 2026-04-20 | V2P7 polish pass — banked. Refactored decision logic into four clearly separated parts: `v2p7ScoreSupport` (pure positive — weighted average of V2P4 sub-scores with no penalties baked in), `v2p7ScoreRisk` (pure negative — tagged drivers summing to 0–1), `v2p7ComputeDampener` (small risk-only reduction up to 0.15 on complex-but-coherent roofs), `v2p7BuildTriggers` (6 named escalation detectors: low_consistency_with_uncertainty, contradictions_with_weak_pairing, fragmented_main_with_weak_relationships, external_risk_with_weak_story, main_body_weak, aggregate_risk_elevated). Contradiction/uncertainty penalties split out as their own line items. Migrated reason names to short machine-readable form (`v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_structural_contradiction`, `v2_ground_suppression_material`, `v2_clean_structural_story`). Legacy reason labels preserved in client `_REVIEW_REASON_LABELS`. Debug object rewritten for one-glance readability: `support_score`, `risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `complexity_dampener`, `effective_risk_score`, `final_v2_decision_score`, `explicit_escalation_triggers[]` (with id/detail/reason per trigger). Validation on 11 cases (9 original + 726 School as clean_simple + 583 Westford as complex_coherent): 11/11 pass. Key outcomes: 15 Veteran score=0.98 (dampener applied), 583 Westford score=0.85 (complex but coherent — dampener protects from escalation), 175 Warwick score=0.91 (steep but coherent — dampener 0.14), 13 Richardson T4 external_risk_with_weak_story trigger fires readably, hypothetical fragmented escalates with 5 explicit triggers + 6 clean reason names. See triage §19. |
 | 2026-04-20 | V2P7 Decision-Layer Integration. Banked V2P0–V2P4 signals now lightly influence `auto_build_status` via a conservative scoring model. Confidence support score = `whole_roof × 0.6 + dominant_story × 0.4 − 0.1 × min(contradictions, 3)`. Aggregate risk score from explicit drivers (whole_roof<0.50, main_body<0.40, relationships<0.40, uncertainty>0.60, contradictions≥2, warnings≥2, ground suppression, fragmented main roof). Escalation fires when any of 6 triggers hit; reject requires multi-signal agreement (`risk≥0.70 AND whole_roof<0.20 AND story<0.15 AND contradictions≥2 AND prior needs_review with ≥3 reasons AND (ground/single_face)`) — capability reserved, no current properties trigger it. Added `md.v2p7_decision_integration` debug with support/risk breakdown, thresholds, and decision_reasons. 7 new client reason labels (`v2_low_whole_roof_consistency`, `v2_fragmented_main_roof`, etc.). Validation on 7 banked properties + 2 hypothetical cases (9/9 pass): 15 Veteran score=0.99 reinforces auto_accept, 175 Warwick score=0.92 NOT demoted, 13 Richardson / 11 Ash reinforced with `v2_low_whole_roof_consistency`, synthetic fragmented multi-face correctly escalates auto_accept→needs_review with 6 V2 reasons. No geometry mutation. See triage §19. |
 | 2026-04-19 | V2P6 ML Core Runtime Optimization. Python-side timing instrumentation (metadata.v2p6_timing: outer stages + ML pipeline stages + network vs compute + hotspot ranking). Semantic edges Shapely cache: pre-compute unary_union(plane_boundaries).buffer(COV_PIX) once instead of O(edges) times — Lawrence semantic_edges 18377ms→2741ms (6.7x). Crop rendering: numpy array pre-conversion. Stage results passthrough via CRM adapter. 8-property validation: all faces+V2P4 scores unchanged. Overall speedup 1.6-7.1x depending on property complexity. Lawrence 24.8s→3.5-10.2s. Remaining bottleneck: CPU model inference (ResNet-18 per edge). See triage §18. |

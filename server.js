@@ -26886,6 +26886,25 @@ app.post("/api/ml/auto-build", async (req, res) => {
   }
   _t.v2p7_ms = Date.now() - _t0_v2p7;
 
+  // V2P8: Closeout marker. Non-behavioral stamp that records the V2 track is
+  // locked and V3 is next. Enables downstream tooling to detect "completed V2"
+  // runtime without inspecting individual phase objects.
+  try {
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const md = cr.metadata || (cr.metadata = {});
+    md.v2p8_closeout = {
+      v2_closeout_applied: true,
+      v2_phase_status: 'banked',
+      v2_phases_banked: ['V1', 'V2P0', 'V2P0.1', 'V2P1', 'V2P2', 'V2P3', 'V2P4', 'V2P5', 'V2P6', 'V2P7', 'V2P8'],
+      next_track: 'V3',
+      v2_closeout_notes: [
+        'V2 structural intelligence track complete',
+        'decision-layer integration live and conservative',
+        'V3 begins with visual replay / screenshot audit'
+      ],
+    };
+  } catch (e) { /* closeout is informational; do not affect response */ }
+
   // V2P5: Performance timing metadata
   _t.crm_post_ml_total_ms = Date.now() - _t0_total;
   try {
