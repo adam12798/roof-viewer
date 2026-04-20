@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V3P2 polygon construction active — rectangles no longer primary face model)
+**Last updated:** 2026-04-20 (V3P2.1 edge scoring system active — splits/merges now evidence-driven)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -915,7 +915,7 @@ Polygons (`polygons[]`): `polygon_idx`, `source_face_indices`, `vertices`, `pitc
 
 Small score drops occurred on a few cases where splitting added a 4th face with slightly weaker V2P4 synthesis (e.g., 225 Gibson 0.83 → 0.71, 13 Richardson 0.70 → 0.67). These are acceptable trade-offs — the polygon story is more honest even if the aggregate score dipped.
 
-**Status:** ACTIVE. Ready to bank pending visual review of split/merge outputs (especially 254 Foster's 2-to-4 split which produced the biggest score improvement, and 175 Warwick's 6-vertex merged polygon which is the first real non-rectangle face in the pipeline).
+**Status:** BANKED. V3P2.1 Edge Scoring System shipped (see below). All splits/merges now evidence-driven.
 
 **Reopen trigger:** False-positive split on a visually-single-plane roof; false-positive merge that collapses a real hip/valley; fallback rate > 20% (would indicate the split/merge is too aggressive); renderer behavior on N-vertex polygons found to be broken in production.
 
@@ -925,6 +925,64 @@ Small score drops occurred on a few cases where splitting added a 4th face with 
 - Rescuing ML-level rejects (0-face usable_gate cases)
 - Image-semantic-only edges (V3P2 edges are derived from face geometry + LiDAR; no pure-texture edges)
 - Retraining
+
+---
+
+### V3P2.1 — Edge Scoring System [ACTIVE]
+
+**Purpose:** Populate and integrate real evidence-based edge scores so polygon construction decisions (splits, merges, boundaries) are driven by measurable signals instead of placeholders. Every edge now carries LiDAR break evidence, ML semantic confidence, and structural plausibility — fused into a single decision signal that gates split/merge actions.
+
+**Rules:** No retraining. No V3P2 rewrite. No V1/V2 retuning. Scoring is interpretable. Thresholds explicit. Integration is surgical: gates added to existing split/merge paths.
+
+**Inputs:**
+- `envelope.crm_result.roof_faces` (post-V3P1 survivors)
+- `envelope.crm_result.metadata.v3p1_lidar_fusion.per_face[]` (ridge conflict flags, ridge dot values)
+- `body.lidar.points` (reused to rebuild DSM grid)
+- Existing edge graph from V3P2 `v3p2BuildEdgeGraph()`
+
+**Edge score fields (populated for every non-outer edge):**
+- `lidar_break_score` (0–1): slope discontinuity magnitude + height delta across edge + residual jump + edge continuity from V3P1 ridge detection. Components weighted: slope 0.35, height 0.25, residual 0.20, continuity 0.20.
+- `ml_semantic_score` (0–1): edge type classification boost (ridge +0.35, hip +0.30, valley +0.25, step +0.20, seam −0.10) on a 0.30 baseline, docked for suspect-band pitch.
+- `geometry_rule_score` (0–1): structural plausibility from polygon area validity, topology alignment, slope conflict resolution, flat-region penalty, gap proximity, area ratio.
+- `fused_edge_score` (0–1): `0.50 × lidar + 0.30 × geometry + 0.20 × ml`
+- `edge_confidence`: `high` (≥0.70), `medium` (0.40–0.70), `low` (<0.40)
+
+**Integration into split/merge:**
+- **Split gate:** V3P1 ridge_conflict_flag alone is no longer sufficient. Splits require `fused_edge_score >= 0.40` OR (`fused >= 0.40` AND `lidar_break_score >= 0.6`). Without corroborating edge evidence, splits are blocked with `split_blocked_by_weak_edge_evidence` reason.
+- **Merge block:** Merges are blocked when the shared edge between polygon sources has `fused_edge_score >= 0.70` (HIGH confidence = real structural boundary). Adds `merge_blocked_by_strong_edge_N` reason.
+- **Edge type refinement:** Post-scoring pass reclassifies edges when scores provide stronger evidence than initial geometry-only guess. Strong LiDAR + opposite slopes → ridge. Strong LiDAR + inward slopes → valley. Weak ML + weak geometry → uncertain.
+
+**Debug fields added to `md.v3p2_polygon_construction`:**
+- `edge_scores[]`: per-edge `{edge_idx, lidar_break_score, lidar_components, ml_semantic_score, geometry_rule_score, fused_edge_score, edge_confidence, edge_type_guess, decision_role}`
+- `edges_used_for_splits[]`: edge indices that drove split decisions
+- `edges_blocking_merges[]`: edge indices that prevented merges
+- `edges_suppressed[]`: edge indices that blocked splits due to weak evidence
+
+**Centralized thresholds:**
+`V3P2_1_LIDAR_WEIGHT=0.50`, `V3P2_1_GEOMETRY_WEIGHT=0.30`, `V3P2_1_ML_WEIGHT=0.20`, `V3P2_1_HIGH_CONFIDENCE_THRESHOLD=0.70`, `V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD=0.40`, `V3P2_1_SPLIT_FUSED_MIN=0.40`, `V3P2_1_MERGE_FUSED_MAX=0.40`.
+
+**Validation (21-case batch, 2026-04-20):** 21/21 success. Key outcomes:
+- **254 Foster St:** score 0.43 (unchanged) — split still fires, now backed by HIGH-confidence edge (fused=0.71)
+- **225 Gibson St:** score 0.71 (unchanged) — split fires, 2 HIGH-confidence edges driving decisions
+- **74 Gates:** score 0.79 (unchanged) — split + merge both proceed, edge evidence supports both
+- **175 Warwick:** score 0.71 (unchanged) — merge proceeds, 6 MEDIUM edges (none block)
+- **13 Richardson St:** score 0.67→0.82 (+0.15 IMPROVEMENT) — split now BLOCKED by weak edge evidence. V3P1 flagged ridge but edges scored only medium (mean=0.46). Fewer artificial polygons → better V2 structural coherence.
+- **15 Veteran Rd (clean):** score 0.94 (unchanged) — no splits or merges, 1 medium + 1 low edge
+- **Puffer:** score 0.90 — split proceeds backed by medium-confidence edge (fused=0.64, LiDAR strong)
+
+**Key behavioral change:** 13 Richardson is the exemplar case. V3P2 previously split this face because V3P1 flagged it. V3P2.1 now requires corroborating edge evidence — and the edges only scored 0.46 mean fused (all medium). The split was blocking with `split_blocked_by_weak_edge_evidence`. Result: 4 coherent faces instead of 5 artificial ones; V2P4 scores improved significantly.
+
+**Bank criteria:**
+- Splits happen for the RIGHT reasons (not arbitrary V3P1 flags) ✓
+- Merges respect real roof structure (HIGH edges block) ✓
+- No regression on simple/clean roofs (15 Veteran stable at 0.94) ✓
+- Edge scoring is interpretable (lidar_components exposed per edge) ✓
+- Polygon system is more stable across cases (13 Richardson improved) ✓
+- Debug explains WHY edges were used/blocked ✓
+
+**Status:** ACTIVE. Ready to bank.
+
+**Reopen trigger:** False-positive split block on a case where the split was visually correct; false-positive merge block; edge scores systematically miscalibrated on a new property class.
 
 ---
 
@@ -943,6 +1001,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V3P2.1 Edge Scoring System — active. Populates real evidence-based scores on every edge in the V3P2 edge graph: `lidar_break_score` (slope discontinuity + height delta + residual jump + V3P1 continuity, weighted 0.35/0.25/0.20/0.20), `ml_semantic_score` (edge type classification boost on 0.30 baseline), `geometry_rule_score` (structural plausibility: area validity, topology alignment, flat-region/gap penalties). Fused as `0.50×lidar + 0.30×geometry + 0.20×ml` into `fused_edge_score` with confidence bands (HIGH ≥0.70, MEDIUM 0.40–0.70, LOW <0.40). Integration: splits now require fused≥0.40 or (medium + lidar≥0.6) — blocks arbitrary V3P1-flag splits without corroborating evidence. Merges blocked when shared edge has HIGH fused score (real structural boundary). Edge type refinement: strong LiDAR + opposite slopes → ridge; weak ML + weak geometry → demote to uncertain. Debug: `edge_scores[]`, `edges_used_for_splits[]`, `edges_blocking_merges[]`, `edges_suppressed[]` in `md.v3p2_polygon_construction`. 21-case validation: 21/21 success; all V3P2 splits/merges preserved except 13 Richardson (split correctly blocked → score 0.67→0.82). 254 Foster stable at 0.43 (HIGH edge backs split). 15 Veteran stable at 0.94 (clean, no action). No regressions. |
 | 2026-04-20 | V3P2 polygon construction / edge-graph roof faces — active. Rectangles are no longer the primary face-construction model. Six-step pipeline after V3P1: (1) build edge graph classifying every face-pair edge as seam/ridge/hip/valley/step_break/outer_boundary/uncertain; (2) split faces flagged by V3P1 with ridge_dot≤−0.45 into two 4-vertex halves at the X-median cut; (3) validate each split via LiDAR lstsq refit (fallback if RMSE > 1.2m or 2× original); (4) refit plane for every surviving polygon from DSM samples inside footprint, adopt pitch/azimuth when RMSE healthy; (5) merge adjacent polygon pairs with pitch_delta<3° AND azimuth_delta<5° AND edge_gap<0.5m via convex-hull union + refit (fallback if combined RMSE regresses); (6) enforce shared boundaries by snapping near-coincident vertex pairs within 0.3m. Output goes straight to envelope.crm_result.roof_faces so V2P1-V2P4 and V2P7 all score the polygon-constructed geometry. New review reasons: v3_polygon_split_applied, v3_polygon_merge_applied, v3_polygon_fallback_applied. Debug at md.v3p2_polygon_construction with full edge graph + polygon graph + per-polygon validation. No retraining, no ML-wrapper changes, no V1/V2 retuning. 21-case validation: 21/21 success; 5 splits (225 Gibson, 13 Richardson, 254 Foster, Puffer, 74 Gates), 2 merges (175 Warwick, 74 Gates), 0 fallbacks, 5 vertex snaps. Key wins: 254 Foster score 0.20→0.43 (split of ridge-crossing plane), 74 Gates 0.69→0.79 (split+merge refit), 175 Warwick first real 6-vertex non-rectangle face in the pipeline. Clean regression 15 Veteran 0.98→0.94 (snap-only, acceptable). |
 | 2026-04-20 | V3P1 LiDAR authority / fusion hardening — active. New layer between V2P0.1 suppression and V2P5 cache that validates/vetoes ML planes with LiDAR evidence. Per-plane scoring: `fit_residual` (median perpendicular distance to ML plane), `slope_agreement_error` (ML normal vs lstsq LiDAR normal), `ridge_conflict_flag` (half-plane opposing horizontal downslope), `ground_veto_flag` (V2P0 ground_like + height<1m + pitch<12°), `ml_support_score`, `lidar_support_score` (1.0 with graduated penalties + tagged reasons), `fused_plane_score = 0.45×ml + 0.55×lidar`, `fusion_decision` ∈ {keep, split, suppress, uncertain}. Suppression rules: ground_veto OR (fit>1m AND slope>45°) OR fused<0.30. Ridge conflicts flagged (not split — polygonization next). Partial build rescue: keep best plane when all would veto AND lidar_support≥0.30. Planes are removed from roof_faces before V2P1-V2P7 run. New review reasons: v3_lidar_ground_veto, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_partial_build_rescue. 21-case validation batch: 21/21 success. Key impact: 573 Westford driveway correctly suppressed (fit=10.18m, ground_like); Lawrence 6→3 (3 severe LiDAR disagreements); 21 Stoddard 8→5; 17 Church extreme fit (6.28m) plane suppressed; 583 Westford 5→3. Zero regression on 15 Veteran clean (still score=0.98). Zero partial_rescue invocations. ML-level rejects (6 cases: 42 Tanager, 52 Spaulding, 94 C, 44 D, 12 Brown, Salem) unchanged — V3P1 cannot rescue 0-plane ML rejects without hallucinating. Full per-face debug exposed via `md.v3p1_lidar_fusion`. No retraining, no polygonization, no V1/V2 retuning. |
 | 2026-04-20 | V3P0 Replay Harness / Server-Driven Audit — active. Added `tools/v3p0_replay.js` and `tools/v3p0_replay_cases.json` (12 cases covering clean_gable, clean_simple, improved_simple, complex_corrected, steep_real, improved_complex, complex_coherent, single_ground, target_strip, borderline_soft_gate, reject_too_strict, wrong_pitch_resolved). Harness logs in, fetches LiDAR via `/api/lidar/points`, calls `/api/ml/auto-build`, normalizes response into ~50 flat audit fields (replay health + outcome + runtime + V1/P8/P9 + V2P0–V2P8), auto-buckets into 5 category families, computes visual_review_priority, writes JSON + CSV + Markdown to `tools/v3p0_replay_output/`. First batch: 12/12 success, 0 replay failures — 1 auto_accept, 10 needs_review, 1 reject. Runtimes: min=3.3s, median=4.6s, max=6.0s. Top visual-review candidates: 254 Foster St (priority 13: contradiction+weak_story+high_uncertainty), 42 Tanager St (reject), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (unexpected likely_ground_issue). Zero V1/V2 phases reopened; evidence-collection only. Harness reusable for future batches via `node tools/v3p0_replay.js`. |

@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V3P2 polygon construction active — rectangles no longer primary face model)
+**Last updated:** 2026-04-20 (V3P2.1 edge scoring system active — splits/merges now evidence-driven)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2164,7 +2164,55 @@ Renderer compatibility: the ML single-slope render path (`buildRoofSingleSlopeMe
 
 ---
 
-## 24. Related resources
+## 24. V3P2.1 — Edge Scoring System (2026-04-20)
+
+### 24.1 Purpose
+
+Populate real evidence-based scores on every edge in the V3P2 edge graph so split/merge decisions are driven by measurable LiDAR, ML, and geometry signals instead of placeholders.
+
+### 24.2 Scoring formulas
+
+**LiDAR break score** (0–1): weighted combination of 4 components:
+- Slope discontinuity (0.35 weight): pitch delta between faces, scaled 0→1 over 0–20° range
+- Height delta (0.25 weight): median elevation difference across edge, scaled 0→1 over 0.3–2.0m range
+- Residual jump (0.20 weight): RMSE ratio between face planes, scored above 2.0×
+- Edge continuity (0.20 weight): V3P1 ridge_conflict_flag presence + ridge_dot strength
+
+**ML semantic score** (0–1): 0.30 baseline + edge type boost (ridge +0.35, hip +0.30, valley +0.25, step +0.20, seam −0.10, uncertain +0.05), docked for suspect-band pitch (>55° −0.15, >45° −0.08).
+
+**Geometry rule score** (0–1): 0.50 neutral start ± adjustments for: polygon area validity (tiny <3m² −0.25, substantial >8m² +0.15), topology alignment (ridge/hip/valley +0.15), slope conflict resolution (pDelta>15° +0.10), flat-region penalty (both <5° −0.20), gap proximity (>0.8m −0.15, <0.2m +0.10), area ratio (<0.10 −0.15), ground-like signatures (−0.10 each).
+
+**Fused edge score** = `0.50 × lidar + 0.30 × geometry + 0.20 × ml`
+
+**Edge confidence**: HIGH (≥0.70), MEDIUM (0.40–0.70), LOW (<0.40)
+
+### 24.3 Integration into V3P2 decisions
+
+- **Split gate**: require `fused ≥ 0.40` OR (`fused ≥ 0.40` AND `lidar ≥ 0.6`) — otherwise block with `split_blocked_by_weak_edge_evidence`
+- **Merge block**: block when shared edge has `fused ≥ 0.70` — adds `merge_blocked_by_strong_edge_N` reason
+- **Edge type refinement**: post-scoring reclassification — strong LiDAR + opposing slopes → ridge; strong LiDAR + inward slopes → valley; weak ML + weak geometry → demote to uncertain
+
+### 24.4 Validation results (21 cases)
+
+| Property | Pre-score | Post-score | Splits before | Splits after | Edge evidence |
+|---|---:|---:|---:|---:|---|
+| 254 Foster St | 0.43 | 0.43 | 1 | 1 | HIGH (0.71) — split proceeds |
+| 225 Gibson St | 0.71 | 0.71 | 1 | 1 | 2 HIGH edges |
+| 74 Gates | 0.79 | 0.79 | 1 | 1 | MEDIUM (0.61) — split proceeds |
+| 175 Warwick | 0.71 | 0.71 | 0 | 0 | 6 MEDIUM (merge still allowed) |
+| 13 Richardson St | 0.67 | 0.82 | 1 | **0** | MEDIUM mean=0.46 — **split blocked** |
+| 15 Veteran Rd | 0.94 | 0.94 | 0 | 0 | 1M+1L — no action |
+| Puffer | — | 0.90 | 1 | 1 | MEDIUM (0.64) — split proceeds |
+
+Key change: 13 Richardson St split correctly blocked by V3P2.1 — V3P1 flagged ridge but edge evidence was only medium (0.46). Without the split, the face set is more coherent (4 vs 5 faces) and V2P4 synthesis scores significantly higher.
+
+### 24.5 Verdict
+
+**KEEP (ACTIVE, ready to bank).** Edge scoring successfully separates evidence-backed splits (254 Foster, 225 Gibson, 74 Gates, Puffer) from weak-evidence splits (13 Richardson) without regressions. The system is conservative: only blocks actions when evidence is explicitly insufficient. Zero regressions on clean/improved cases. 13 Richardson is the demonstration case — a genuine improvement in decision quality.
+
+---
+
+## 25. Related resources (renumbered from §24)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

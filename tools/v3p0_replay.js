@@ -240,6 +240,15 @@ function normalize_replay_result(r) {
     v3p2_edge_step_breaks: 0,
     v3p2_edge_uncertain: 0,
     v3p2_warnings: [],
+    // V3P2.1 edge scoring
+    v3p2_1_edges_scored: 0,
+    v3p2_1_high_confidence_edges: 0,
+    v3p2_1_medium_confidence_edges: 0,
+    v3p2_1_low_confidence_edges: 0,
+    v3p2_1_edges_used_for_splits: 0,
+    v3p2_1_edges_blocking_merges: 0,
+    v3p2_1_edges_suppressed: 0,
+    v3p2_1_mean_fused_score: null,
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -357,6 +366,19 @@ function normalize_replay_result(r) {
   row.v3p2_edge_step_breaks = eg.step_breaks ?? 0;
   row.v3p2_edge_uncertain = eg.uncertain ?? 0;
   row.v3p2_warnings = v3p2.polygon_construction_warnings || [];
+  // V3P2.1 edge scoring fields
+  const es = Array.isArray(v3p2.edge_scores) ? v3p2.edge_scores : [];
+  const scoredEdges = es.filter(e => e.fused_edge_score != null);
+  row.v3p2_1_edges_scored = scoredEdges.length;
+  row.v3p2_1_high_confidence_edges = scoredEdges.filter(e => e.edge_confidence === 'high').length;
+  row.v3p2_1_medium_confidence_edges = scoredEdges.filter(e => e.edge_confidence === 'medium').length;
+  row.v3p2_1_low_confidence_edges = scoredEdges.filter(e => e.edge_confidence === 'low').length;
+  row.v3p2_1_edges_used_for_splits = (v3p2.edges_used_for_splits || []).length;
+  row.v3p2_1_edges_blocking_merges = (v3p2.edges_blocking_merges || []).length;
+  row.v3p2_1_edges_suppressed = (v3p2.edges_suppressed || []).length;
+  row.v3p2_1_mean_fused_score = scoredEdges.length > 0
+    ? +(scoredEdges.reduce((s, e) => s + e.fused_edge_score, 0) / scoredEdges.length).toFixed(2)
+    : null;
 
   return row;
 }
@@ -569,7 +591,7 @@ function write_markdown(rows) {
       ? `${r.v3p1_plane_count_in}→${r.v3p1_plane_count_out} ${r.v3p1_lidar_veto_count}/${r.v3p1_ridge_flag_count}${r.v3p1_partial_rescue ? '+rescue' : ''}`
       : '—';
     const v3p2Col = r.replay_success
-      ? `${r.v3p2_splits}/${r.v3p2_merges}/${r.v3p2_fallbacks}/${r.v3p2_snaps}`
+      ? `${r.v3p2_splits}/${r.v3p2_merges}/${r.v3p2_fallbacks}/${r.v3p2_snaps} (H${r.v3p2_1_high_confidence_edges}/M${r.v3p2_1_medium_confidence_edges}/L${r.v3p2_1_low_confidence_edges})`
       : '—';
     const triggers = (r.v2p7_explicit_escalation_triggers || []).join(', ') || '—';
     const reasonsOrErr = r.replay_success

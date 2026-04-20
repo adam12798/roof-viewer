@@ -27046,6 +27046,16 @@ const V3P2_RIDGE_AZ_OPPOSITION_DEG = 140.0;
 const V3P2_HIP_AZ_OBLIQUE_MIN_DEG = 40.0;
 const V3P2_STEP_PITCH_DELTA_DEG = 15.0;
 
+// ── V3P2.1: Edge Scoring System ──────────────────────────────────────────────
+// Real evidence-based edge scores that drive split/merge decisions.
+const V3P2_1_LIDAR_WEIGHT = 0.50;
+const V3P2_1_GEOMETRY_WEIGHT = 0.30;
+const V3P2_1_ML_WEIGHT = 0.20;
+const V3P2_1_HIGH_CONFIDENCE_THRESHOLD = 0.70;
+const V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD = 0.40;
+const V3P2_1_SPLIT_FUSED_MIN = 0.40;
+const V3P2_1_MERGE_FUSED_MAX = 0.40;
+
 function v3p2PolygonCentroid(vertices) {
   let cx = 0, cz = 0;
   for (const v of vertices) { cx += v.x; cz += v.z; }
@@ -27132,6 +27142,187 @@ function v3p2ClassifyEdge(faceA, faceB, edgeGap) {
   if (pDelta >= V3P2_STEP_PITCH_DELTA_DEG) return { type: 'step_break_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
   return { type: 'uncertain_edge', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
 }
+
+// ── V3P2.1: Edge scoring functions ───────────────────────────────────────────
+
+function v3p2_1ScoreLidarBreak(faceA, faceB, edgeGap, grid, v3p1PerFace) {
+  // Measures how strongly LiDAR indicates a real break between two faces.
+  // Components: slope discontinuity, height delta across edge, residual jump,
+  // edge continuity (how consistent the break is along the shared boundary).
+  let slopeScore = 0, heightScore = 0, residualScore = 0, continuityScore = 0;
+  let components = 0;
+
+  // 1. Slope discontinuity: pitch delta between the two face planes.
+  const pitchA = faceA.pitch || 0, pitchB = faceB.pitch || 0;
+  const pDelta = Math.abs(pitchA - pitchB);
+  if (pDelta > 20) slopeScore = 1.0;
+  else if (pDelta > 10) slopeScore = 0.6 + 0.4 * ((pDelta - 10) / 10);
+  else if (pDelta > 5) slopeScore = 0.3 + 0.3 * ((pDelta - 5) / 5);
+  else slopeScore = pDelta / 5 * 0.3;
+  components++;
+
+  // 2. Height delta: sample elevation difference at the shared boundary zone.
+  if (grid) {
+    const cA = v3p2PolygonCentroid(faceA.vertices || []);
+    const cB = v3p2PolygonCentroid(faceB.vertices || []);
+    const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+    const bandVerts = [
+      { x: midX - 0.5, z: midZ - 0.5 },
+      { x: midX + 0.5, z: midZ - 0.5 },
+      { x: midX + 0.5, z: midZ + 0.5 },
+      { x: midX - 0.5, z: midZ + 0.5 },
+    ];
+    const samplesA = v3p1CollectFootprintSamples(grid, faceA.vertices || []);
+    const samplesB = v3p1CollectFootprintSamples(grid, faceB.vertices || []);
+    if (samplesA.length >= 6 && samplesB.length >= 6) {
+      const medA = samplesA.map(s => s.elev).sort((a, b) => a - b)[Math.floor(samplesA.length / 2)];
+      const medB = samplesB.map(s => s.elev).sort((a, b) => a - b)[Math.floor(samplesB.length / 2)];
+      const hDelta = Math.abs(medA - medB);
+      if (hDelta > 2.0) heightScore = 1.0;
+      else if (hDelta > 1.0) heightScore = 0.5 + 0.5 * ((hDelta - 1.0) / 1.0);
+      else if (hDelta > 0.3) heightScore = 0.2 + 0.3 * ((hDelta - 0.3) / 0.7);
+      else heightScore = 0.0;
+      components++;
+    }
+
+    // 3. Residual jump: difference in RMSE between the two planes.
+    const fitA = v3p1FitLocalPlane(samplesA);
+    const fitB = v3p1FitLocalPlane(samplesB);
+    if (fitA && fitB) {
+      const rmseRatio = Math.max(fitA.rmse, fitB.rmse) / Math.max(0.01, Math.min(fitA.rmse, fitB.rmse));
+      if (rmseRatio > 4.0) residualScore = 1.0;
+      else if (rmseRatio > 2.0) residualScore = 0.4 + 0.6 * ((rmseRatio - 2.0) / 2.0);
+      else residualScore = 0.0;
+      components++;
+    }
+  }
+
+  // 4. Edge continuity via V3P1 ridge conflict data.
+  if (v3p1PerFace) {
+    const dataA = v3p1PerFace.find(p => p.face_idx === faceA._origIdx);
+    const dataB = v3p1PerFace.find(p => p.face_idx === faceB._origIdx);
+    if (dataA && dataA.ridge_conflict_flag) continuityScore = Math.max(continuityScore, 0.8);
+    if (dataB && dataB.ridge_conflict_flag) continuityScore = Math.max(continuityScore, 0.8);
+    if (dataA && dataA.ridge_dot != null && dataA.ridge_dot < -0.6) continuityScore = 1.0;
+    if (dataB && dataB.ridge_dot != null && dataB.ridge_dot < -0.6) continuityScore = 1.0;
+    if (continuityScore > 0) components++;
+  }
+
+  // Weighted combine (only count components that had data).
+  if (components === 0) return { score: 0.3, components: { slope: _r2(slopeScore), height: null, residual: null, continuity: null } };
+  const weights = [0.35, 0.25, 0.20, 0.20];
+  const vals = [slopeScore, heightScore, residualScore, continuityScore];
+  const active = [true, components >= 2, components >= 3, components >= 4];
+  let wSum = 0, vSum = 0;
+  for (let i = 0; i < 4; i++) {
+    if (active[i]) { wSum += weights[i]; vSum += weights[i] * vals[i]; }
+  }
+  const score = wSum > 0 ? vSum / wSum : slopeScore;
+  return {
+    score: _r2(Math.max(0, Math.min(1, score))),
+    components: {
+      slope: _r2(slopeScore),
+      height: components >= 2 ? _r2(heightScore) : null,
+      residual: components >= 3 ? _r2(residualScore) : null,
+      continuity: components >= 4 ? _r2(continuityScore) : null,
+    },
+  };
+}
+
+function v3p2_1ScoreMlSemantic(faceA, faceB, edgeType) {
+  // ML semantic score: how strongly does ML output support this edge as a real
+  // roof feature. Uses existing ML outputs (no retraining).
+  // Signals: edge type classification confidence, face pitch/azimuth
+  // divergence that aligns with ML expectations.
+  let score = 0.30; // baseline — ML is always somewhat supportive of detected faces
+
+  // Ridge/hip/valley candidates get an ML boost because ML detected the
+  // face pair — if two separate faces were detected with strong azimuth
+  // opposition, ML implicitly supports a ridge between them.
+  if (edgeType === 'ridge_candidate') score += 0.35;
+  else if (edgeType === 'hip_candidate') score += 0.30;
+  else if (edgeType === 'valley_candidate') score += 0.25;
+  else if (edgeType === 'step_break_candidate') score += 0.20;
+  else if (edgeType === 'seam_candidate') score -= 0.10; // ML says same plane — edge less likely
+  else if (edgeType === 'uncertain_edge') score += 0.05;
+
+  // Faces with suspect-band pitch get ML confidence docked.
+  const pA = faceA.pitch || 0, pB = faceB.pitch || 0;
+  if (pA > 55 || pB > 55) score -= 0.15;
+  else if (pA > 45 || pB > 45) score -= 0.08;
+
+  return _r2(Math.max(0, Math.min(1, score)));
+}
+
+function v3p2_1ScoreGeometryRule(faceA, faceB, edgeGap, edgeType, allFaces) {
+  // Geometry rule score: structural plausibility of this edge.
+  // Scores UP for: valid plane candidates on both sides, expected topology,
+  // resolving slope conflicts.
+  // Scores DOWN for: tiny/useless polygon isolation, impossible relationships,
+  // flat/no-slope region, ground-like region.
+  let score = 0.50; // neutral start
+
+  // Both sides are valid plane candidates (area > 5m2 equivalent — use vertex spread).
+  const areaA = v3p2_1ApproxArea(faceA.vertices || []);
+  const areaB = v3p2_1ApproxArea(faceB.vertices || []);
+  const minArea = Math.min(areaA, areaB);
+  const maxArea = Math.max(areaA, areaB);
+  if (minArea < 3.0) score -= 0.25; // tiny polygon isolation
+  else if (minArea > 8.0) score += 0.15; // both sides substantial
+
+  // Edge aligns with expected topology.
+  if (edgeType === 'ridge_candidate' || edgeType === 'hip_candidate' || edgeType === 'valley_candidate') {
+    score += 0.15; // structural edge in expected position
+  }
+
+  // Edge resolves a slope conflict (large pitch delta).
+  const pDelta = Math.abs((faceA.pitch || 0) - (faceB.pitch || 0));
+  if (pDelta > 15) score += 0.10;
+
+  // Penalty: edge is in a flat/no-slope region (both faces < 5° pitch).
+  if ((faceA.pitch || 0) < 5 && (faceB.pitch || 0) < 5) score -= 0.20;
+
+  // Penalty: edge gap is very large (weak adjacency signal).
+  if (edgeGap > 0.8) score -= 0.15;
+  else if (edgeGap < 0.2) score += 0.10; // tight adjacency — strong boundary
+
+  // Penalty: extreme area ratio suggests one side is an artifact.
+  if (maxArea > 0 && minArea / maxArea < 0.10) score -= 0.15;
+
+  // Ground-like pitch + low elevation (use pitch as proxy — real height
+  // data is available only via V2P0 but we keep this simple).
+  if ((faceA.pitch || 0) < 5 && areaA > 20) score -= 0.10;
+  if ((faceB.pitch || 0) < 5 && areaB > 20) score -= 0.10;
+
+  return _r2(Math.max(0, Math.min(1, score)));
+}
+
+function v3p2_1ApproxArea(vertices) {
+  // Shoelace formula for polygon area in XZ plane (approximation of roof area).
+  if (!vertices || vertices.length < 3) return 0;
+  let area = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+    area += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(area) / 2;
+}
+
+function v3p2_1FuseEdgeScore(lidarBreak, mlSemantic, geometryRule) {
+  return _r2(Math.max(0, Math.min(1,
+    V3P2_1_LIDAR_WEIGHT * lidarBreak +
+    V3P2_1_GEOMETRY_WEIGHT * geometryRule +
+    V3P2_1_ML_WEIGHT * mlSemantic
+  )));
+}
+
+function v3p2_1EdgeConfidence(fusedScore) {
+  if (fusedScore >= V3P2_1_HIGH_CONFIDENCE_THRESHOLD) return 'high';
+  if (fusedScore >= V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD) return 'medium';
+  return 'low';
+}
+
+// ── End V3P2.1 scoring functions ─────────────────────────────────────────────
 
 function v3p2BuildEdgeGraph(faces) {
   const edges = [];
@@ -27284,11 +27475,12 @@ function v3p2EnforceSharedBoundaries(polygons) {
 
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
   const cr = (envelope && envelope.crm_result) || {};
-  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map(f => ({
+  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map((f, idx) => ({
     vertices: (f.vertices || []).map(v => ({ x: v.x, z: v.z })),
     pitch: f.pitch || 0,
     azimuth: f.azimuth || 0,
     height: f.height || 0,
+    _origIdx: idx,
   })) : [];
   const n = faces.length;
   if (n === 0) {
@@ -27319,6 +27511,65 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   const { edges, adjacency } = v3p2BuildEdgeGraph(faces);
   const warnings = [];
   if (!grid) warnings.push('lidar_grid_unavailable_refit_skipped');
+
+  // ── V3P2.1: Compute real edge scores ──────────────────────────────────────
+  const v3p1PerFace = (v3p1Data && Array.isArray(v3p1Data.per_face)) ? v3p1Data.per_face : null;
+  const edgeScores = [];
+  for (const edge of edges) {
+    if (edge.edge_type_guess === 'outer_boundary' || edge.face_b_idx < 0) {
+      edge.lidar_break_score = null;
+      edge.ml_semantic_score = null;
+      edge.geometry_rule_score = null;
+      edge.fused_edge_score = null;
+      edge.edge_confidence = null;
+      edge.decision_role = 'ignored';
+      edgeScores.push({
+        edge_idx: edge.edge_idx,
+        lidar_break_score: null, ml_semantic_score: null,
+        geometry_rule_score: null, fused_edge_score: null,
+        edge_confidence: null, edge_type_guess: edge.edge_type_guess,
+        decision_role: 'ignored',
+      });
+      continue;
+    }
+    const fA = faces[edge.face_a_idx];
+    const fB = faces[edge.face_b_idx];
+    const lidarResult = v3p2_1ScoreLidarBreak(fA, fB, edge.edge_gap_m, grid, v3p1PerFace);
+    const mlScore = v3p2_1ScoreMlSemantic(fA, fB, edge.edge_type_guess);
+    const geoScore = v3p2_1ScoreGeometryRule(fA, fB, edge.edge_gap_m, edge.edge_type_guess, faces);
+    const fused = v3p2_1FuseEdgeScore(lidarResult.score, mlScore, geoScore);
+    const confidence = v3p2_1EdgeConfidence(fused);
+
+    edge.lidar_break_score = lidarResult.score;
+    edge.ml_semantic_score = mlScore;
+    edge.geometry_rule_score = geoScore;
+    edge.fused_edge_score = fused;
+    edge.edge_confidence = confidence;
+    edge.lidar_components = lidarResult.components;
+    edge.decision_role = 'pending';
+
+    edgeScores.push({
+      edge_idx: edge.edge_idx,
+      lidar_break_score: lidarResult.score,
+      lidar_components: lidarResult.components,
+      ml_semantic_score: mlScore,
+      geometry_rule_score: geoScore,
+      fused_edge_score: fused,
+      edge_confidence: confidence,
+      edge_type_guess: edge.edge_type_guess,
+      decision_role: 'pending',
+    });
+  }
+
+  // Build a lookup: for a given face index, what's the max fused edge score
+  // of edges touching that face (used for split gating).
+  const faceMaxFused = faces.map(() => 0);
+  for (const edge of edges) {
+    if (edge.fused_edge_score != null) {
+      if (edge.face_a_idx >= 0) faceMaxFused[edge.face_a_idx] = Math.max(faceMaxFused[edge.face_a_idx], edge.fused_edge_score);
+      if (edge.face_b_idx >= 0) faceMaxFused[edge.face_b_idx] = Math.max(faceMaxFused[edge.face_b_idx], edge.fused_edge_score);
+    }
+  }
 
   // Collect V3P1 split signals keyed by face index.
   const v3p1SplitIdx = new Set();
@@ -27351,12 +27602,50 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   let splitCount = 0;
   let mergeCount = 0;
   let fallbackCount = 0;
+  const edgesUsedForSplits = [];
+  const edgesBlockingMerges = [];
+  const edgesSuppressed = [];
 
   // 1) Apply splits for faces flagged by V3P1 with strong ridge_dot.
+  //    V3P2.1 gate: only split when edge evidence supports it (fused HIGH
+  //    or MEDIUM + strong LiDAR). Without this gate, splits happen on
+  //    arbitrary V3P1 flags without corroborating edge evidence.
   const toReplace = [];
   for (let i = 0; i < polygons.length; i++) {
     const poly = polygons[i];
     if (!poly.ridge_crossing_flag) continue;
+
+    // V3P2.1: Check if this face has strong edge evidence supporting the split.
+    const origIdx = poly.source_face_indices[0];
+    const faceEdges = adjacency[origIdx] || [];
+    let bestEdgeForSplit = null;
+    for (const adj of faceEdges) {
+      const e = edges[adj.edge_idx];
+      if (!e || e.fused_edge_score == null) continue;
+      if (!bestEdgeForSplit || e.fused_edge_score > bestEdgeForSplit.fused_edge_score) {
+        bestEdgeForSplit = e;
+      }
+    }
+    // Gate: require fused >= SPLIT_FUSED_MIN or (medium + strong LiDAR ≥ 0.6)
+    const fusedOk = bestEdgeForSplit && bestEdgeForSplit.fused_edge_score >= V3P2_1_SPLIT_FUSED_MIN;
+    const mediumWithStrongLidar = bestEdgeForSplit &&
+      bestEdgeForSplit.fused_edge_score >= V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD &&
+      bestEdgeForSplit.lidar_break_score >= 0.6;
+    if (!fusedOk && !mediumWithStrongLidar) {
+      poly.validation_reasons.push('split_blocked_by_weak_edge_evidence');
+      if (bestEdgeForSplit) {
+        edgesSuppressed.push(bestEdgeForSplit.edge_idx);
+        const scoreEntry = edgeScores.find(s => s.edge_idx === bestEdgeForSplit.edge_idx);
+        if (scoreEntry) scoreEntry.decision_role = 'suppressed';
+      }
+      continue;
+    }
+    if (bestEdgeForSplit) {
+      edgesUsedForSplits.push(bestEdgeForSplit.edge_idx);
+      const scoreEntry = edgeScores.find(s => s.edge_idx === bestEdgeForSplit.edge_idx);
+      if (scoreEntry) scoreEntry.decision_role = 'split';
+    }
+
     const origFace = faces[poly.source_face_indices[0]];
     const parts = v3p2SplitFaceAlongRidge(origFace);
     if (!parts) {
@@ -27436,7 +27725,8 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   }
 
   // 3) Merge candidates: pairs of polygons (from the CURRENT polygon list) that
-  // are adjacent + highly compatible. Re-evaluate adjacency on updated polygons.
+  // are adjacent + highly compatible. V3P2.1: respect edge scores — do NOT merge
+  // across HIGH-confidence edges (real structural boundaries).
   const merged = new Set();
   let mergeAttempts = 0;
   for (let i = 0; i < polygons.length; i++) {
@@ -27451,6 +27741,32 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       if (azDelta > V3P2_MERGE_AZIMUTH_DELTA_DEG) continue;
       const gap = v3p2EdgeGapBetween(pi.vertices, pj.vertices);
       if (gap > V3P2_MERGE_MAX_EDGE_GAP_M) continue;
+
+      // V3P2.1: Find the edge between these faces' original sources.
+      // Block merge if the shared edge has HIGH fused score.
+      let blockingEdge = null;
+      const srcI = pi.source_face_indices;
+      const srcJ = pj.source_face_indices;
+      for (const edge of edges) {
+        if (edge.fused_edge_score == null) continue;
+        const aInI = srcI.includes(edge.face_a_idx);
+        const bInJ = srcJ.includes(edge.face_b_idx);
+        const aInJ = srcJ.includes(edge.face_a_idx);
+        const bInI = srcI.includes(edge.face_b_idx);
+        if ((aInI && bInJ) || (aInJ && bInI)) {
+          if (!blockingEdge || edge.fused_edge_score > blockingEdge.fused_edge_score) {
+            blockingEdge = edge;
+          }
+        }
+      }
+      if (blockingEdge && blockingEdge.fused_edge_score >= V3P2_1_HIGH_CONFIDENCE_THRESHOLD) {
+        pi.validation_reasons.push('merge_blocked_by_strong_edge_' + blockingEdge.edge_idx);
+        edgesBlockingMerges.push(blockingEdge.edge_idx);
+        const scoreEntry = edgeScores.find(s => s.edge_idx === blockingEdge.edge_idx);
+        if (scoreEntry) scoreEntry.decision_role = 'merge_blocker';
+        continue;
+      }
+
       mergeAttempts++;
       const hull = v3p2MergePair(pi, pj);
       if (!hull || hull.length < 4) continue;
@@ -27459,6 +27775,11 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       if (!refit || refit.rmse > Math.max(V3P2_REFIT_MAX_RMSE_M, baselineRmse * V3P2_FALLBACK_REFIT_MULT)) {
         pi.validation_reasons.push('merge_rejected_refit_worse');
         continue;
+      }
+      // V3P2.1: mark the shared edge as used for merge.
+      if (blockingEdge) {
+        const scoreEntry = edgeScores.find(s => s.edge_idx === blockingEdge.edge_idx);
+        if (scoreEntry) scoreEntry.decision_role = 'merge';
       }
       pi.vertices = hull;
       pi.pitch = refit.pitch;
@@ -27477,6 +27798,47 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
 
   // 4) Enforce shared boundaries — snap near-coincident vertices.
   const snaps = v3p2EnforceSharedBoundaries(finalPolygons);
+
+  // V3P2.1: Use edge type refinement based on fused scores.
+  // Reclassify edges where scores provide stronger evidence than initial guess.
+  for (const edge of edges) {
+    if (edge.fused_edge_score == null || edge.edge_type_guess === 'outer_boundary') continue;
+    const lbs = edge.lidar_break_score || 0;
+    const fA = faces[edge.face_a_idx];
+    const fB = faces[edge.face_b_idx];
+    if (!fA || !fB) continue;
+    const azOpp = v3p2AngularDistance((fA.azimuth || 0) + 180, fB.azimuth || 0);
+    // Strong LiDAR + opposite slopes → ridge (even if initially uncertain)
+    if (lbs >= 0.7 && azOpp < 25 && edge.edge_type_guess === 'uncertain_edge') {
+      edge.edge_type_guess = 'ridge_candidate';
+      edge.edge_type_refined = true;
+    }
+    // Strong LiDAR + inward slope → valley (refine from uncertain)
+    if (lbs >= 0.6 && edge.edge_type_guess === 'uncertain_edge') {
+      const cA = v3p2PolygonCentroid(fA.vertices || []);
+      const cB = v3p2PolygonCentroid(fB.vertices || []);
+      const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+      const dsA = { x: Math.sin((fA.azimuth || 0) * Math.PI / 180), z: -Math.cos((fA.azimuth || 0) * Math.PI / 180) };
+      const dsB = { x: Math.sin((fB.azimuth || 0) * Math.PI / 180), z: -Math.cos((fB.azimuth || 0) * Math.PI / 180) };
+      const vA = { x: midX - cA.x, z: midZ - cA.z };
+      const vB = { x: midX - cB.x, z: midZ - cB.z };
+      const magA = Math.hypot(vA.x, vA.z) || 1e-9;
+      const magB = Math.hypot(vB.x, vB.z) || 1e-9;
+      const dA = (vA.x * dsA.x + vA.z * dsA.z) / magA;
+      const dB = (vB.x * dsB.x + vB.z * dsB.z) / magB;
+      if (dA > 0 && dB > 0) {
+        edge.edge_type_guess = 'valley_candidate';
+        edge.edge_type_refined = true;
+      }
+    }
+    // Weak ML + weak geometry → demote to uncertain
+    if ((edge.ml_semantic_score || 0) < 0.25 && (edge.geometry_rule_score || 0) < 0.35 &&
+        (edge.edge_type_guess === 'ridge_candidate' || edge.edge_type_guess === 'hip_candidate') &&
+        !edge.edge_type_refined) {
+      edge.edge_type_guess = 'uncertain_edge';
+      edge.edge_type_refined = true;
+    }
+  }
 
   return {
     v3_polygon_construction_applied: true,
@@ -27518,7 +27880,20 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       seam_azimuth_tol_deg: V3P2_SEAM_AZIMUTH_TOL_DEG,
       seam_pitch_tol_deg: V3P2_SEAM_PITCH_TOL_DEG,
       ridge_az_opposition_deg: V3P2_RIDGE_AZ_OPPOSITION_DEG,
+      // V3P2.1 thresholds
+      edge_score_lidar_weight: V3P2_1_LIDAR_WEIGHT,
+      edge_score_geometry_weight: V3P2_1_GEOMETRY_WEIGHT,
+      edge_score_ml_weight: V3P2_1_ML_WEIGHT,
+      high_confidence_threshold: V3P2_1_HIGH_CONFIDENCE_THRESHOLD,
+      medium_confidence_threshold: V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD,
+      split_fused_min: V3P2_1_SPLIT_FUSED_MIN,
+      merge_fused_max: V3P2_1_MERGE_FUSED_MAX,
     },
+    // V3P2.1: edge scoring debug
+    edge_scores: edgeScores,
+    edges_used_for_splits: edgesUsedForSplits,
+    edges_blocking_merges: edgesBlockingMerges,
+    edges_suppressed: edgesSuppressed,
     edges,
     polygons: finalPolygons,
   };
