@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19 (P9 unmatched/fallback strategy)
+**Last updated:** 2026-04-19 (V2P1 structural coherence / mirrored-pair logic)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -881,7 +881,171 @@ New client-side reason labels: `p9_build_unmatched`, `p9_low_match_fraction`, `p
 
 ---
 
-## 12. Related resources
+## 12. V2 Phase 0 — Ground / Structure Separation
+
+**Date:** 2026-04-19
+**Phase:** V2P0 (first phase of Worker Design Mode V2)
+**Code location:** `server.js` — `groundStructureAssessment()` + 4 helper functions, called from `/api/ml/auto-build` proxy route after P9.
+**Debug location:** `crm_result.metadata.v2p0_ground_structure`
+
+### 12.1 Purpose
+
+Use LiDAR/DSM elevation data to classify each ML roof face as elevated structure or ground-level surface. Catches driveways, patios, yards that ML incorrectly includes as roof faces.
+
+### 12.2 Method
+
+1. Reconstruct 281×281 DSM elevation grid (0.25m resolution, ±35m) from raw LiDAR `[lng, lat, elev, cls]` points. Max elevation per cell (DSM behavior).
+2. Global ground reference: p10 of all valid grid elevations.
+3. Per-face local ground: p25 of ring samples (3-12m radius, 24 azimuth × 7 radial steps) around face centroid.
+4. Face elevation: median DSM sample at centroid + all vertices.
+5. Height above ground = face_elevation − local_ground.
+6. Classification rules:
+   - `ground_like`: height < 1m AND pitch < 10° AND area > 15m² (all three required)
+   - `structure_like`: height > 2.5m
+   - `uncertain`: everything else
+
+### 12.3 Constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `V2P0_STRUCTURE_MIN_HEIGHT_M` | 2.5 | Single-story eave height threshold |
+| `V2P0_GROUND_MAX_HEIGHT_M` | 1.0 | Max height for ground classification |
+| `V2P0_GROUND_MAX_PITCH_DEG` | 10.0 | Max pitch for ground classification |
+| `V2P0_GROUND_MIN_AREA_M2` | 15.0 | Min area for ground classification |
+| `V2P0_RING_INNER_M` | 3.0 | Ring sampling inner radius |
+| `V2P0_RING_OUTER_M` | 12.0 | Ring sampling outer radius |
+| `V2P0_GRID_SIZE` | 281 | Grid dimension (281×281) |
+| `V2P0_GRID_RES` | 0.25 | Grid resolution in meters |
+
+### 12.4 Per-face debug fields
+
+`face_idx`, `centroid_x`, `centroid_z`, `area_m2`, `pitch_deg`, `face_elevation_m`, `local_ground_m`, `global_ground_m`, `height_above_ground_m`, `height_signal`, `pitch_signal`, `flat_low_large`, `composite_score`, `classification`, `classification_reason`.
+
+### 12.5 Build-level debug fields
+
+`grid_valid_cells`, `grid_total_cells`, `grid_fill_fraction`, `global_ground_p10_m`, `total_faces`, `structure_like_count`, `ground_like_count`, `uncertain_count`, `ground_like_face_indices`, `ground_like_faces_found`, `min_height_above_ground_m`, `max_height_above_ground_m`, `mean_height_above_ground_m`.
+
+### 12.6 Validation results (8 properties)
+
+| Property | Bucket | Faces | Struct | Ground | Uncert | Height range | Status change |
+|---|---|---|---|---|---|---|---|
+| 20 Meadow Dr | improved | 4 | 2 | 1 | 1 | 0.07-4.83m | auto_accept→needs_review |
+| 225 Gibson St | P8_corrected | 6 | 4 | 0 | 2 | 0.15-10.1m | — (already needs_review) |
+| 583 Westford | test_prop | 0 | — | — | — | — | rejected (0 faces, V2P0 skipped) |
+| 175 Warwick | steep_roof | 3 | 3 | 0 | 0 | 4.09-7.65m | — |
+| 15 Veteran Rd | clean | 3 | 3 | 0 | 0 | 4.25-4.57m | auto_accept (NO regression) |
+| 13 Richardson | unmatched | 1 | 0 | 1 | 0 | 0.37m | — (already needs_review via p9) |
+| 11 Ash Road | wrong_pitch | 1 | 0 | 0 | 1 | 1.44m | — (already needs_review) |
+| Lawrence | improved | 6 | 2 | 0 | 4 | -2.06-6.9m | — (already needs_review) |
+
+### 12.7 Key findings
+
+1. **20 Meadow Dr face[3] correctly flagged.** h=0.07m, pitch=3.3°, area=49m² — classic ground surface. Was `auto_accept`, now `needs_review` with `v2p0_ground_surface_detected`. This is a real safety improvement.
+
+2. **13 Richardson face[0] double-flagged.** h=0.37m, pitch=3.3°, area=70m² — ground surface AND already `p9_build_unmatched`. V2P0 provides an independent, elevation-based reason for the same conclusion.
+
+3. **15 Veteran (clean) no regression.** All 3 faces at h=4.2-4.6m, correctly `structure_like`. No false positives on good roofs.
+
+4. **175 Warwick steep roof stable.** All 3 faces at h=4-7.7m, correctly `structure_like`. Steep pitch doesn't cause false ground classification.
+
+5. **11 Ash Road conservative.** h=1.44m is between thresholds (ground<1m, structure>2.5m). Correctly classified as `uncertain` — conservative, avoids both false positive and false negative.
+
+6. **Lawrence face[4] negative height.** h=-2.06m (below local ground reference). Correctly classified as `uncertain`, not falsely ground_like (pitch=12.6° fails the <10° guard).
+
+### 12.8 Verdict
+
+**KEEP.** V2P0 catches one previously silent ground surface (20 Meadow face[3], auto_accept→needs_review) and provides independent elevation-based confirmation for 13 Richardson. Zero false positives on clean houses. Three-guard ground classification (height AND pitch AND area) is conservative enough to avoid false flags on legitimate low-pitch roof sections.
+
+---
+
+## 13. V2 Phase 1 — Structural Coherence / Mirrored-Pair Logic
+
+**Date:** 2026-04-19
+**Phase:** V2P1 (second phase of Worker Design Mode V2)
+**Code location:** `server.js` — `structuralCoherenceAssessment()` + 6 helper functions, called from `/api/ml/auto-build` proxy route after V2P0.
+**Debug location:** `crm_result.metadata.v2p1_structural_coherence`
+
+### 13.1 Purpose
+
+Evaluate whether surviving roof faces form plausible mirrored/ridge-paired relationships. First structural grammar layer — debug-only, no geometry changes, no status changes.
+
+### 13.2 Method
+
+1. Identify main planes: area ≥ max(10m², 15% of largest face).
+2. Generate candidate pairs from faces with opposing azimuth (±30°), similar pitch (±15°), and proximity (centroid < 25m).
+3. Score each pair using 4 weighted signals: azimuth opposition (0.35), pitch similarity (0.25), spatial edge gap (0.25), area ratio (0.15).
+4. Classify pairs: `mirrored_gable_like`, `mirrored_main_roof_like`, `partial_mirror`, `weak_candidate`, `non_mirrored`.
+5. Build-level coherence score from main-plane pairing coverage (0.4) + best pair confidence (0.3) + average strong pair confidence (0.3).
+6. Emit structural warnings: `no_strong_mirrored_pairs`, `major_plane_unpaired`, `high_pair_pitch_mismatch`, `weak_azimuth_opposition`, `poor_structural_pair_coverage`, `fragmented_main_roof_structure`.
+
+### 13.3 Constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `V2P1_MAIN_PLANE_MIN_AREA_M2` | 10.0 | Absolute min area for main plane |
+| `V2P1_MAIN_PLANE_MIN_AREA_FRACTION` | 0.15 | Relative min area (fraction of max) |
+| `V2P1_MAX_AZ_OPPOSITION_DEG` | 30.0 | Max azimuth opposition error for candidate |
+| `V2P1_MAX_PITCH_DELTA_DEG` | 15.0 | Max pitch delta for candidate |
+| `V2P1_MAX_CENTROID_DIST_M` | 25.0 | Max centroid distance for candidate |
+| `V2P1_STRONG_PAIR_CONFIDENCE` | 0.6 | Threshold for strong pair |
+| `V2P1_MODERATE_PAIR_CONFIDENCE` | 0.4 | Threshold for moderate pair |
+
+### 13.4 Pair-level debug fields
+
+`face_a_idx`, `face_b_idx`, `pitch_a`, `pitch_b`, `pitch_delta`, `azimuth_a`, `azimuth_b`, `azimuth_opposition_error`, `area_a`, `area_b`, `area_ratio`, `centroid_distance`, `min_edge_gap`, `spatial_compatibility_score`, `pair_confidence`, `pair_type_guess`, `is_main_plane_pair`.
+
+### 13.5 Build-level debug fields
+
+`v2_structural_logic_applied`, `main_plane_count`, `main_plane_area_threshold_m2`, `candidate_plane_pairs`, `mirrored_pair_count`, `paired_main_plane_count`, `unpaired_main_planes`, `weak_pair_count`, `best_pair_confidence`, `pair_confidence_stats`, `mean_pair_pitch_delta`, `mean_pair_azimuth_opposition_error`, `pair_area_ratio_stats`, `structural_coherence_score`, `structural_warnings`, `structural_phase_notes`, `pair_details`.
+
+### 13.6 Validation results (8 properties)
+
+| Property | Bucket | Faces | Main | Candidates | Mirrored | Paired main | Coherence | Warnings |
+|---|---|---|---|---|---|---|---|---|
+| 15 Veteran Rd | clean_gable | 3 | 3 | 2 | 2 | 3 | **0.92** | none |
+| Lawrence | improved_complex | 6 | 6 | 3 | 2 | 5 | **0.81** | major_plane_unpaired |
+| 20 Meadow Dr | improved_simple | 4 | 4 | 2 | 1 | 3 | 0.67 | major_plane_unpaired, high_pair_pitch_mismatch |
+| 175 Warwick | steep_real | 3 | 1 | 1 | 1 | 0 | 0.50 | none |
+| 225 Gibson St | complex_corrected | 6 | 3 | 3 | 1 | 0 | 0.44 | major_plane_unpaired, poor_structural_pair_coverage |
+| 583 Westford | rejected | 0 | — | — | — | — | — | skipped (0 faces) |
+| 11 Ash Road | single_face | 1 | — | — | — | — | — | skipped (1 face) |
+| 13 Richardson | single_face | 1 | — | — | — | — | — | skipped (1 face) |
+
+### 13.7 Key pair examples
+
+1. **15 Veteran face[0,1]**: `mirrored_gable_like`, conf=0.91, az_err=1.42°, Δpitch=2.4°, edge_gap=0.15m, area_ratio=0.83. Classic gable pair — near-zero azimuth error, almost touching edges, very similar pitch.
+
+2. **Lawrence face[0,1]**: `mirrored_gable_like`, conf=0.83, az_err=1.38°, Δpitch=4.48°, edge_gap=0.32m, area_ratio=0.55. Strong gable pair on one section of a multi-section roof.
+
+3. **Lawrence face[2,3]**: `mirrored_gable_like`, conf=0.71, az_err=2.55°, Δpitch=4.66°, edge_gap=6.94m, area_ratio=0.91. Second gable pair on another section — larger edge gap suggests separate roof section.
+
+4. **225 Gibson face[2,3]**: `mirrored_gable_like`, conf=0.74, az_err=4.59°, Δpitch=3.6°, area_ratio=0.12. Good geometry but extremely asymmetric area — one face is tiny.
+
+5. **175 Warwick face[1,2]**: `mirrored_main_roof_like`, conf=0.86, az_err=3.24°, Δpitch=5.21°, edge_gap=0.51m, area_ratio=0.98. Strong pair between steep secondary faces. Steep pitch does NOT prevent pairing.
+
+### 13.8 Key findings
+
+1. **Simple gable roofs produce high coherence.** 15 Veteran: coherence=0.92, 2 gable-like pairs, 0 warnings. The scoring correctly rewards strong opposition alignment and proximity.
+
+2. **Multi-section roofs produce multiple gable pairs.** Lawrence: coherence=0.81, 2 independent gable pairs detected across different roof sections. The edge_gap difference (0.32m vs 6.94m) correctly distinguishes adjacent from separated sections.
+
+3. **Complex/problematic roofs get low coherence and correct warnings.** 225 Gibson: coherence=0.44, warnings=[major_plane_unpaired, poor_structural_pair_coverage]. The 3 main planes don't pair with each other because their azimuths aren't opposing — a genuinely diagnostic signal.
+
+4. **Steep-but-real roofs are not catastrophically scored.** 175 Warwick: coherence=0.5 (neutral single-main-plane default). The strong secondary pair (conf=0.86) shows the steep faces do form a valid mirrored structure. Not penalized for steepness.
+
+5. **20 Meadow correctly warns.** The high_pair_pitch_mismatch warning fires because the best pair has Δpitch=9.88°. The ground-like face (from V2P0) contributes to the unpaired main plane count.
+
+6. **No status changes.** V2P1 is debug-only. All 5 active properties retain their existing status. Zero regression risk.
+
+7. **No V1/V2P0 interference.** All prior phase outputs (P8 corrections, P9 flags, V2P0 ground detection) remain unchanged.
+
+### 13.9 Verdict
+
+**KEEP.** V2P1 produces interpretable, directionally correct structural coherence signals across all validation property types. Simple roofs score high, complex roofs score low with useful warnings, and steep roofs are handled gracefully. The debug data (pair-level metrics, build-level summary, warnings) provides a foundation for future structural reasoning phases. Zero production risk (debug-only, no status changes).
+
+---
+
+## 14. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

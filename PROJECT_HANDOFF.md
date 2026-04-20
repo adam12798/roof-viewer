@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (P9 unmatched/fallback strategy)
+**Last updated:** 2026-04-19 (V2P1 structural coherence / mirrored-pair logic)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -334,7 +334,7 @@ python3 ml_ui_server.py
 **Debug:** Console logs for banner state transitions.
 **Bank criteria:** `needs_review` shows orange warning with reasons; `auto_accept` shows green success; Undo restores pre-ML state; Dismiss acknowledges and keeps faces; all reason labels mapped.
 **Failure types:** Banner not shown, wrong severity, user stuck without actionable path, pointer-events leak.
-**Banked config:** Status-aware banner, 13 reason labels (including `google_solar_pitch_mismatch`, `google_solar_pitch_corrected`, `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
+**Banked config:** Status-aware banner, 14 reason labels (including `google_solar_pitch_mismatch`, `google_solar_pitch_corrected`, `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`, `v2p0_ground_surface_detected`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
 **Reopen trigger:** New review reason that needs a label; user-reported UX confusion.
 
 ---
@@ -428,6 +428,60 @@ For each matched face, correct when ALL four guards hold:
 
 ---
 
+### V2P0 — Ground / Structure Separation [BANKED]
+
+**Purpose:** Use LiDAR/DSM elevation to distinguish true elevated roof structure from ground-like surfaces (driveways, patios, yards) that ML may include as roof faces.
+**Inputs:** Raw LiDAR points (`body.lidar.points` = `[lng, lat, elev, cls]`), ML roof faces with vertices in local meters.
+**Outputs:** Per-face classification (`structure_like` / `ground_like` / `uncertain`), build-level ground detection flag, `v2p0_ground_surface_detected` review reason.
+**Debug:** `crm_result.metadata.v2p0_ground_structure` — per-face: `face_elevation_m`, `local_ground_m`, `height_above_ground_m`, `height_signal`, `pitch_signal`, `flat_low_large`, `composite_score`, `classification`, `classification_reason`. Build-level: `grid_fill_fraction`, `global_ground_p10_m`, `structure_like_count`, `ground_like_count`, `uncertain_count`, `ground_like_face_indices`, height range.
+**Failure types:** False positive on legitimate low-pitch roof section; false negative on elevated but flat patio/deck.
+
+**Method:**
+1. Reconstruct 281×281 DSM elevation grid (0.25m res, ±35m) from raw LiDAR points (max elevation per cell).
+2. Global ground reference: p10 of all valid DSM elevations.
+3. Per-face local ground: p25 of ring samples (3-12m radius, 24 azimuth steps × 7 radial steps) around centroid.
+4. Height above ground = median face elevation (centroid + vertices) − local ground.
+5. Classification: `ground_like` if height < 1m AND pitch < 10° AND area > 15m² (all three). `structure_like` if height > 2.5m. Otherwise `uncertain`.
+6. Weighted composite score (debug): height_signal×0.6 + pitch_signal×0.2 + flat_low_large_penalty×0.3.
+
+**Constants:** `V2P0_STRUCTURE_MIN_HEIGHT_M=2.5`, `V2P0_GROUND_MAX_HEIGHT_M=1.0`, `V2P0_GROUND_MAX_PITCH_DEG=10.0`, `V2P0_GROUND_MIN_AREA_M2=15.0`, ring 3-12m, grid 281×281 at 0.25m.
+
+**Bank criteria:** 0 clean regressions; ≥1 ground-like face correctly flagged; heights plausible for known-good roofs.
+**Status:** BANKED. 20 Meadow face[3] flagged ground-like (h=0.07m, auto_accept→needs_review). 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9). 15 Veteran (clean) all structure-like (h=4.2-4.6m), no regression. 175 Warwick all structure-like (h=4-7.7m). See triage §12.
+**Reopen trigger:** False positive on a legitimate low-pitch roof section, or a ground-level surface that evades all three guards.
+
+---
+
+### V2P1 — Structural Coherence / Mirrored-Pair Logic [BANKED]
+
+**Purpose:** Evaluate whether surviving roof faces form plausible mirrored/ridge-paired relationships. First structural grammar layer for whole-roof coherence reasoning.
+**Inputs:** Final cleaned roof faces (after V1 cleanup, quality gate, P8/P9, V2P0).
+**Outputs:** Per-pair scoring, build-level structural coherence score, structural warnings. Debug-only — no status changes, no geometry rewrites.
+**Debug:** `crm_result.metadata.v2p1_structural_coherence` — pair-level: `azimuth_opposition_error`, `pitch_delta`, `area_ratio`, `min_edge_gap`, `centroid_distance`, `spatial_compatibility_score`, `pair_confidence`, `pair_type_guess`, `is_main_plane_pair`. Build-level: `main_plane_count`, `candidate_plane_pairs`, `mirrored_pair_count`, `paired_main_plane_count`, `unpaired_main_planes`, `structural_coherence_score`, `structural_warnings[]`, `pair_confidence_stats`, `pair_area_ratio_stats`.
+**Failure types:** False low coherence on legitimate asymmetric roofs; false high coherence on fragmented builds; over-counting weak pairs.
+
+**Signal families:**
+1. **Azimuth opposition** — angular distance between face B azimuth and (face A azimuth + 180°). Weight 0.35.
+2. **Pitch similarity** — |pitch_a − pitch_b|. Weight 0.25.
+3. **Spatial compatibility** — minimum edge gap between polygon samples. Weight 0.25.
+4. **Area compatibility** — min(area_a, area_b) / max(area_a, area_b). Weight 0.15.
+
+**Pair classification:** `mirrored_gable_like` (conf≥0.7, az<15°, Δpitch<5°), `mirrored_main_roof_like` (conf≥0.5, az<20°, Δpitch<10°), `partial_mirror` (conf≥0.3, az<25°), `weak_candidate` (conf≥0.15), `non_mirrored`.
+
+**Candidate pre-filters:** azimuth opposition > 30° rejected, pitch delta > 15° rejected, centroid distance > 25m rejected.
+
+**Main plane definition:** area ≥ max(10m², 15% of largest face area).
+
+**Constants:** `V2P1_MAIN_PLANE_MIN_AREA_M2=10`, `V2P1_MAIN_PLANE_MIN_AREA_FRACTION=0.15`, `V2P1_MAX_AZ_OPPOSITION_DEG=30`, `V2P1_MAX_PITCH_DELTA_DEG=15`, `V2P1_MAX_CENTROID_DIST_M=25`, `V2P1_STRONG_PAIR_CONFIDENCE=0.6`, `V2P1_MODERATE_PAIR_CONFIDENCE=0.4`.
+
+**Warnings emitted:** `no_strong_mirrored_pairs`, `major_plane_unpaired`, `high_pair_pitch_mismatch`, `weak_azimuth_opposition`, `poor_structural_pair_coverage`, `fragmented_main_roof_structure`.
+
+**Bank criteria:** Simple roofs produce high coherence; complex roofs produce useful warnings; steep-but-real roofs not catastrophically scored; no status changes; no V1/V2P0 interference.
+**Status:** BANKED. 15 Veteran (clean gable): coherence=0.92, 2 mirrored_gable_like pairs, 0 warnings. Lawrence (complex): coherence=0.81, 2 gable pairs. 225 Gibson (problematic): coherence=0.44, correct poor_structural_pair_coverage warning. 175 Warwick (steep): coherence=0.5, not catastrophically scored. 0 status changes. See triage §13.
+**Reopen trigger:** V2P1 coherence score found to be misleading on a new property class, or pair classification proven wrong by manual inspection.
+
+---
+
 ### Backlog (not phase-gated)
 
 These items are tracked but not tied to the active phase:
@@ -443,6 +497,8 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P1 Structural Coherence / Mirrored-Pair Logic. Debug-first evaluation of whether surviving roof faces form plausible mirrored/ridge-paired relationships. 4 signal families (azimuth opposition, pitch similarity, spatial edge gap, area ratio), 5 pair types, 6 warning codes. Validated on 8 properties: 15 Veteran coherence=0.92 (2 gable pairs, 0 warnings), Lawrence coherence=0.81 (2 gable pairs), 225 Gibson coherence=0.44 (correct poor coverage warning), 175 Warwick coherence=0.5 (steep roof not catastrophically scored). No status changes (debug-only). No V1/V2P0 interference. See triage §13. |
+| 2026-04-19 | V2P0 Ground/Structure Separation. Uses LiDAR/DSM elevation to classify each ML roof face as structure_like (height>2.5m), ground_like (height<1m AND pitch<10° AND area>15m²), or uncertain. Reconstructs 281×281 DSM grid from raw LiDAR points, per-face local ground reference via ring sampling (3-12m, p25). Validated on 8 properties: 20 Meadow face[3] correctly flagged ground-like (h=0.07m, auto_accept→needs_review), 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9), 15 Veteran (clean) all structure-like (h=4.2-4.6m, no regression), 175 Warwick all structure-like (h=4-7.7m). 5 helper functions, 15 per-face metrics, 13 build-level debug fields. See triage §12. |
 | 2026-04-19 | P9 unmatched/fallback strategy. Flags builds where ML faces don't match any Google Solar segments. 3 rules: build_unmatched (0/N matched), low_match_fraction (<50% matched when >=3 faces), low_match_confidence (>=50% of matches below 0.3). Validated on 7 properties: 13 Richardson St auto_accept→needs_review (the gap), 11 Ash Road gets additional context, 0 clean regressions, 0 improved regressions, P8 corrections stable. Adds `p9_build_assessment` debug object and 3 client-side reason labels. See triage §11. |
 | 2026-04-19 | P8 conservative pitch correction. One-directional correction using Google Solar pitch as external reference. 5-guard rule: matched, confidence > 0.5, ml-google delta > 10°, google_pitch < 45°, google_area > 8m². Corrected pitch = google_pitch + 2°. Validated on 7 properties: 225 Gibson face[2] corrected 46.9°→17.3° (eliminated only >40° face), 175 Warwick correctly blocked (Google agrees steep), 0 clean regressions, 0 improved regressions. Adds `google_solar_pitch_corrected` review reason, full per-face debug. See triage §10. |
 | 2026-04-19 | Engineering phase plan restructure. Replaced organic priority list with strict P0–P8 phase map. Each phase has purpose/inputs/outputs/debug structure/bank criteria/failure types/reopen trigger. P0–P7 all BANKED (orientation, erosion, RANSAC, rules, quality gate, review banner, pipeline debug, P8 instrumentation). P8 correction ACTIVE — one-directional pitch correction using Google Solar cross-val data, 4-guard conservative design. Backlog section for non-phase items. See section I. |
@@ -480,7 +536,7 @@ These items are tracked but not tied to the active phase:
 
 | File | Key areas |
 |---|---|
-| `server.js` (~25.3k lines) | `/design` template (L5500-17600): `mlAutoBuild` L16225, `mlAutoBuildContinue` L16256, `_mlBanner` L16210, `finalizeRoofFace` L14154 (ML branch), `rebuildRoofFace` L14243 (ML branch), `serializeRoofFaces` L10419 (source persistence), `loadDesign` L9169 (ML rehydrate), `captureRoofSnapshot` L14513 (sourceTag), `restoreRoofSnapshot` L14556 (ML rehydrate), shared-edge helpers L11277-11316, single-slope helpers L11519-11610. Server routes: `/api/ml/auto-build` L24630, ML defaults L24627. |
+| `server.js` (~26.1k lines) | `/design` template (L5500-17600): `mlAutoBuild` L16225, `mlAutoBuildContinue` L16256, `_mlBanner` L16210, `finalizeRoofFace` L14154 (ML branch), `rebuildRoofFace` L14243 (ML branch), `serializeRoofFaces` L10419 (source persistence), `loadDesign` L9169 (ML rehydrate), `captureRoofSnapshot` L14513 (sourceTag), `restoreRoofSnapshot` L14556 (ML rehydrate), shared-edge helpers L11277-11316, single-slope helpers L11519-11610. Server routes: `/api/ml/auto-build` L24630, ML defaults L24627. |
 | `SETUP.md` | General CRM setup (Node, npm, .env, login accounts). |
 | `.env` | `GOOGLE_API_KEY`, `PORT`, optionally `ML_ENGINE_URL`, `ML_AUTO_BUILD_PATH`. |
 | `.gitignore` | Excludes `data/sessions.json`, `data/users.json`, `data/projects.json`, `data/uploads/`, `data/organization.json`, `data/ml-drafts.json`, `.claude/`. |

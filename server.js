@@ -16393,7 +16393,8 @@ app.get("/design", (req, res) => {
           google_solar_pitch_corrected: 'Pitch corrected using Google Solar reference data',
           p9_build_unmatched: 'No ML faces match Google Solar roof segments',
           p9_low_match_fraction: 'Most ML faces could not be matched to Google Solar',
-          p9_low_match_confidence: 'ML faces match Google Solar with low confidence'
+          p9_low_match_confidence: 'ML faces match Google Solar with low confidence',
+          v2p0_ground_surface_detected: 'Ground-like surface detected (low elevation, flat, large area)'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -24836,6 +24837,387 @@ async function solarPitchCrossValidation(lat, lng, envelope) {
   };
 }
 
+// ── V2 Phase 0: Ground / Structure Separation ──────────────────────────────
+const _r2 = v => Math.round(v * 100) / 100;
+const V2P0_STRUCTURE_MIN_HEIGHT_M = 2.5;
+const V2P0_GROUND_MAX_HEIGHT_M = 1.0;
+const V2P0_GROUND_MAX_PITCH_DEG = 10.0;
+const V2P0_GROUND_MIN_AREA_M2 = 15.0;
+const V2P0_RING_INNER_M = 3.0;
+const V2P0_RING_OUTER_M = 12.0;
+const V2P0_GRID_SIZE = 281;
+const V2P0_GRID_RES = 0.25;
+const V2P0_GRID_HALF = 35.0;
+
+function v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng) {
+  const cosLat = Math.cos(centerLat * Math.PI / 180);
+  const grid = new Float32Array(V2P0_GRID_SIZE * V2P0_GRID_SIZE).fill(NaN);
+  let validCount = 0;
+  for (const pt of lidarPoints) {
+    const lx = (pt[0] - centerLng) * 111320 * cosLat;
+    const lz = -(pt[1] - centerLat) * 111320;
+    const gx = Math.round((lx + V2P0_GRID_HALF) / V2P0_GRID_RES);
+    const gz = Math.round((lz + V2P0_GRID_HALF) / V2P0_GRID_RES);
+    if (gx < 0 || gx >= V2P0_GRID_SIZE || gz < 0 || gz >= V2P0_GRID_SIZE) continue;
+    const idx = gz * V2P0_GRID_SIZE + gx;
+    const elev = pt[2];
+    if (isNaN(grid[idx]) || elev > grid[idx]) {
+      if (isNaN(grid[idx])) validCount++;
+      grid[idx] = elev;
+    }
+  }
+  const allElevs = [];
+  for (let i = 0; i < grid.length; i++) {
+    if (!isNaN(grid[i])) allElevs.push(grid[i]);
+  }
+  allElevs.sort((a, b) => a - b);
+  const globalGroundP10 = allElevs.length > 0 ? allElevs[Math.floor(allElevs.length * 0.1)] : 0;
+  return { grid, cosLat, validCount, totalCells: V2P0_GRID_SIZE * V2P0_GRID_SIZE, globalGroundP10 };
+}
+
+function v2p0SampleElevation(grid, x, z) {
+  const gx = Math.round((x + V2P0_GRID_HALF) / V2P0_GRID_RES);
+  const gz = Math.round((z + V2P0_GRID_HALF) / V2P0_GRID_RES);
+  if (gx < 0 || gx >= V2P0_GRID_SIZE || gz < 0 || gz >= V2P0_GRID_SIZE) return NaN;
+  return grid[gz * V2P0_GRID_SIZE + gx];
+}
+
+function v2p0EstimateLocalGround(grid, cx, cz, globalGroundP10) {
+  const samples = [];
+  const steps = 24;
+  for (let i = 0; i < steps; i++) {
+    const angle = (2 * Math.PI * i) / steps;
+    for (let r = V2P0_RING_INNER_M; r <= V2P0_RING_OUTER_M; r += 1.5) {
+      const sx = cx + r * Math.cos(angle);
+      const sz = cz + r * Math.sin(angle);
+      const e = v2p0SampleElevation(grid, sx, sz);
+      if (!isNaN(e)) samples.push(e);
+    }
+  }
+  if (samples.length === 0) return globalGroundP10;
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(samples.length * 0.25)];
+}
+
+function v2p0PolygonArea(vertices) {
+  let area = 0;
+  const n = vertices.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += vertices[i].x * vertices[j].z;
+    area -= vertices[j].x * vertices[i].z;
+  }
+  return Math.abs(area) / 2;
+}
+
+function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
+  if (!lidarPoints || lidarPoints.length === 0 || !faces || faces.length === 0) return null;
+
+  const { grid, validCount, totalCells, globalGroundP10 } = v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng);
+  if (validCount === 0) return null;
+
+  const faceAssessments = [];
+  let groundLikeCount = 0, structureLikeCount = 0, uncertainCount = 0;
+  const groundLikeIndices = [];
+  const heights = [];
+
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    const verts = face.vertices || [];
+    if (verts.length < 3) {
+      faceAssessments.push({ face_idx: fi, classification: 'uncertain', classification_reason: 'too_few_vertices' });
+      uncertainCount++;
+      continue;
+    }
+
+    let cx = 0, cz = 0;
+    for (const v of verts) { cx += v.x; cz += v.z; }
+    cx /= verts.length; cz /= verts.length;
+
+    const area = v2p0PolygonArea(verts);
+    const pitch = face.pitch || 0;
+
+    const centroidElev = v2p0SampleElevation(grid, cx, cz);
+    const vertexElevs = verts.map(v => v2p0SampleElevation(grid, v.x, v.z)).filter(e => !isNaN(e));
+    const allSamples = [...vertexElevs];
+    if (!isNaN(centroidElev)) allSamples.push(centroidElev);
+
+    if (allSamples.length === 0) {
+      faceAssessments.push({
+        face_idx: fi, classification: 'uncertain', classification_reason: 'no_dsm_samples',
+        centroid_x: _r2(cx), centroid_z: _r2(cz), area_m2: _r2(area), pitch_deg: _r2(pitch),
+      });
+      uncertainCount++;
+      continue;
+    }
+
+    allSamples.sort((a, b) => a - b);
+    const faceElevation = allSamples[Math.floor(allSamples.length / 2)];
+    const localGround = v2p0EstimateLocalGround(grid, cx, cz, globalGroundP10);
+    const heightAboveGround = faceElevation - localGround;
+    heights.push(heightAboveGround);
+
+    const heightSignal = Math.max(0, Math.min(1,
+      (heightAboveGround - V2P0_GROUND_MAX_HEIGHT_M) / (V2P0_STRUCTURE_MIN_HEIGHT_M - V2P0_GROUND_MAX_HEIGHT_M)
+    ));
+    const pitchSignal = Math.max(0, Math.min(1, pitch / 30.0));
+    const flatLowLarge = pitch < V2P0_GROUND_MAX_PITCH_DEG && heightAboveGround < V2P0_GROUND_MAX_HEIGHT_M && area > V2P0_GROUND_MIN_AREA_M2;
+    const compositeScore = _r2(Math.max(0, Math.min(1, heightSignal * 0.6 + pitchSignal * 0.2 + (flatLowLarge ? 0 : 0.3))));
+
+    let classification, classificationReason;
+    if (heightAboveGround < V2P0_GROUND_MAX_HEIGHT_M && pitch < V2P0_GROUND_MAX_PITCH_DEG && area > V2P0_GROUND_MIN_AREA_M2) {
+      classification = 'ground_like';
+      classificationReason = `height=${_r2(heightAboveGround)}m<${V2P0_GROUND_MAX_HEIGHT_M} AND pitch=${_r2(pitch)}<${V2P0_GROUND_MAX_PITCH_DEG} AND area=${_r2(area)}>${V2P0_GROUND_MIN_AREA_M2}`;
+      groundLikeCount++;
+      groundLikeIndices.push(fi);
+    } else if (heightAboveGround > V2P0_STRUCTURE_MIN_HEIGHT_M) {
+      classification = 'structure_like';
+      classificationReason = `height=${_r2(heightAboveGround)}m>${V2P0_STRUCTURE_MIN_HEIGHT_M}`;
+      structureLikeCount++;
+    } else {
+      classification = 'uncertain';
+      classificationReason = 'does_not_meet_ground_or_structure_criteria';
+      uncertainCount++;
+    }
+
+    faceAssessments.push({
+      face_idx: fi, centroid_x: _r2(cx), centroid_z: _r2(cz),
+      area_m2: _r2(area), pitch_deg: _r2(pitch),
+      face_elevation_m: _r2(faceElevation), local_ground_m: _r2(localGround),
+      global_ground_m: _r2(globalGroundP10), height_above_ground_m: _r2(heightAboveGround),
+      height_signal: _r2(heightSignal), pitch_signal: _r2(pitchSignal),
+      flat_low_large: flatLowLarge, composite_score: compositeScore,
+      classification, classification_reason: classificationReason,
+    });
+  }
+
+  return {
+    grid_valid_cells: validCount,
+    grid_total_cells: totalCells,
+    grid_fill_fraction: _r2(validCount / totalCells),
+    global_ground_p10_m: _r2(globalGroundP10),
+    total_faces: faces.length,
+    structure_like_count: structureLikeCount,
+    ground_like_count: groundLikeCount,
+    uncertain_count: uncertainCount,
+    ground_like_face_indices: groundLikeIndices,
+    ground_like_faces_found: groundLikeCount > 0,
+    min_height_above_ground_m: heights.length > 0 ? _r2(Math.min(...heights)) : null,
+    max_height_above_ground_m: heights.length > 0 ? _r2(Math.max(...heights)) : null,
+    mean_height_above_ground_m: heights.length > 0 ? _r2(heights.reduce((a, b) => a + b, 0) / heights.length) : null,
+    face_assessments: faceAssessments,
+  };
+}
+
+// ── V2 Phase 1: Structural Coherence / Mirrored-Pair Logic ─────────────────
+const V2P1_MAIN_PLANE_MIN_AREA_M2 = 10.0;
+const V2P1_MAIN_PLANE_MIN_AREA_FRACTION = 0.15;
+const V2P1_MAX_AZ_OPPOSITION_DEG = 30.0;
+const V2P1_MAX_PITCH_DELTA_DEG = 15.0;
+const V2P1_MAX_CENTROID_DIST_M = 25.0;
+const V2P1_STRONG_PAIR_CONFIDENCE = 0.6;
+const V2P1_MODERATE_PAIR_CONFIDENCE = 0.4;
+
+function v2p1AngularDistance(a, b) {
+  let d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+function v2p1Centroid(vertices) {
+  let cx = 0, cz = 0;
+  for (const v of vertices) { cx += v.x; cz += v.z; }
+  return { x: cx / vertices.length, z: cz / vertices.length };
+}
+
+function v2p1MinEdgeGap(vertsA, vertsB) {
+  function edgeSamples(verts) {
+    const pts = [];
+    for (let i = 0; i < verts.length; i++) {
+      pts.push(verts[i]);
+      const j = (i + 1) % verts.length;
+      pts.push({ x: (verts[i].x + verts[j].x) / 2, z: (verts[i].z + verts[j].z) / 2 });
+    }
+    return pts;
+  }
+  const ptsA = edgeSamples(vertsA);
+  const ptsB = edgeSamples(vertsB);
+  let minD = Infinity;
+  for (const a of ptsA) {
+    for (const b of ptsB) {
+      const d = Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2);
+      if (d < minD) minD = d;
+    }
+  }
+  return minD;
+}
+
+function v2p1CollectSurvivingFaces(faces) {
+  const areas = faces.map(f => v2p0PolygonArea(f.vertices || []));
+  const maxArea = Math.max(...areas);
+  const areaThreshold = Math.max(V2P1_MAIN_PLANE_MIN_AREA_M2, maxArea * V2P1_MAIN_PLANE_MIN_AREA_FRACTION);
+  return faces.map((f, i) => {
+    const verts = f.vertices || [];
+    const area = areas[i];
+    return {
+      idx: i,
+      pitch: f.pitch || 0,
+      azimuth: f.azimuth || 0,
+      area,
+      vertices: verts,
+      centroid: verts.length >= 3 ? v2p1Centroid(verts) : { x: 0, z: 0 },
+      is_main_plane: area >= areaThreshold && verts.length >= 3,
+    };
+  });
+}
+
+function v2p1ScoreMirroredPair(fA, fB) {
+  const expectedOpposite = (fA.azimuth + 180) % 360;
+  const azOppositionError = v2p1AngularDistance(fB.azimuth, expectedOpposite);
+  const pitchDelta = Math.abs(fA.pitch - fB.pitch);
+  const areaRatio = Math.min(fA.area, fB.area) / Math.max(fA.area, fB.area);
+  const centroidDist = Math.sqrt(
+    (fA.centroid.x - fB.centroid.x) ** 2 + (fA.centroid.z - fB.centroid.z) ** 2
+  );
+  const edgeGap = v2p1MinEdgeGap(fA.vertices, fB.vertices);
+
+  const azScore = Math.max(0, 1 - azOppositionError / V2P1_MAX_AZ_OPPOSITION_DEG);
+  const pitchScore = Math.max(0, 1 - pitchDelta / V2P1_MAX_PITCH_DELTA_DEG);
+  const areaScore = areaRatio;
+  const spatialScore = Math.max(0, 1 - edgeGap / 10.0);
+
+  const confidence = _r2(azScore * 0.35 + pitchScore * 0.25 + spatialScore * 0.25 + areaScore * 0.15);
+
+  let pairType;
+  if (confidence >= 0.7 && azOppositionError < 15 && pitchDelta < 5) {
+    pairType = 'mirrored_gable_like';
+  } else if (confidence >= 0.5 && azOppositionError < 20 && pitchDelta < 10) {
+    pairType = 'mirrored_main_roof_like';
+  } else if (confidence >= 0.3 && azOppositionError < 25) {
+    pairType = 'partial_mirror';
+  } else if (confidence >= 0.15) {
+    pairType = 'weak_candidate';
+  } else {
+    pairType = 'non_mirrored';
+  }
+
+  return {
+    face_a_idx: fA.idx, face_b_idx: fB.idx,
+    pitch_a: _r2(fA.pitch), pitch_b: _r2(fB.pitch), pitch_delta: _r2(pitchDelta),
+    azimuth_a: _r2(fA.azimuth), azimuth_b: _r2(fB.azimuth),
+    azimuth_opposition_error: _r2(azOppositionError),
+    area_a: _r2(fA.area), area_b: _r2(fB.area), area_ratio: _r2(areaRatio),
+    centroid_distance: _r2(centroidDist), min_edge_gap: _r2(edgeGap),
+    spatial_compatibility_score: _r2(spatialScore),
+    pair_confidence: confidence, pair_type_guess: pairType,
+    is_main_plane_pair: fA.is_main_plane && fB.is_main_plane,
+  };
+}
+
+function v2p1BuildCandidatePairs(annotatedFaces) {
+  const pairs = [];
+  for (let i = 0; i < annotatedFaces.length; i++) {
+    for (let j = i + 1; j < annotatedFaces.length; j++) {
+      const fA = annotatedFaces[i], fB = annotatedFaces[j];
+      if (fA.vertices.length < 3 || fB.vertices.length < 3) continue;
+      const azError = v2p1AngularDistance(fB.azimuth, (fA.azimuth + 180) % 360);
+      if (azError > V2P1_MAX_AZ_OPPOSITION_DEG) continue;
+      if (Math.abs(fA.pitch - fB.pitch) > V2P1_MAX_PITCH_DELTA_DEG) continue;
+      const cd = Math.sqrt((fA.centroid.x - fB.centroid.x) ** 2 + (fA.centroid.z - fB.centroid.z) ** 2);
+      if (cd > V2P1_MAX_CENTROID_DIST_M) continue;
+      pairs.push(v2p1ScoreMirroredPair(fA, fB));
+    }
+  }
+  pairs.sort((a, b) => b.pair_confidence - a.pair_confidence);
+  return pairs;
+}
+
+function v2p1SummarizeStructuralPairing(pairs, annotatedFaces) {
+  const mainPlanes = annotatedFaces.filter(f => f.is_main_plane);
+  const mainPlaneCount = mainPlanes.length;
+  const strongPairs = pairs.filter(p => p.pair_confidence >= V2P1_STRONG_PAIR_CONFIDENCE);
+  const moderatePairs = pairs.filter(p => p.pair_confidence >= V2P1_MODERATE_PAIR_CONFIDENCE);
+  const weakPairs = pairs.filter(p => p.pair_confidence >= 0.15 && p.pair_confidence < V2P1_MODERATE_PAIR_CONFIDENCE);
+  const mirroredPairs = pairs.filter(p =>
+    p.pair_type_guess === 'mirrored_gable_like' || p.pair_type_guess === 'mirrored_main_roof_like'
+  );
+
+  const pairedMainIndices = new Set();
+  for (const p of moderatePairs) {
+    if (p.is_main_plane_pair) {
+      pairedMainIndices.add(p.face_a_idx);
+      pairedMainIndices.add(p.face_b_idx);
+    }
+  }
+  const pairedMainCount = pairedMainIndices.size;
+  const unpairedMainPlanes = mainPlaneCount - pairedMainCount;
+
+  const modPitchDeltas = moderatePairs.map(p => p.pitch_delta);
+  const modAzErrors = moderatePairs.map(p => p.azimuth_opposition_error);
+  const modAreaRatios = moderatePairs.map(p => p.area_ratio);
+  const mean = arr => arr.length ? _r2(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+
+  let coherenceScore;
+  if (mainPlaneCount < 2) {
+    coherenceScore = mainPlaneCount === 1 ? 0.5 : 0;
+  } else {
+    const pairingCoverage = pairedMainCount / mainPlaneCount;
+    const bestConf = pairs.length > 0 ? pairs[0].pair_confidence : 0;
+    const avgStrongConf = strongPairs.length > 0
+      ? strongPairs.reduce((a, p) => a + p.pair_confidence, 0) / strongPairs.length
+      : 0;
+    coherenceScore = _r2(pairingCoverage * 0.4 + bestConf * 0.3 + avgStrongConf * 0.3);
+  }
+
+  const warnings = [];
+  if (mainPlaneCount >= 2 && mirroredPairs.length === 0)
+    warnings.push('no_strong_mirrored_pairs');
+  if (mainPlaneCount >= 2 && unpairedMainPlanes > 0)
+    warnings.push('major_plane_unpaired');
+  if (strongPairs.some(p => p.pitch_delta > 8))
+    warnings.push('high_pair_pitch_mismatch');
+  if (pairs.length > 0 && pairs[0].azimuth_opposition_error > 20)
+    warnings.push('weak_azimuth_opposition');
+  if (mainPlaneCount >= 3 && pairedMainCount / mainPlaneCount < 0.5)
+    warnings.push('poor_structural_pair_coverage');
+  if (mainPlaneCount >= 4 && mirroredPairs.length === 0)
+    warnings.push('fragmented_main_roof_structure');
+
+  const maxArea = annotatedFaces.length > 0 ? Math.max(...annotatedFaces.map(f => f.area)) : 0;
+  return {
+    v2_structural_logic_applied: true,
+    main_plane_count: mainPlaneCount,
+    main_plane_area_threshold_m2: _r2(Math.max(V2P1_MAIN_PLANE_MIN_AREA_M2, maxArea * V2P1_MAIN_PLANE_MIN_AREA_FRACTION)),
+    candidate_plane_pairs: pairs.length,
+    mirrored_pair_count: mirroredPairs.length,
+    paired_main_plane_count: pairedMainCount,
+    unpaired_main_planes: unpairedMainPlanes,
+    weak_pair_count: weakPairs.length,
+    best_pair_confidence: pairs.length > 0 ? pairs[0].pair_confidence : null,
+    pair_confidence_stats: {
+      mean: mean(pairs.map(p => p.pair_confidence)),
+      max: pairs.length > 0 ? _r2(Math.max(...pairs.map(p => p.pair_confidence))) : null,
+    },
+    mean_pair_pitch_delta: mean(modPitchDeltas),
+    mean_pair_azimuth_opposition_error: mean(modAzErrors),
+    pair_area_ratio_stats: {
+      mean: mean(modAreaRatios),
+      min: modAreaRatios.length ? _r2(Math.min(...modAreaRatios)) : null,
+      max: modAreaRatios.length ? _r2(Math.max(...modAreaRatios)) : null,
+    },
+    structural_coherence_score: coherenceScore,
+    structural_warnings: warnings,
+    structural_phase_notes: [],
+    pair_details: pairs,
+  };
+}
+
+function structuralCoherenceAssessment(faces) {
+  if (!faces || faces.length < 2) return null;
+  const annotated = v2p1CollectSurvivingFaces(faces);
+  const pairs = v2p1BuildCandidatePairs(annotated);
+  return v2p1SummarizeStructuralPairing(pairs, annotated);
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -24932,6 +25314,56 @@ app.post("/api/ml/auto-build", async (req, res) => {
     }
   } catch (e) {
     console.log(`[p3_solar_crossval] skipped: ${e.message}`);
+  }
+
+  // V2P0: Ground / Structure Separation (non-blocking)
+  try {
+    const lidarPts = body.lidar && body.lidar.points;
+    const dc = body.design_center;
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const roofFaces = cr.roof_faces || [];
+    if (lidarPts && lidarPts.length > 0 && roofFaces.length > 0 && dc && dc.lat && dc.lng) {
+      const v2p0 = groundStructureAssessment(lidarPts, +dc.lat, +dc.lng, roofFaces);
+      if (v2p0) {
+        const md = cr.metadata || (cr.metadata = {});
+        md.v2p0_ground_structure = v2p0;
+        if (v2p0.ground_like_faces_found) {
+          if (envelope.auto_build_status === "auto_accept") {
+            envelope.auto_build_status = "needs_review";
+          }
+          const reasons = envelope.review_policy_reasons || [];
+          if (!reasons.includes("v2p0_ground_surface_detected")) {
+            reasons.push("v2p0_ground_surface_detected");
+            envelope.review_policy_reasons = reasons;
+          }
+          console.log(`[v2p0_ground_structure] FLAGGED: ${v2p0.ground_like_count} ground-like face(s) [${v2p0.ground_like_face_indices.join(',')}]`);
+        } else {
+          console.log(`[v2p0_ground_structure] OK: ${v2p0.structure_like_count} structure, ${v2p0.uncertain_count} uncertain, heights ${v2p0.min_height_above_ground_m}-${v2p0.max_height_above_ground_m}m`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p0_ground_structure] skipped: ${e.message}`);
+  }
+
+  // V2P1: Structural Coherence / Mirrored-Pair Logic (non-blocking, debug-only)
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 2) {
+      const v2p1 = structuralCoherenceAssessment(roofFaces);
+      if (v2p1) {
+        const md = cr.metadata || (cr.metadata = {});
+        md.v2p1_structural_coherence = v2p1;
+        if (v2p1.structural_warnings.length > 0) {
+          console.log(`[v2p1_structural] warnings=[${v2p1.structural_warnings.join(',')}] coherence=${v2p1.structural_coherence_score} pairs=${v2p1.mirrored_pair_count}/${v2p1.candidate_plane_pairs}`);
+        } else {
+          console.log(`[v2p1_structural] OK: coherence=${v2p1.structural_coherence_score} mirrored=${v2p1.mirrored_pair_count} main=${v2p1.main_plane_count}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p1_structural] skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.
