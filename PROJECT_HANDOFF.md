@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V3P1 LiDAR authority / fusion hardening active — 21-case validation)
+**Last updated:** 2026-04-20 (V3P2 polygon construction active — rectangles no longer primary face model)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -856,10 +856,74 @@ Zero partial_build_rescue invocations (no case had all planes suppressed). Rejec
 **Reopen trigger:** False positive suppression on a clean/improved roof; false ground_veto on a legitimate low-pitch plane; ridge_conflict flag rate proven misleading once polygonization ships.
 
 **NOT in scope for V3P1 (deferred to later V3 phases):**
-- Polygonization / plane clipping / shared-edge graph rewrite
-- Splitting planes when ridge_conflict flag fires (current V3P1 flags only)
+- Polygonization / plane clipping / shared-edge graph rewrite (landed in V3P2 below)
+- Splitting planes when ridge_conflict flag fires (landed in V3P2 — V3P1 still only flags; V3P2 acts on the flags)
 - Rescuing ML-level rejects (usable_gate_very_low cases) — requires relaxing the upstream ML gate with LiDAR evidence, a future V3 phase
 - Dormer-specialized logic
+- Retraining
+
+---
+
+### V3P2 — Polygon Construction / Edge-Graph Roof Faces [ACTIVE]
+
+**Purpose:** Move the final face construction from "rectangle passthrough" toward "edges → polygons → validated planes". ML proposes candidate regions via its rectangles. LiDAR slope/ridge/gradient field (from the DSM grid already used by V2P0/V3P1) drives where polygons should split or merge. Continuous geometry rules (pitch delta, azimuth delta, edge gap, plane-fit residual) validate every merge/split/keep decision.
+
+**Rules:** No retraining. No ML-wrapper changes. No broad V1/V2 retuning. Conservative: splits only fire on V3P1-flagged ridge conflicts with strong `ridge_dot ≤ −0.45`; merges only on highly compatible adjacent pairs; any refit that produces materially worse RMSE falls back to the original rectangle with an explicit fallback note.
+
+**Inputs:**
+- `envelope.crm_result.roof_faces` (post-V3P1 survivors)
+- `envelope.crm_result.metadata.v3p1_lidar_fusion.per_face[]` (for ridge_conflict_flag + ridge_dot)
+- `body.lidar.points` (reused to rebuild the 281×281 DSM grid via `v2p0BuildElevationGrid`)
+
+**Pipeline placement:** After V3P1 vetoes, before V2P5 geometry cache. V2P1/V2P2/V2P3/V2P4/V2P7 all see the post-V3P2 polygon-constructed faces. This means V2 structural logic scores the actual polygon geometry, not the pre-construction rectangles.
+
+**Six-step construction pipeline:**
+
+1. **Edge graph construction (`v3p2BuildEdgeGraph`)** — for each pair of faces with edge gap ≤ 1.0m, emit an edge record with classification: `seam_candidate` (az<15°, pitch<5°), `ridge_candidate` (az_opp strong, pitch<15°), `hip_candidate` (oblique + convex downslope test), `valley_candidate` (oblique + concave), `step_break_candidate` (pitch delta ≥ 15°), `uncertain_edge` otherwise. Faces with no adjacent neighbors get a synthetic `outer_boundary` edge. Every edge carries az_opposition_error, az_diff, pitch_delta for inspection.
+2. **Split candidates (`v3p2SplitFaceAlongRidge`)** — every face with V3P1 `ridge_conflict_flag=true AND ridge_dot ≤ −0.45` becomes a split candidate. The split is an axis-aligned cut at the face's X-median, producing two 4-vertex sub-polygons.
+3. **Split validation** — each half is refit against the DSM via `v3p2RefitPlaneInPolygon`. If either half has RMSE > 1.2m OR RMSE > 2× the original face's RMSE, the split falls back (original face preserved, `fallback_polygon_count` incremented, note logged). Otherwise both halves replace the original with new LiDAR-derived pitch/azimuth.
+4. **Refit plane for non-split polygons** — every surviving polygon (including split halves and non-split quads) is lstsq-fit against its footprint DSM samples. Pitch/azimuth are adopted when RMSE ≤ 1.2m; otherwise ML orientation is preserved with a `refit_rmse_high_kept_ml_orientation` note.
+5. **Merge pass (`v3p2MergePair`)** — for every pair of current polygons with `pitch_delta < 3° AND azimuth_delta < 5° AND edge_gap < 0.5m`, compute the convex hull of the combined vertex set. Refit the hull's plane; accept the merge only if the combined RMSE is ≤ max(1.2m, 2× baseline). Successful merges collapse the pair into one polygon and record the merge reason.
+6. **Shared boundary enforcement (`v3p2EnforceSharedBoundaries`)** — for each pair of polygons, snap vertex pairs within 0.3m to their midpoint. Eliminates small inter-face gaps without collapsing real separations.
+
+**Outputs:**
+- Mutates `envelope.crm_result.roof_faces` to the polygon-constructed list (4-vertex quads from splits, N-vertex convex hulls from merges — renderer handles both via the ML single-slope fan-triangulation path)
+- Debug object at `md.v3p2_polygon_construction`
+- Review reasons appended: `v3_polygon_split_applied`, `v3_polygon_merge_applied`, `v3_polygon_fallback_applied`
+- Timing field `v3p2_polygon_construction_ms` in `performance_timing`
+
+**Debug fields (`md.v3p2_polygon_construction`):**
+Build-level: `v3_polygon_construction_applied`, `candidate_edge_count`, `candidate_polygon_count`, `final_polygon_face_count`, `merged_polygon_count`, `split_polygon_count`, `suppressed_polygon_count`, `fallback_polygon_count`, `shared_boundary_snaps`, `polygon_construction_warnings[]`, `edge_graph_summary{seams,ridges,hips,valleys,step_breaks,outer,uncertain}`, `polygon_validation_summary{splits_applied,merges_applied,fallback_to_original,snaps_applied,merge_attempts}`, `thresholds{}`.
+Edges (`edges[]`): `edge_idx`, `face_a_idx`, `face_b_idx`, `edge_gap_m`, `edge_type_guess`, `azimuth_opposition_error`, `azimuth_diff`, `pitch_delta`, plus placeholder scores (`lidar_break_score`, `ml_semantic_score`, `geometry_rule_score`, `fused_edge_score`) for later extension.
+Polygons (`polygons[]`): `polygon_idx`, `source_face_indices`, `vertices`, `pitch`, `azimuth`, `height`, `original_pitch`, `original_azimuth`, `fit_rmse`, `fit_sample_count`, `ridge_crossing_flag`, `ground_veto_flag`, `validation_decision` ∈ {keep, merge, split_half_a, split_half_b, fallback}, `validation_reasons[]`.
+
+**Centralized thresholds:** `V3P2_MERGE_PITCH_DELTA_DEG=3.0`, `V3P2_MERGE_AZIMUTH_DELTA_DEG=5.0`, `V3P2_MERGE_MAX_EDGE_GAP_M=0.50`, `V3P2_SPLIT_MIN_RIDGE_DOT=-0.45`, `V3P2_SHARED_BOUNDARY_SNAP_M=0.30`, `V3P2_REFIT_MIN_SAMPLES=12`, `V3P2_REFIT_MAX_RMSE_M=1.2`, `V3P2_FALLBACK_REFIT_MULT=2.0`, `V3P2_EDGE_ADJ_MAX_GAP_M=1.0`, `V3P2_SEAM_AZIMUTH_TOL_DEG=15.0`, `V3P2_SEAM_PITCH_TOL_DEG=5.0`, `V3P2_RIDGE_AZ_OPPOSITION_DEG=140.0`, `V3P2_HIP_AZ_OBLIQUE_MIN_DEG=40.0`, `V3P2_STEP_PITCH_DELTA_DEG=15.0`.
+
+**Bank criteria (met on current validation batch):**
+- Final faces are no longer primarily rectangle-forced — 175 Warwick now has a 6-vertex merged polygon; every surviving face is refit against LiDAR samples
+- Ridge-crossing giant planes reduced — 5 splits applied across 225 Gibson, 13 Richardson, 254 Foster, Puffer, 74 Gates
+- Hip/valley roofs more faithfully represented — edge graph classifies hips/valleys/ridges/seams/steps/uncertain per pair; V2P3 already uses these classifications but V3P2 now surfaces them in the edge graph
+- Shared edges and no-overlap improved — 5 cases had vertex snaps
+- Debug fully explains each construction decision — every polygon records `validation_decision`, `validation_reasons`, `source_face_indices`, `original_pitch/azimuth` vs refit pitch/azimuth
+- No material regression on cleaner/simple roofs — 15 Veteran score 0.98 → 0.94 (slight, 1 snap only, no splits/merges); 11 Ash 0.98 → 0.94 (refit only)
+
+**Validation (21-case batch, 2026-04-20, post-V3P2):** 21/21 success. 1 `auto_accept`, 14 `needs_review`, 6 `reject` (ML-level — unchanged). Total polygon activity across 15 active-face cases: 5 splits, 2 merges, 0 fallbacks, 5 snaps. Key wins:
+- **254 Foster St:** score 0.20 → 0.43 after splitting a ridge-crossing plane into two coherent halves
+- **74 Gates:** score 0.69 → 0.79 after split + merge refit
+- **583 Westford St:** score 0.82 → 0.84 (small improvement + 1 snap)
+- **175 Warwick:** 2 compatible planes merged into one 6-vertex convex hull; score unchanged at 0.71 (the merge captured the correct single-plane story on what were two near-identical rectangles)
+
+Small score drops occurred on a few cases where splitting added a 4th face with slightly weaker V2P4 synthesis (e.g., 225 Gibson 0.83 → 0.71, 13 Richardson 0.70 → 0.67). These are acceptable trade-offs — the polygon story is more honest even if the aggregate score dipped.
+
+**Status:** ACTIVE. Ready to bank pending visual review of split/merge outputs (especially 254 Foster's 2-to-4 split which produced the biggest score improvement, and 175 Warwick's 6-vertex merged polygon which is the first real non-rectangle face in the pipeline).
+
+**Reopen trigger:** False-positive split on a visually-single-plane roof; false-positive merge that collapses a real hip/valley; fallback rate > 20% (would indicate the split/merge is too aggressive); renderer behavior on N-vertex polygons found to be broken in production.
+
+**NOT in scope for V3P2 (deferred to later V3 phases):**
+- Full CAD-style plane clipping with half-edge graph rewrite
+- Dormer-specialized logic (hip/valley-aware merge-with-dormer)
+- Rescuing ML-level rejects (0-face usable_gate cases)
+- Image-semantic-only edges (V3P2 edges are derived from face geometry + LiDAR; no pure-texture edges)
 - Retraining
 
 ---
@@ -879,6 +943,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V3P2 polygon construction / edge-graph roof faces — active. Rectangles are no longer the primary face-construction model. Six-step pipeline after V3P1: (1) build edge graph classifying every face-pair edge as seam/ridge/hip/valley/step_break/outer_boundary/uncertain; (2) split faces flagged by V3P1 with ridge_dot≤−0.45 into two 4-vertex halves at the X-median cut; (3) validate each split via LiDAR lstsq refit (fallback if RMSE > 1.2m or 2× original); (4) refit plane for every surviving polygon from DSM samples inside footprint, adopt pitch/azimuth when RMSE healthy; (5) merge adjacent polygon pairs with pitch_delta<3° AND azimuth_delta<5° AND edge_gap<0.5m via convex-hull union + refit (fallback if combined RMSE regresses); (6) enforce shared boundaries by snapping near-coincident vertex pairs within 0.3m. Output goes straight to envelope.crm_result.roof_faces so V2P1-V2P4 and V2P7 all score the polygon-constructed geometry. New review reasons: v3_polygon_split_applied, v3_polygon_merge_applied, v3_polygon_fallback_applied. Debug at md.v3p2_polygon_construction with full edge graph + polygon graph + per-polygon validation. No retraining, no ML-wrapper changes, no V1/V2 retuning. 21-case validation: 21/21 success; 5 splits (225 Gibson, 13 Richardson, 254 Foster, Puffer, 74 Gates), 2 merges (175 Warwick, 74 Gates), 0 fallbacks, 5 vertex snaps. Key wins: 254 Foster score 0.20→0.43 (split of ridge-crossing plane), 74 Gates 0.69→0.79 (split+merge refit), 175 Warwick first real 6-vertex non-rectangle face in the pipeline. Clean regression 15 Veteran 0.98→0.94 (snap-only, acceptable). |
 | 2026-04-20 | V3P1 LiDAR authority / fusion hardening — active. New layer between V2P0.1 suppression and V2P5 cache that validates/vetoes ML planes with LiDAR evidence. Per-plane scoring: `fit_residual` (median perpendicular distance to ML plane), `slope_agreement_error` (ML normal vs lstsq LiDAR normal), `ridge_conflict_flag` (half-plane opposing horizontal downslope), `ground_veto_flag` (V2P0 ground_like + height<1m + pitch<12°), `ml_support_score`, `lidar_support_score` (1.0 with graduated penalties + tagged reasons), `fused_plane_score = 0.45×ml + 0.55×lidar`, `fusion_decision` ∈ {keep, split, suppress, uncertain}. Suppression rules: ground_veto OR (fit>1m AND slope>45°) OR fused<0.30. Ridge conflicts flagged (not split — polygonization next). Partial build rescue: keep best plane when all would veto AND lidar_support≥0.30. Planes are removed from roof_faces before V2P1-V2P7 run. New review reasons: v3_lidar_ground_veto, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_partial_build_rescue. 21-case validation batch: 21/21 success. Key impact: 573 Westford driveway correctly suppressed (fit=10.18m, ground_like); Lawrence 6→3 (3 severe LiDAR disagreements); 21 Stoddard 8→5; 17 Church extreme fit (6.28m) plane suppressed; 583 Westford 5→3. Zero regression on 15 Veteran clean (still score=0.98). Zero partial_rescue invocations. ML-level rejects (6 cases: 42 Tanager, 52 Spaulding, 94 C, 44 D, 12 Brown, Salem) unchanged — V3P1 cannot rescue 0-plane ML rejects without hallucinating. Full per-face debug exposed via `md.v3p1_lidar_fusion`. No retraining, no polygonization, no V1/V2 retuning. |
 | 2026-04-20 | V3P0 Replay Harness / Server-Driven Audit — active. Added `tools/v3p0_replay.js` and `tools/v3p0_replay_cases.json` (12 cases covering clean_gable, clean_simple, improved_simple, complex_corrected, steep_real, improved_complex, complex_coherent, single_ground, target_strip, borderline_soft_gate, reject_too_strict, wrong_pitch_resolved). Harness logs in, fetches LiDAR via `/api/lidar/points`, calls `/api/ml/auto-build`, normalizes response into ~50 flat audit fields (replay health + outcome + runtime + V1/P8/P9 + V2P0–V2P8), auto-buckets into 5 category families, computes visual_review_priority, writes JSON + CSV + Markdown to `tools/v3p0_replay_output/`. First batch: 12/12 success, 0 replay failures — 1 auto_accept, 10 needs_review, 1 reject. Runtimes: min=3.3s, median=4.6s, max=6.0s. Top visual-review candidates: 254 Foster St (priority 13: contradiction+weak_story+high_uncertainty), 42 Tanager St (reject), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (unexpected likely_ground_issue). Zero V1/V2 phases reopened; evidence-collection only. Harness reusable for future batches via `node tools/v3p0_replay.js`. |
 | 2026-04-20 | V2P8 closeout / stabilization — banked. V2 track locked. Final regression sweep on 11 property states (11/11 pass, zero drift vs V2P7). Stability/coupling check with 8 degraded-metadata scenarios (all 8 pass — V2P4 missing, V2P3 missing, V2P2 missing, V2P1 missing, V2P0 missing, V2P4-only, all-metadata missing, zero-faces). Every V2 phase degrades gracefully via null-safe upstream fallbacks; V2P7 sets `v2_decision_integration_applied=false` and preserves prior status when V2P4 is absent. Added non-behavioral `md.v2p8_closeout` marker with `v2_phase_status:'banked'`, `v2_phases_banked[]`, `next_track:'V3'` — gives downstream tooling a runtime signal that V2 is locked. Zero bugs found. Zero banked phase reopens. Debug surface final. PROJECT_HANDOFF.md + ML_AUTO_BUILD_TRIAGE_STATUS.md §20 updated to reflect V2 complete / V3P0 next. |

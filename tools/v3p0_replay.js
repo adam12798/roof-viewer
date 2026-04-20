@@ -218,6 +218,28 @@ function normalize_replay_result(r) {
 
     v2p8_closeout_applied: null,
     v2_phase_status: null,
+
+    v3p1_applied: false,
+    v3p1_plane_count_in: 0,
+    v3p1_plane_count_out: 0,
+    v3p1_lidar_veto_count: 0,
+    v3p1_ridge_flag_count: 0,
+    v3p1_partial_rescue: false,
+
+    v3p2_applied: false,
+    v3p2_candidate_polygon_count: 0,
+    v3p2_final_polygon_count: 0,
+    v3p2_splits: 0,
+    v3p2_merges: 0,
+    v3p2_fallbacks: 0,
+    v3p2_snaps: 0,
+    v3p2_edge_ridges: 0,
+    v3p2_edge_hips: 0,
+    v3p2_edge_valleys: 0,
+    v3p2_edge_seams: 0,
+    v3p2_edge_step_breaks: 0,
+    v3p2_edge_uncertain: 0,
+    v3p2_warnings: [],
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -310,6 +332,31 @@ function normalize_replay_result(r) {
   const v2p8 = md.v2p8_closeout || {};
   row.v2p8_closeout_applied = v2p8.v2_closeout_applied ?? null;
   row.v2_phase_status = v2p8.v2_phase_status ?? null;
+
+  const v3p1 = md.v3p1_lidar_fusion || {};
+  row.v3p1_applied = !!v3p1.v3_lidar_authority_applied;
+  row.v3p1_plane_count_in = v3p1.plane_count_in ?? 0;
+  row.v3p1_plane_count_out = v3p1.plane_count_out ?? 0;
+  row.v3p1_lidar_veto_count = v3p1.lidar_veto_count ?? 0;
+  row.v3p1_ridge_flag_count = v3p1.ridge_conflict_flag_count ?? 0;
+  row.v3p1_partial_rescue = !!v3p1.partial_build_rescue_applied;
+
+  const v3p2 = md.v3p2_polygon_construction || {};
+  row.v3p2_applied = !!v3p2.v3_polygon_construction_applied;
+  row.v3p2_candidate_polygon_count = v3p2.candidate_polygon_count ?? 0;
+  row.v3p2_final_polygon_count = v3p2.final_polygon_face_count ?? 0;
+  row.v3p2_splits = v3p2.split_polygon_count ?? 0;
+  row.v3p2_merges = v3p2.merged_polygon_count ?? 0;
+  row.v3p2_fallbacks = v3p2.fallback_polygon_count ?? 0;
+  row.v3p2_snaps = v3p2.shared_boundary_snaps ?? 0;
+  const eg = v3p2.edge_graph_summary || {};
+  row.v3p2_edge_ridges = eg.ridges ?? 0;
+  row.v3p2_edge_hips = eg.hips ?? 0;
+  row.v3p2_edge_valleys = eg.valleys ?? 0;
+  row.v3p2_edge_seams = eg.seams ?? 0;
+  row.v3p2_edge_step_breaks = eg.step_breaks ?? 0;
+  row.v3p2_edge_uncertain = eg.uncertain ?? 0;
+  row.v3p2_warnings = v3p2.polygon_construction_warnings || [];
 
   return row;
 }
@@ -511,18 +558,24 @@ function write_markdown(rows) {
 
   lines.push('## Per-case summary');
   lines.push('');
-  lines.push('| Case | Prior→Final | Faces | Runtime | WholeRoof | Support | Risk | Damp | FinalScore | V2P7 triggers | Reasons / errors |');
-  lines.push('|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|');
+  lines.push('| Case | Prior→Final | Faces | V3P1 in→out veto/ridge | V3P2 sp/mg/fb/sn | Runtime | WholeRoof | FinalScore | V2P7 triggers | Reasons / errors |');
+  lines.push('|---|---|---:|---|---|---:|---:|---:|---|---|');
   for (const r of rows) {
     const label = r.case_label || r.project_id;
     const priorFinal = r.replay_success
       ? `${r.v2p7_prior_status || '—'}→${r.v2p7_final_status || r.final_status || '—'}`
       : 'FAIL';
+    const v3p1Col = r.replay_success
+      ? `${r.v3p1_plane_count_in}→${r.v3p1_plane_count_out} ${r.v3p1_lidar_veto_count}/${r.v3p1_ridge_flag_count}${r.v3p1_partial_rescue ? '+rescue' : ''}`
+      : '—';
+    const v3p2Col = r.replay_success
+      ? `${r.v3p2_splits}/${r.v3p2_merges}/${r.v3p2_fallbacks}/${r.v3p2_snaps}`
+      : '—';
     const triggers = (r.v2p7_explicit_escalation_triggers || []).join(', ') || '—';
     const reasonsOrErr = r.replay_success
       ? (r.v2p7_decision_reasons.concat(r.review_reasons.filter(x => !r.v2p7_decision_reasons.includes(x))).join(', ') || '—')
       : (r.replay_error || '—');
-    lines.push(`| ${label} | ${priorFinal} | ${r.face_count} | ${r.total_runtime_ms ?? '—'} | ${fmt_n(r.v2p4_whole_roof_consistency_score)} | ${fmt_n(r.v2p7_support_score)} | ${fmt_n(r.v2p7_risk_score)} | ${fmt_n(r.v2p7_complexity_dampener)} | ${fmt_n(r.v2p7_final_decision_score)} | ${triggers} | ${reasonsOrErr} |`);
+    lines.push(`| ${label} | ${priorFinal} | ${r.face_count} | ${v3p1Col} | ${v3p2Col} | ${r.total_runtime_ms ?? '—'} | ${fmt_n(r.v2p4_whole_roof_consistency_score)} | ${fmt_n(r.v2p7_final_decision_score)} | ${triggers} | ${reasonsOrErr} |`);
   }
   lines.push('');
 

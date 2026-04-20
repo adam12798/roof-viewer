@@ -16407,6 +16407,9 @@ app.get("/design", (req, res) => {
           v3_lidar_plane_disagreement: 'ML plane disagrees with LiDAR slope/elevation',
           v3_ridge_conflict: 'Plane appears to span a ridge — may need splitting',
           v3_partial_build_rescue: 'LiDAR preserved a plane that would otherwise be vetoed',
+          v3_polygon_split_applied: 'Plane was split along a LiDAR-detected ridge',
+          v3_polygon_merge_applied: 'Adjacent planes merged as one continuous surface',
+          v3_polygon_fallback_applied: 'Polygon construction fell back to original rectangle',
           // Legacy aliases preserved for any envelope generated before V2P7 polish.
           v2_low_whole_roof_consistency: 'Overall roof structure assessment is weak',
           v2_fragmented_main_roof: 'Main roof body is fragmented or unclear',
@@ -27016,6 +27019,536 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
   };
 }
 
+// ── V3P2: Polygon construction / edge-graph roof faces ────────────────────
+// Moves final face construction from "ML rectangle passthrough" toward
+// "edges → polygons → validated planes":
+//   - build an edge graph from the surviving rectangle-faces
+//   - split polygons where V3P1 flagged a strong ridge conflict
+//   - merge adjacent polygons that are clearly the same plane
+//   - refit LiDAR-supported planes inside each resulting polygon
+//   - enforce shared-boundary snapping between neighbors
+// Conservative: if evidence is weak or refit residual would get worse, the
+// construction falls back to the original rectangle and logs a fallback note.
+// Runs on the post-V3P1 survivors; ML-level rejects (0 faces) are untouched.
+
+const V3P2_MERGE_PITCH_DELTA_DEG = 3.0;
+const V3P2_MERGE_AZIMUTH_DELTA_DEG = 5.0;
+const V3P2_MERGE_MAX_EDGE_GAP_M = 0.50;
+const V3P2_SPLIT_MIN_RIDGE_DOT = -0.45;
+const V3P2_SHARED_BOUNDARY_SNAP_M = 0.30;
+const V3P2_REFIT_MIN_SAMPLES = 12;
+const V3P2_REFIT_MAX_RMSE_M = 1.2;
+const V3P2_FALLBACK_REFIT_MULT = 2.0;
+const V3P2_EDGE_ADJ_MAX_GAP_M = 1.0;
+const V3P2_SEAM_AZIMUTH_TOL_DEG = 15.0;
+const V3P2_SEAM_PITCH_TOL_DEG = 5.0;
+const V3P2_RIDGE_AZ_OPPOSITION_DEG = 140.0;
+const V3P2_HIP_AZ_OBLIQUE_MIN_DEG = 40.0;
+const V3P2_STEP_PITCH_DELTA_DEG = 15.0;
+
+function v3p2PolygonCentroid(vertices) {
+  let cx = 0, cz = 0;
+  for (const v of vertices) { cx += v.x; cz += v.z; }
+  return { x: cx / vertices.length, z: cz / vertices.length };
+}
+
+function v3p2EdgeGapBetween(vertsA, vertsB) {
+  // Minimum edge-to-edge distance (sampled along edges). Matches V2P1's notion.
+  if (!vertsA || !vertsB || vertsA.length < 3 || vertsB.length < 3) return Infinity;
+  let minD = Infinity;
+  const pointsA = [];
+  for (let i = 0; i < vertsA.length; i++) {
+    const a = vertsA[i], b = vertsA[(i + 1) % vertsA.length];
+    pointsA.push({ x: a.x, z: a.z });
+    pointsA.push({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
+  }
+  const pointsB = [];
+  for (let i = 0; i < vertsB.length; i++) {
+    const a = vertsB[i], b = vertsB[(i + 1) % vertsB.length];
+    pointsB.push({ x: a.x, z: a.z });
+    pointsB.push({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
+  }
+  for (const p of pointsA) {
+    for (const q of pointsB) {
+      const dx = p.x - q.x, dz = p.z - q.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < minD) minD = d;
+    }
+  }
+  return minD;
+}
+
+function v3p2ConvexHull2D(points) {
+  if (points.length < 3) return points.slice();
+  const pts = points.slice().sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+function v3p2AngularDistance(a, b) {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+function v3p2ClassifyEdge(faceA, faceB, edgeGap) {
+  const pDelta = Math.abs((faceA.pitch || 0) - (faceB.pitch || 0));
+  const azOpp = v3p2AngularDistance((faceA.azimuth || 0) + 180, faceB.azimuth || 0);
+  const azDiff = v3p2AngularDistance(faceA.azimuth || 0, faceB.azimuth || 0);
+
+  if (edgeGap > V3P2_EDGE_ADJ_MAX_GAP_M) return { type: 'uncertain_edge', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+  if (azDiff < V3P2_SEAM_AZIMUTH_TOL_DEG && pDelta < V3P2_SEAM_PITCH_TOL_DEG) return { type: 'seam_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+  if (azOpp < (180 - V3P2_RIDGE_AZ_OPPOSITION_DEG) && pDelta < 15) return { type: 'ridge_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+  if (azDiff > V3P2_HIP_AZ_OBLIQUE_MIN_DEG && azDiff < 130) {
+    // Convex vs concave via downslope vector test. Reuse centroid positions.
+    const cA = v3p2PolygonCentroid(faceA.vertices || []);
+    const cB = v3p2PolygonCentroid(faceB.vertices || []);
+    const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+    const dsA = { x: Math.sin((faceA.azimuth || 0) * Math.PI / 180), z: -Math.cos((faceA.azimuth || 0) * Math.PI / 180) };
+    const dsB = { x: Math.sin((faceB.azimuth || 0) * Math.PI / 180), z: -Math.cos((faceB.azimuth || 0) * Math.PI / 180) };
+    const vA = { x: midX - cA.x, z: midZ - cA.z };
+    const vB = { x: midX - cB.x, z: midZ - cB.z };
+    const magA = Math.hypot(vA.x, vA.z) || 1e-9;
+    const magB = Math.hypot(vB.x, vB.z) || 1e-9;
+    const dA = (vA.x * dsA.x + vA.z * dsA.z) / magA;
+    const dB = (vB.x * dsB.x + vB.z * dsB.z) / magB;
+    const convex = dA < 0 && dB < 0;
+    const concave = dA > 0 && dB > 0;
+    if (convex) return { type: 'hip_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+    if (concave) return { type: 'valley_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+    return { type: 'uncertain_edge', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+  }
+  if (pDelta >= V3P2_STEP_PITCH_DELTA_DEG) return { type: 'step_break_candidate', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+  return { type: 'uncertain_edge', azOpp: _r2(azOpp), azDiff: _r2(azDiff), pitchDelta: _r2(pDelta) };
+}
+
+function v3p2BuildEdgeGraph(faces) {
+  const edges = [];
+  const adjacency = faces.map(() => []);
+  // Outer-boundary edges: each face edge without a neighbor.
+  for (let i = 0; i < faces.length; i++) {
+    const fA = faces[i];
+    const vA = fA.vertices || [];
+    let minGap = Infinity, matchedJ = -1, cls = null;
+    for (let j = i + 1; j < faces.length; j++) {
+      const fB = faces[j];
+      const vB = fB.vertices || [];
+      const gap = v3p2EdgeGapBetween(vA, vB);
+      if (gap < minGap) { minGap = gap; matchedJ = j; }
+      if (gap < V3P2_EDGE_ADJ_MAX_GAP_M) {
+        const c = v3p2ClassifyEdge(fA, fB, gap);
+        const edgeIdx = edges.length;
+        edges.push({
+          edge_idx: edgeIdx,
+          face_a_idx: i,
+          face_b_idx: j,
+          edge_gap_m: _r2(gap),
+          edge_type_guess: c.type,
+          azimuth_opposition_error: c.azOpp,
+          azimuth_diff: c.azDiff,
+          pitch_delta: c.pitchDelta,
+          lidar_break_score: null,
+          ml_semantic_score: null,
+          geometry_rule_score: null,
+          fused_edge_score: null,
+        });
+        adjacency[i].push({ edge_idx: edgeIdx, other_idx: j, gap: _r2(gap), type: c.type });
+        adjacency[j].push({ edge_idx: edgeIdx, other_idx: i, gap: _r2(gap), type: c.type });
+      }
+    }
+  }
+  // Outer-boundary synthetic edges: each face with no adjacency at all.
+  for (let i = 0; i < faces.length; i++) {
+    if (adjacency[i].length === 0) {
+      edges.push({
+        edge_idx: edges.length,
+        face_a_idx: i,
+        face_b_idx: -1,
+        edge_gap_m: null,
+        edge_type_guess: 'outer_boundary',
+        azimuth_opposition_error: null,
+        azimuth_diff: null,
+        pitch_delta: null,
+        lidar_break_score: null,
+        ml_semantic_score: null,
+        geometry_rule_score: null,
+        fused_edge_score: null,
+      });
+    }
+  }
+  return { edges, adjacency };
+}
+
+// Split a face along the X-median axis. Produces two 4-vertex sub-polygons.
+// Returns [polyLo, polyHi] or null if the cut cannot be performed.
+function v3p2SplitFaceAlongRidge(face) {
+  const verts = face.vertices || [];
+  if (verts.length !== 4) return null;
+  // Determine X-median of the footprint.
+  const xs = verts.map(v => v.x).sort((a, b) => a - b);
+  const xMed = (xs[1] + xs[2]) / 2;
+  // Find where x = xMed intersects each polygon edge.
+  const lo = [], hi = [];
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % verts.length];
+    if (a.x <= xMed) lo.push({ x: a.x, z: a.z });
+    if (a.x >= xMed) hi.push({ x: a.x, z: a.z });
+    const crosses = (a.x < xMed && b.x > xMed) || (a.x > xMed && b.x < xMed);
+    if (crosses) {
+      const t = (xMed - a.x) / (b.x - a.x);
+      const zCut = a.z + t * (b.z - a.z);
+      lo.push({ x: xMed, z: zCut });
+      hi.push({ x: xMed, z: zCut });
+    }
+  }
+  if (lo.length < 3 || hi.length < 3) return null;
+  // Ensure counter-clockwise orientation by sorting around centroid.
+  function sortCcw(poly) {
+    const c = v3p2PolygonCentroid(poly);
+    return poly.slice().sort((p, q) => Math.atan2(p.z - c.z, p.x - c.x) - Math.atan2(q.z - c.z, q.x - c.x));
+  }
+  return [sortCcw(lo), sortCcw(hi)];
+}
+
+function v3p2MergePair(faceA, faceB) {
+  const allPts = [];
+  for (const v of (faceA.vertices || [])) allPts.push({ x: v.x, z: v.z });
+  for (const v of (faceB.vertices || [])) allPts.push({ x: v.x, z: v.z });
+  if (allPts.length < 4) return null;
+  return v3p2ConvexHull2D(allPts);
+}
+
+function v3p2RefitPlaneInPolygon(polygonVerts, grid) {
+  if (!grid || !polygonVerts || polygonVerts.length < 3) return null;
+  const samples = v3p1CollectFootprintSamples(grid, polygonVerts);
+  if (samples.length < V3P2_REFIT_MIN_SAMPLES) return null;
+  const fit = v3p1FitLocalPlane(samples);
+  if (!fit) return null;
+  // Convert fit normal to pitch/azimuth (compass: 0=N, 90=E).
+  const { normal } = fit;
+  const horizMag = Math.hypot(normal.nx, normal.nz);
+  const pitchDeg = Math.atan2(horizMag, Math.max(normal.ny, 1e-9)) * 180 / Math.PI;
+  // Downslope horizontal direction is -(nx, nz) normalized (points away from up-normal).
+  const dsX = -normal.nx, dsZ = -normal.nz;
+  const mag = Math.hypot(dsX, dsZ) || 1e-9;
+  // Compass azimuth (0=N, CW). CRM frame: +x=east, +z=south. N corresponds to -z direction.
+  // So az = atan2(east_component, north_component) = atan2(dsX/mag, -dsZ/mag).
+  let azDeg = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
+  if (azDeg < 0) azDeg += 360;
+  return {
+    pitch: _r2(pitchDeg),
+    azimuth: _r2(azDeg),
+    rmse: _r2(fit.rmse),
+    sample_count: samples.length,
+  };
+}
+
+function v3p2EnforceSharedBoundaries(polygons) {
+  // For each pair of polygons, snap pairs of vertices closer than the threshold
+  // to their midpoint. Conservative: only snap one pass, don't move interior.
+  const snaps = [];
+  for (let i = 0; i < polygons.length; i++) {
+    for (let j = i + 1; j < polygons.length; j++) {
+      const vi = polygons[i].vertices;
+      const vj = polygons[j].vertices;
+      for (let a = 0; a < vi.length; a++) {
+        for (let b = 0; b < vj.length; b++) {
+          const dx = vi[a].x - vj[b].x;
+          const dz = vi[a].z - vj[b].z;
+          const d = Math.sqrt(dx * dx + dz * dz);
+          if (d > 0 && d < V3P2_SHARED_BOUNDARY_SNAP_M) {
+            const mx = (vi[a].x + vj[b].x) / 2;
+            const mz = (vi[a].z + vj[b].z) / 2;
+            vi[a].x = mx; vi[a].z = mz;
+            vj[b].x = mx; vj[b].z = mz;
+            snaps.push({ i, j, a, b, d: _r2(d) });
+          }
+        }
+      }
+    }
+  }
+  return snaps;
+}
+
+function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
+  const cr = (envelope && envelope.crm_result) || {};
+  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map(f => ({
+    vertices: (f.vertices || []).map(v => ({ x: v.x, z: v.z })),
+    pitch: f.pitch || 0,
+    azimuth: f.azimuth || 0,
+    height: f.height || 0,
+  })) : [];
+  const n = faces.length;
+  if (n === 0) {
+    return {
+      v3_polygon_construction_applied: false,
+      candidate_edge_count: 0,
+      candidate_polygon_count: 0,
+      final_polygon_face_count: 0,
+      merged_polygon_count: 0,
+      split_polygon_count: 0,
+      suppressed_polygon_count: 0,
+      fallback_polygon_count: 0,
+      polygon_construction_warnings: ['no_faces_to_construct'],
+      edges: [],
+      polygons: [],
+    };
+  }
+
+  // Build DSM grid for plane refitting (same helper V3P1 uses).
+  let grid = null;
+  if (Array.isArray(lidarPoints) && lidarPoints.length > 0 && isFinite(centerLat) && isFinite(centerLng)) {
+    try {
+      const built = v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng);
+      if (built.validCount > 0) grid = built.grid;
+    } catch (_) { grid = null; }
+  }
+
+  const { edges, adjacency } = v3p2BuildEdgeGraph(faces);
+  const warnings = [];
+  if (!grid) warnings.push('lidar_grid_unavailable_refit_skipped');
+
+  // Collect V3P1 split signals keyed by face index.
+  const v3p1SplitIdx = new Set();
+  if (v3p1Data && Array.isArray(v3p1Data.per_face)) {
+    for (const p of v3p1Data.per_face) {
+      if (p.ridge_conflict_flag && p.ridge_dot != null && p.ridge_dot <= V3P2_SPLIT_MIN_RIDGE_DOT) {
+        v3p1SplitIdx.add(p.face_idx);
+      }
+    }
+  }
+
+  // Start polygons as a copy of face polygons; each polygon keeps a source_faces list.
+  const polygons = faces.map((f, idx) => ({
+    polygon_idx: idx,
+    source_face_indices: [idx],
+    vertices: f.vertices.map(v => ({ x: v.x, z: v.z })),
+    pitch: f.pitch,
+    azimuth: f.azimuth,
+    height: f.height,
+    original_pitch: f.pitch,
+    original_azimuth: f.azimuth,
+    fit_rmse: null,
+    fit_sample_count: 0,
+    ridge_crossing_flag: v3p1SplitIdx.has(idx),
+    ground_veto_flag: false,
+    validation_decision: 'keep',
+    validation_reasons: [],
+  }));
+
+  let splitCount = 0;
+  let mergeCount = 0;
+  let fallbackCount = 0;
+
+  // 1) Apply splits for faces flagged by V3P1 with strong ridge_dot.
+  const toReplace = [];
+  for (let i = 0; i < polygons.length; i++) {
+    const poly = polygons[i];
+    if (!poly.ridge_crossing_flag) continue;
+    const origFace = faces[poly.source_face_indices[0]];
+    const parts = v3p2SplitFaceAlongRidge(origFace);
+    if (!parts) {
+      poly.validation_reasons.push('split_attempted_but_failed');
+      warnings.push('split_failed_face_' + poly.polygon_idx);
+      continue;
+    }
+    // Refit each half; ensure both improve or at least don't explode.
+    const origRefit = grid ? v3p2RefitPlaneInPolygon(origFace.vertices, grid) : null;
+    const loRefit = grid ? v3p2RefitPlaneInPolygon(parts[0], grid) : null;
+    const hiRefit = grid ? v3p2RefitPlaneInPolygon(parts[1], grid) : null;
+    const origRmse = origRefit ? origRefit.rmse : null;
+    const loBad = !loRefit || loRefit.rmse > V3P2_REFIT_MAX_RMSE_M;
+    const hiBad = !hiRefit || hiRefit.rmse > V3P2_REFIT_MAX_RMSE_M;
+    if (loBad || hiBad) {
+      poly.validation_reasons.push('split_refit_weak_fallback');
+      fallbackCount++;
+      continue;
+    }
+    if (origRmse != null && (loRefit.rmse > origRmse * V3P2_FALLBACK_REFIT_MULT || hiRefit.rmse > origRmse * V3P2_FALLBACK_REFIT_MULT)) {
+      poly.validation_reasons.push('split_refit_worse_than_orig_fallback');
+      fallbackCount++;
+      continue;
+    }
+    const polyLo = {
+      polygon_idx: polygons.length + toReplace.length,
+      source_face_indices: poly.source_face_indices.slice(),
+      vertices: parts[0],
+      pitch: loRefit.pitch, azimuth: loRefit.azimuth, height: poly.height,
+      original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
+      fit_rmse: loRefit.rmse, fit_sample_count: loRefit.sample_count,
+      ridge_crossing_flag: false, ground_veto_flag: false,
+      validation_decision: 'split_half_a',
+      validation_reasons: ['split_from_face_' + poly.polygon_idx],
+    };
+    const polyHi = {
+      polygon_idx: polygons.length + toReplace.length + 1,
+      source_face_indices: poly.source_face_indices.slice(),
+      vertices: parts[1],
+      pitch: hiRefit.pitch, azimuth: hiRefit.azimuth, height: poly.height,
+      original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
+      fit_rmse: hiRefit.rmse, fit_sample_count: hiRefit.sample_count,
+      ridge_crossing_flag: false, ground_veto_flag: false,
+      validation_decision: 'split_half_b',
+      validation_reasons: ['split_from_face_' + poly.polygon_idx],
+    };
+    toReplace.push({ idx: i, replacements: [polyLo, polyHi] });
+    splitCount++;
+  }
+  // Apply replacements in-place (reverse order to preserve indices).
+  for (let k = toReplace.length - 1; k >= 0; k--) {
+    const { idx, replacements } = toReplace[k];
+    polygons.splice(idx, 1, ...replacements);
+  }
+  // Reindex polygons.
+  for (let i = 0; i < polygons.length; i++) polygons[i].polygon_idx = i;
+
+  // 2) Refit plane for non-split polygons that don't already have a refit.
+  if (grid) {
+    for (const poly of polygons) {
+      if (poly.fit_rmse != null) continue;
+      const refit = v3p2RefitPlaneInPolygon(poly.vertices, grid);
+      if (refit) {
+        poly.fit_rmse = refit.rmse;
+        poly.fit_sample_count = refit.sample_count;
+        // Only adopt refit pitch/azimuth if rmse is healthy.
+        if (refit.rmse <= V3P2_REFIT_MAX_RMSE_M) {
+          poly.pitch = refit.pitch;
+          poly.azimuth = refit.azimuth;
+        } else {
+          poly.validation_reasons.push('refit_rmse_high_kept_ml_orientation');
+        }
+      } else {
+        poly.validation_reasons.push('refit_insufficient_samples');
+      }
+    }
+  }
+
+  // 3) Merge candidates: pairs of polygons (from the CURRENT polygon list) that
+  // are adjacent + highly compatible. Re-evaluate adjacency on updated polygons.
+  const merged = new Set();
+  let mergeAttempts = 0;
+  for (let i = 0; i < polygons.length; i++) {
+    if (merged.has(i)) continue;
+    for (let j = i + 1; j < polygons.length; j++) {
+      if (merged.has(j)) continue;
+      const pi = polygons[i];
+      const pj = polygons[j];
+      const pDelta = Math.abs((pi.pitch || 0) - (pj.pitch || 0));
+      const azDelta = v3p2AngularDistance(pi.azimuth || 0, pj.azimuth || 0);
+      if (pDelta > V3P2_MERGE_PITCH_DELTA_DEG) continue;
+      if (azDelta > V3P2_MERGE_AZIMUTH_DELTA_DEG) continue;
+      const gap = v3p2EdgeGapBetween(pi.vertices, pj.vertices);
+      if (gap > V3P2_MERGE_MAX_EDGE_GAP_M) continue;
+      mergeAttempts++;
+      const hull = v3p2MergePair(pi, pj);
+      if (!hull || hull.length < 4) continue;
+      const refit = grid ? v3p2RefitPlaneInPolygon(hull, grid) : null;
+      const baselineRmse = Math.max(pi.fit_rmse || 0, pj.fit_rmse || 0);
+      if (!refit || refit.rmse > Math.max(V3P2_REFIT_MAX_RMSE_M, baselineRmse * V3P2_FALLBACK_REFIT_MULT)) {
+        pi.validation_reasons.push('merge_rejected_refit_worse');
+        continue;
+      }
+      pi.vertices = hull;
+      pi.pitch = refit.pitch;
+      pi.azimuth = refit.azimuth;
+      pi.fit_rmse = refit.rmse;
+      pi.fit_sample_count = refit.sample_count;
+      pi.validation_decision = 'merge';
+      pi.validation_reasons.push('merged_with_polygon_' + j);
+      pi.source_face_indices = pi.source_face_indices.concat(pj.source_face_indices);
+      merged.add(j);
+      mergeCount++;
+    }
+  }
+  const finalPolygons = polygons.filter((_, k) => !merged.has(k));
+  for (let i = 0; i < finalPolygons.length; i++) finalPolygons[i].polygon_idx = i;
+
+  // 4) Enforce shared boundaries — snap near-coincident vertices.
+  const snaps = v3p2EnforceSharedBoundaries(finalPolygons);
+
+  return {
+    v3_polygon_construction_applied: true,
+    candidate_edge_count: edges.length,
+    candidate_polygon_count: n,
+    final_polygon_face_count: finalPolygons.length,
+    merged_polygon_count: mergeCount,
+    split_polygon_count: splitCount,
+    suppressed_polygon_count: 0,
+    fallback_polygon_count: fallbackCount,
+    shared_boundary_snaps: snaps.length,
+    edge_graph_summary: {
+      total_edges: edges.length,
+      seams: edges.filter(e => e.edge_type_guess === 'seam_candidate').length,
+      ridges: edges.filter(e => e.edge_type_guess === 'ridge_candidate').length,
+      hips: edges.filter(e => e.edge_type_guess === 'hip_candidate').length,
+      valleys: edges.filter(e => e.edge_type_guess === 'valley_candidate').length,
+      step_breaks: edges.filter(e => e.edge_type_guess === 'step_break_candidate').length,
+      outer: edges.filter(e => e.edge_type_guess === 'outer_boundary').length,
+      uncertain: edges.filter(e => e.edge_type_guess === 'uncertain_edge').length,
+    },
+    polygon_validation_summary: {
+      splits_applied: splitCount,
+      merges_applied: mergeCount,
+      fallback_to_original: fallbackCount,
+      snaps_applied: snaps.length,
+      merge_attempts: mergeAttempts,
+    },
+    polygon_construction_warnings: warnings,
+    thresholds: {
+      merge_pitch_delta_deg: V3P2_MERGE_PITCH_DELTA_DEG,
+      merge_azimuth_delta_deg: V3P2_MERGE_AZIMUTH_DELTA_DEG,
+      merge_max_edge_gap_m: V3P2_MERGE_MAX_EDGE_GAP_M,
+      split_min_ridge_dot: V3P2_SPLIT_MIN_RIDGE_DOT,
+      shared_boundary_snap_m: V3P2_SHARED_BOUNDARY_SNAP_M,
+      refit_max_rmse_m: V3P2_REFIT_MAX_RMSE_M,
+      fallback_refit_mult: V3P2_FALLBACK_REFIT_MULT,
+      edge_adj_max_gap_m: V3P2_EDGE_ADJ_MAX_GAP_M,
+      seam_azimuth_tol_deg: V3P2_SEAM_AZIMUTH_TOL_DEG,
+      seam_pitch_tol_deg: V3P2_SEAM_PITCH_TOL_DEG,
+      ridge_az_opposition_deg: V3P2_RIDGE_AZ_OPPOSITION_DEG,
+    },
+    edges,
+    polygons: finalPolygons,
+  };
+}
+
+function v3p2ApplyConstruction(envelope, result) {
+  if (!result || !result.v3_polygon_construction_applied) return { applied: false };
+  const cr = envelope.crm_result || (envelope.crm_result = {});
+  // Replace roof_faces with the polygon outputs.
+  cr.roof_faces = result.polygons.map(p => ({
+    vertices: p.vertices.map(v => ({ x: v.x, z: v.z })),
+    pitch: p.pitch,
+    azimuth: p.azimuth,
+    height: p.height || 0,
+  }));
+  const reasons = Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons : [];
+  if (result.split_polygon_count > 0 && !reasons.includes('v3_polygon_split_applied')) reasons.push('v3_polygon_split_applied');
+  if (result.merged_polygon_count > 0 && !reasons.includes('v3_polygon_merge_applied')) reasons.push('v3_polygon_merge_applied');
+  if (result.fallback_polygon_count > 0 && !reasons.includes('v3_polygon_fallback_applied')) reasons.push('v3_polygon_fallback_applied');
+  envelope.review_policy_reasons = reasons;
+  return {
+    applied: true,
+    faces_after: cr.roof_faces.length,
+    splits: result.split_polygon_count,
+    merges: result.merged_polygon_count,
+    fallbacks: result.fallback_polygon_count,
+    snaps: result.shared_boundary_snaps,
+  };
+}
+
 // Apply V3P1 vetoes: remove suppressed faces from roof_faces and surface the
 // right review_policy_reasons. Called right after lidarFusionAssessment.
 function v3p1ApplyFusion(envelope, fusion) {
@@ -27240,6 +27773,37 @@ app.post("/api/ml/auto-build", async (req, res) => {
   }
   _t.v3p1_ms = Date.now() - _t0_v3p1;
 
+  // V3P2: Polygon construction / edge-graph roof faces. Runs AFTER V3P1
+  // suppression so it operates on the vetoed-down survivors, and BEFORE V2P5
+  // cache so downstream V2 structural logic sees the polygon-constructed faces.
+  // Conservative: splits only fire on V3P1-flagged ridge conflicts with strong
+  // evidence; merges only on highly compatible adjacent pairs; refit fallback
+  // when RMSE worse than original. Never hallucinates new polygons from empty.
+  const _t0_v3p2 = Date.now();
+  try {
+    const lidarPts = body.lidar && body.lidar.points;
+    const dc = body.design_center;
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const roofFaces = cr.roof_faces || [];
+    const md = cr.metadata || (cr.metadata = {});
+    const v3p1Data = md.v3p1_lidar_fusion || null;
+    if (roofFaces.length > 0 && dc && dc.lat && dc.lng) {
+      const result = polygonConstructionAssessment(envelope, v3p1Data, lidarPts || [], +dc.lat, +dc.lng);
+      md.v3p2_polygon_construction = result;
+      const applied = v3p2ApplyConstruction(envelope, result);
+      if (applied.applied) {
+        console.log(`[v3p2_polygon] in=${result.candidate_polygon_count} out=${result.final_polygon_face_count} splits=${result.split_polygon_count} merges=${result.merged_polygon_count} fallbacks=${result.fallback_polygon_count} snaps=${result.shared_boundary_snaps} warns=[${result.polygon_construction_warnings.join(',')}]`);
+      } else {
+        console.log(`[v3p2_polygon] skipped (no faces or no grid)`);
+      }
+    } else {
+      console.log('[v3p2_polygon] skipped: no faces or no design_center');
+    }
+  } catch (e) {
+    console.log(`[v3p2_polygon] skipped: ${e.message}`);
+  }
+  _t.v3p2_ms = Date.now() - _t0_v3p2;
+
   // V2P5: Build shared geometry cache + proximity matrix (after V2P0.1 suppression)
   const _t0_cache = Date.now();
   let _faceCache = null;
@@ -27413,6 +27977,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       { name: 'p3_p8_p9', ms: _t.p3_p8_p9_ms },
       { name: 'v2p0_v2p01', ms: _t.v2p0_v2p01_ms },
       { name: 'v3p1_lidar_fusion', ms: _t.v3p1_ms },
+      { name: 'v3p2_polygon', ms: _t.v3p2_ms },
       { name: 'v2p5_cache', ms: _t.v2p5_cache_ms },
       { name: 'v2p1', ms: _t.v2p1_ms },
       { name: 'v2p2', ms: _t.v2p2_ms },
@@ -27434,6 +27999,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       v2p4_consistency_ms: _t.v2p4_ms,
       v2p7_decision_ms: _t.v2p7_ms,
       v3p1_lidar_fusion_ms: _t.v3p1_ms,
+      v3p2_polygon_construction_ms: _t.v3p2_ms,
       face_count: _cacheDebug.face_count,
       proximity_pairs_computed: _cacheDebug.proximity_pairs,
       bbox_pruned_pairs: _cacheDebug.bbox_pruned,
