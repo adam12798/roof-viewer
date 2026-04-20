@@ -16394,7 +16394,8 @@ app.get("/design", (req, res) => {
           p9_build_unmatched: 'No ML faces match Google Solar roof segments',
           p9_low_match_fraction: 'Most ML faces could not be matched to Google Solar',
           p9_low_match_confidence: 'ML faces match Google Solar with low confidence',
-          v2p0_ground_surface_detected: 'Ground-like surface detected (low elevation, flat, large area)'
+          v2p0_ground_surface_detected: 'Ground-like surface detected (low elevation, flat, large area)',
+          v2p0_ground_surface_suppressed: 'Ground-like elongated surface removed from build'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -24848,6 +24849,9 @@ const V2P0_RING_OUTER_M = 12.0;
 const V2P0_GRID_SIZE = 281;
 const V2P0_GRID_RES = 0.25;
 const V2P0_GRID_HALF = 35.0;
+const V2P0_HARD_SUPPRESS_MAX_HEIGHT_M = 1.5;
+const V2P0_HARD_SUPPRESS_MIN_ELONGATION = 4.0;
+const V2P0_HARD_SUPPRESS_MAX_PITCH_DEG = 15.0;
 
 function v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng) {
   const cosLat = Math.cos(centerLat * Math.PI / 180);
@@ -24910,6 +24914,26 @@ function v2p0PolygonArea(vertices) {
   return Math.abs(area) / 2;
 }
 
+function v2p0ElongationRatio(vertices) {
+  const n = vertices.length;
+  if (n < 3) return 1;
+  let cx = 0, cz = 0;
+  for (const v of vertices) { cx += v.x; cz += v.z; }
+  cx /= n; cz /= n;
+  let cxx = 0, cxz = 0, czz = 0;
+  for (const v of vertices) {
+    const dx = v.x - cx, dz = v.z - cz;
+    cxx += dx * dx; cxz += dx * dz; czz += dz * dz;
+  }
+  const trace = cxx + czz;
+  const det = cxx * czz - cxz * cxz;
+  const disc = Math.sqrt(Math.max(0, trace * trace / 4 - det));
+  const l1 = trace / 2 + disc;
+  const l2 = trace / 2 - disc;
+  if (l2 <= 0) return 999;
+  return Math.sqrt(l1 / l2);
+}
+
 function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
   if (!lidarPoints || lidarPoints.length === 0 || !faces || faces.length === 0) return null;
 
@@ -24920,12 +24944,15 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
   let groundLikeCount = 0, structureLikeCount = 0, uncertainCount = 0;
   const groundLikeIndices = [];
   const heights = [];
+  let hardSuppressedCount = 0;
+  const hardSuppressedIndices = [];
 
   for (let fi = 0; fi < faces.length; fi++) {
     const face = faces[fi];
     const verts = face.vertices || [];
     if (verts.length < 3) {
-      faceAssessments.push({ face_idx: fi, classification: 'uncertain', classification_reason: 'too_few_vertices' });
+      faceAssessments.push({ face_idx: fi, classification: 'uncertain', classification_reason: 'too_few_vertices',
+        elongation_ratio: null, hard_ground_suppressed: false, hard_ground_suppression_reasons: [] });
       uncertainCount++;
       continue;
     }
@@ -24946,6 +24973,7 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
       faceAssessments.push({
         face_idx: fi, classification: 'uncertain', classification_reason: 'no_dsm_samples',
         centroid_x: _r2(cx), centroid_z: _r2(cz), area_m2: _r2(area), pitch_deg: _r2(pitch),
+        elongation_ratio: _r2(v2p0ElongationRatio(verts)), hard_ground_suppressed: false, hard_ground_suppression_reasons: [],
       });
       uncertainCount++;
       continue;
@@ -24980,6 +25008,20 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
       uncertainCount++;
     }
 
+    const elongation = v2p0ElongationRatio(verts);
+    const hardSuppress = classification !== 'structure_like'
+      && heightAboveGround < V2P0_HARD_SUPPRESS_MAX_HEIGHT_M
+      && elongation > V2P0_HARD_SUPPRESS_MIN_ELONGATION
+      && pitch < V2P0_HARD_SUPPRESS_MAX_PITCH_DEG;
+    const suppressReasons = [];
+    if (hardSuppress) {
+      suppressReasons.push(`low_height(${_r2(heightAboveGround)}m<${V2P0_HARD_SUPPRESS_MAX_HEIGHT_M})`);
+      suppressReasons.push(`elongated(${_r2(elongation)}>${V2P0_HARD_SUPPRESS_MIN_ELONGATION})`);
+      suppressReasons.push(`flat(${_r2(pitch)}°<${V2P0_HARD_SUPPRESS_MAX_PITCH_DEG})`);
+      hardSuppressedCount++;
+      hardSuppressedIndices.push(fi);
+    }
+
     faceAssessments.push({
       face_idx: fi, centroid_x: _r2(cx), centroid_z: _r2(cz),
       area_m2: _r2(area), pitch_deg: _r2(pitch),
@@ -24988,6 +25030,9 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
       height_signal: _r2(heightSignal), pitch_signal: _r2(pitchSignal),
       flat_low_large: flatLowLarge, composite_score: compositeScore,
       classification, classification_reason: classificationReason,
+      elongation_ratio: _r2(elongation),
+      hard_ground_suppressed: hardSuppress,
+      hard_ground_suppression_reasons: suppressReasons,
     });
   }
 
@@ -25002,6 +25047,9 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
     uncertain_count: uncertainCount,
     ground_like_face_indices: groundLikeIndices,
     ground_like_faces_found: groundLikeCount > 0,
+    hard_ground_suppressed_count: hardSuppressedCount,
+    hard_ground_suppressed_faces: hardSuppressedIndices,
+    v2p0_hard_suppression_applied: hardSuppressedCount > 0,
     min_height_above_ground_m: heights.length > 0 ? _r2(Math.min(...heights)) : null,
     max_height_above_ground_m: heights.length > 0 ? _r2(Math.max(...heights)) : null,
     mean_height_above_ground_m: heights.length > 0 ? _r2(heights.reduce((a, b) => a + b, 0) / heights.length) : null,
@@ -25339,6 +25387,21 @@ app.post("/api/ml/auto-build", async (req, res) => {
           console.log(`[v2p0_ground_structure] FLAGGED: ${v2p0.ground_like_count} ground-like face(s) [${v2p0.ground_like_face_indices.join(',')}]`);
         } else {
           console.log(`[v2p0_ground_structure] OK: ${v2p0.structure_like_count} structure, ${v2p0.uncertain_count} uncertain, heights ${v2p0.min_height_above_ground_m}-${v2p0.max_height_above_ground_m}m`);
+        }
+
+        // V2P0.1: hard-suppress obvious ground-like elongated faces
+        if (v2p0.v2p0_hard_suppression_applied) {
+          const toRemove = new Set(v2p0.hard_ground_suppressed_faces);
+          cr.roof_faces = cr.roof_faces.filter((_, i) => !toRemove.has(i));
+          if (envelope.auto_build_status === "auto_accept") {
+            envelope.auto_build_status = "needs_review";
+          }
+          const reasons = envelope.review_policy_reasons || [];
+          if (!reasons.includes("v2p0_ground_surface_suppressed")) {
+            reasons.push("v2p0_ground_surface_suppressed");
+            envelope.review_policy_reasons = reasons;
+          }
+          console.log(`[v2p0.1_suppress] REMOVED ${v2p0.hard_ground_suppressed_count} ground face(s) [${v2p0.hard_ground_suppressed_faces.join(',')}]`);
         }
       }
     }

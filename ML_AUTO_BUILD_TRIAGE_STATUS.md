@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19 (V2P1 structural coherence / mirrored-pair logic)
+**Last updated:** 2026-04-19 (V2P0.1 ground suppression hardening)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -955,6 +955,61 @@ Use LiDAR/DSM elevation data to classify each ML roof face as elevated structure
 ### 12.8 Verdict
 
 **KEEP.** V2P0 catches one previously silent ground surface (20 Meadow face[3], auto_accept→needs_review) and provides independent elevation-based confirmation for 13 Richardson. Zero false positives on clean houses. Three-guard ground classification (height AND pitch AND area) is conservative enough to avoid false flags on legitimate low-pitch roof sections.
+
+### 12.9 V2P0.1 — Ground Suppression Hardening
+
+**Date:** 2026-04-19
+**Purpose:** Targeted bugfix — V2P0 correctly flagged ground-like faces but did not remove them from `roof_faces`. Elongated near-ground strips were still surviving into the final build output and participating in V2P1 structural reasoning.
+
+**Hard suppression rule (4-way conjunction):**
+A face is removed from `roof_faces` when ALL of:
+1. `height_above_ground < 1.5m`
+2. `elongation_ratio > 4.0` (eigenvalue-based principal axis ratio)
+3. `pitch < 15°`
+4. `classification != 'structure_like'`
+
+**New constants:**
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `V2P0_HARD_SUPPRESS_MAX_HEIGHT_M` | 1.5 | Max height for suppression candidate |
+| `V2P0_HARD_SUPPRESS_MIN_ELONGATION` | 4.0 | Min elongation ratio for strip detection |
+| `V2P0_HARD_SUPPRESS_MAX_PITCH_DEG` | 15.0 | Max pitch for suppression candidate |
+
+**New per-face debug fields:** `elongation_ratio`, `hard_ground_suppressed`, `hard_ground_suppression_reasons[]`.
+**New build-level debug fields:** `hard_ground_suppressed_count`, `hard_ground_suppressed_faces[]`, `v2p0_hard_suppression_applied`.
+**New review reason:** `v2p0_ground_surface_suppressed`.
+
+### 12.10 V2P0.1 Validation (8 properties)
+
+| Property | Bucket | Orig | Suppressed | Final | Elong of suppressed | Correct? |
+|---|---|---|---|---|---|---|
+| 20 Meadow Dr | improved | 4 | 1 (face[3]) | 3 | 7.61 | YES — elongated ground strip removed |
+| 15 Veteran Rd | clean | 3 | 0 | 3 | — | YES — all structure_like |
+| 225 Gibson St | complex | 6 | 0 | 6 | — | YES — uncertain faces have high pitch |
+| 175 Warwick | steep | 3 | 0 | 3 | — | YES — all structure_like |
+| 583 Westford | rejected | 0 | — | 0 | — | skipped |
+| 11 Ash Road | target | 1 | 0 | 1 | 2.95 | YES — not elongated (wide flat, not strip) |
+| 13 Richardson | ground | 1 | 0 | 1 | 2.04 | YES — not elongated (compact ground) |
+| Lawrence | complex | 6 | 0 | 6 | — | YES — face[4] elong=3.98 just below 4.0 |
+
+### 12.11 V2P0.1 Key findings
+
+1. **20 Meadow face[3] correctly suppressed.** h=0.07m, pitch=3.32°, area=49m², elong=7.61. Classic elongated ground strip (driveway/yard edge). Now physically removed from `roof_faces` before V2P1 and response.
+
+2. **11 Ash Road NOT suppressed.** elong=2.95 — it's a wide flat area (roughly 20×7m), not a strip. Already flagged by p9_build_unmatched and crm_soft_gate_applied. Conjunction rule correctly distinguishes "flat ground" from "elongated ground strip".
+
+3. **13 Richardson NOT suppressed.** elong=2.04 — compact ground surface. Already flagged by p9_build_unmatched and v2p0_ground_surface_detected.
+
+4. **Lawrence face[4] narrowly escapes.** elong=3.98 (just below 4.0), h=-2.06m, pitch=12.62°. Conservative threshold holds — this face is borderline but not a clear strip.
+
+5. **V2P1 coherence stable.** 15 Veteran: 0.92 (unchanged). Lawrence: 0.81 (unchanged). 225 Gibson: 0.44 (unchanged). 20 Meadow: 0.67→0.63 (ground face no longer in structural pool — correct).
+
+6. **Zero false positives.** No clean, steep, complex, or improved roof faces were suppressed.
+
+### 12.12 V2P0.1 Verdict
+
+**KEEP.** The 4-way conjunction rule correctly targets elongated near-ground strips while leaving compact ground-like faces (handled by other mechanisms) and all legitimate roof faces untouched. Zero false positives across 8 properties. The elongation_ratio debug field is useful independently of suppression.
 
 ---
 

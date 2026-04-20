@@ -334,7 +334,7 @@ python3 ml_ui_server.py
 **Debug:** Console logs for banner state transitions.
 **Bank criteria:** `needs_review` shows orange warning with reasons; `auto_accept` shows green success; Undo restores pre-ML state; Dismiss acknowledges and keeps faces; all reason labels mapped.
 **Failure types:** Banner not shown, wrong severity, user stuck without actionable path, pointer-events leak.
-**Banked config:** Status-aware banner, 14 reason labels (including `google_solar_pitch_mismatch`, `google_solar_pitch_corrected`, `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`, `v2p0_ground_surface_detected`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
+**Banked config:** Status-aware banner, 15 reason labels (including `google_solar_pitch_mismatch`, `google_solar_pitch_corrected`, `p9_build_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`, `v2p0_ground_surface_detected`, `v2p0_ground_surface_suppressed`), Undo/Dismiss buttons, `pointer-events:auto` only on `needs_review`.
 **Reopen trigger:** New review reason that needs a label; user-reported UX confusion.
 
 ---
@@ -447,8 +447,11 @@ For each matched face, correct when ALL four guards hold:
 **Constants:** `V2P0_STRUCTURE_MIN_HEIGHT_M=2.5`, `V2P0_GROUND_MAX_HEIGHT_M=1.0`, `V2P0_GROUND_MAX_PITCH_DEG=10.0`, `V2P0_GROUND_MIN_AREA_M2=15.0`, ring 3-12m, grid 281×281 at 0.25m.
 
 **Bank criteria:** 0 clean regressions; ≥1 ground-like face correctly flagged; heights plausible for known-good roofs.
-**Status:** BANKED. 20 Meadow face[3] flagged ground-like (h=0.07m, auto_accept→needs_review). 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9). 15 Veteran (clean) all structure-like (h=4.2-4.6m), no regression. 175 Warwick all structure-like (h=4-7.7m). See triage §12.
-**Reopen trigger:** False positive on a legitimate low-pitch roof section, or a ground-level surface that evades all three guards.
+**Status:** BANKED with V2P0.1 hardening. 20 Meadow face[3] flagged ground-like (h=0.07m, auto_accept→needs_review) AND hard-suppressed (elong=7.61, removed from roof_faces). 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9, not suppressed — elong=2.04). 15 Veteran (clean) all structure-like (h=4.2-4.6m), no regression. 175 Warwick all structure-like (h=4-7.7m). See triage §12.
+
+**V2P0.1 — Hard suppression hardening:**
+Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces` before V2P1 and response packaging. 4-way conjunction rule: `height_above_ground < 1.5m` AND `elongation_ratio > 4.0` AND `pitch < 15°` AND `classification != structure_like`. All four must hold. Uses eigenvalue-based elongation ratio (principal axis ratio of vertex covariance matrix). Adds `v2p0_ground_surface_suppressed` review reason, per-face `elongation_ratio` / `hard_ground_suppressed` / `hard_ground_suppression_reasons` debug fields, build-level `hard_ground_suppressed_count` / `v2p0_hard_suppression_applied`. Validated on 8 properties: 20 Meadow face[3] correctly suppressed (elong=7.61), 0 false positives on clean/steep/complex roofs.
+**Reopen trigger:** False positive on a legitimate low-pitch roof section, or a ground-level surface that evades all guards.
 
 ---
 
@@ -497,6 +500,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P0.1 Ground suppression hardening. 4-way conjunction rule removes obviously ground-like elongated faces: height<1.5m AND elongation>4.0 AND pitch<15° AND not structure_like. Uses eigenvalue-based elongation ratio. Validated on 8 properties: 20 Meadow face[3] suppressed (elong=7.61, removed from roof_faces), 0 false positives on clean/steep/complex/improved roofs. Adds `v2p0_ground_surface_suppressed` review reason and per-face elongation debug. See triage §12. |
 | 2026-04-19 | V2P1 Structural Coherence / Mirrored-Pair Logic. Debug-first evaluation of whether surviving roof faces form plausible mirrored/ridge-paired relationships. 4 signal families (azimuth opposition, pitch similarity, spatial edge gap, area ratio), 5 pair types, 6 warning codes. Validated on 8 properties: 15 Veteran coherence=0.92 (2 gable pairs, 0 warnings), Lawrence coherence=0.81 (2 gable pairs), 225 Gibson coherence=0.44 (correct poor coverage warning), 175 Warwick coherence=0.5 (steep roof not catastrophically scored). No status changes (debug-only). No V1/V2P0 interference. See triage §13. |
 | 2026-04-19 | V2P0 Ground/Structure Separation. Uses LiDAR/DSM elevation to classify each ML roof face as structure_like (height>2.5m), ground_like (height<1m AND pitch<10° AND area>15m²), or uncertain. Reconstructs 281×281 DSM grid from raw LiDAR points, per-face local ground reference via ring sampling (3-12m, p25). Validated on 8 properties: 20 Meadow face[3] correctly flagged ground-like (h=0.07m, auto_accept→needs_review), 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9), 15 Veteran (clean) all structure-like (h=4.2-4.6m, no regression), 175 Warwick all structure-like (h=4-7.7m). 5 helper functions, 15 per-face metrics, 13 build-level debug fields. See triage §12. |
 | 2026-04-19 | P9 unmatched/fallback strategy. Flags builds where ML faces don't match any Google Solar segments. 3 rules: build_unmatched (0/N matched), low_match_fraction (<50% matched when >=3 faces), low_match_confidence (>=50% of matches below 0.3). Validated on 7 properties: 13 Richardson St auto_accept→needs_review (the gap), 11 Ash Road gets additional context, 0 clean regressions, 0 improved regressions, P8 corrections stable. Adds `p9_build_assessment` debug object and 3 client-side reason labels. See triage §11. |
