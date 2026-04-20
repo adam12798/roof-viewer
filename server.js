@@ -25809,6 +25809,159 @@ function roofRelationshipAssessment(faces, v2p2Data, v2p1Data) {
   return v2p3SummarizeRelationships(relationships, faces.length, v2p2Data);
 }
 
+// ── V2 Phase 4: Whole-Roof Consistency Warnings ─────────────────────────
+const V2P4_W_MAIN_BODY = 0.30;
+const V2P4_W_STRUCTURAL = 0.25;
+const V2P4_W_RELATIONSHIP = 0.25;
+const V2P4_W_REALISM = 0.10;
+const V2P4_W_CONTRADICTION = 0.10;
+
+function v2p4CollectInputs(faces, v2p0, v2p1, v2p2, v2p3) {
+  const n = faces ? faces.length : 0;
+  const mainCount = v2p2 ? v2p2.main_roof_candidate_count : 0;
+  const secCount = v2p2 ? v2p2.secondary_roof_candidate_count : 0;
+  const uncFaceCount = v2p2 ? v2p2.uncertain_face_count : 0;
+  const mainAreaShare = v2p2 ? v2p2.main_roof_area_share : 0;
+  const mainBodyCoherence = v2p2 ? v2p2.main_roof_coherence_score : 0;
+  const mainWarnings = v2p2 ? v2p2.main_roof_warnings : [];
+
+  const structuralCoherence = v2p1 ? v2p1.structural_coherence_score : 0;
+  const mirroredPairCount = v2p1 ? v2p1.mirrored_pair_count : 0;
+  const unpairedMain = v2p1 ? v2p1.unpaired_main_planes : 0;
+  const structuralWarnings = v2p1 ? v2p1.structural_warnings : [];
+
+  const relCoherence = v2p3 ? v2p3.roof_relationship_coherence_score : 0;
+  const relTotal = v2p3 ? v2p3.candidate_relationship_count : 0;
+  const relUncertain = v2p3 ? v2p3.uncertain_relationship_count : 0;
+  const mainRelCount = v2p3 ? v2p3.main_relationship_count : 0;
+  const relWarnings = v2p3 ? v2p3.relationship_warnings : [];
+  const ridgeCount = v2p3 ? v2p3.ridge_like_count : 0;
+
+  const v2p0StructureCount = v2p0 ? (v2p0.structure_like_count || 0) : 0;
+  const v2p0UncertainCount = v2p0 ? (v2p0.uncertain_count || 0) : 0;
+  const v2p0GroundCount = v2p0 ? (v2p0.ground_like_count || 0) : 0;
+  const suppressedCount = v2p0 ? (v2p0.hard_ground_suppressed_count || 0) : 0;
+
+  const uncertaintyRatio = relTotal > 0 ? relUncertain / relTotal : 0;
+  let mainRelUncertainCount = 0;
+  if (v2p3 && v2p3.relationship_details) {
+    mainRelUncertainCount = v2p3.relationship_details.filter(
+      r => r.pair_is_main_relevant && r.relationship_type === 'uncertain'
+    ).length;
+  }
+  const mainRelUncertainRatio = mainRelCount > 0 ? mainRelUncertainCount / mainRelCount : 0;
+
+  return {
+    n, mainCount, secCount, uncFaceCount, mainAreaShare, mainBodyCoherence, mainWarnings,
+    structuralCoherence, mirroredPairCount, unpairedMain, structuralWarnings,
+    relCoherence, relTotal, relUncertain, mainRelCount, relWarnings, ridgeCount,
+    v2p0StructureCount, v2p0UncertainCount, v2p0GroundCount, suppressedCount,
+    uncertaintyRatio, mainRelUncertainCount, mainRelUncertainRatio,
+  };
+}
+
+function v2p4DetectContradictions(inp) {
+  const flags = [];
+  if (inp.mainBodyCoherence >= 0.7 && inp.relCoherence < 0.4 && inp.n >= 3)
+    flags.push('strong_main_body_but_weak_relationships');
+  if (inp.relCoherence >= 0.6 && inp.mainCount === 0 && inp.n >= 2)
+    flags.push('strong_relationships_but_no_clear_main_body');
+  if (inp.mainCount >= 3 && inp.structuralCoherence < 0.4 && inp.unpairedMain >= 2)
+    flags.push('many_main_faces_but_low_pair_coverage');
+  if (inp.mainAreaShare >= 0.7 && inp.mainRelUncertainRatio > 0.6 && inp.mainRelCount >= 2)
+    flags.push('dominant_main_body_with_fragmented_relationships');
+  if (inp.mainRelCount >= 2 && inp.mainRelUncertainRatio > 0.5)
+    flags.push('high_uncertainty_on_main_faces');
+  if (inp.mainRelCount >= 3 && inp.mainRelUncertainRatio > 0.7)
+    flags.push('too_many_uncertain_main_relations');
+  return flags;
+}
+
+function v2p4EmitWarnings(inp, contradictions) {
+  const warnings = [];
+  if (contradictions.length >= 3)
+    warnings.push('fragmented_whole_roof_story');
+  if (inp.n >= 2 && inp.mainCount === 0 && inp.ridgeCount === 0 && inp.structuralCoherence < 0.3)
+    warnings.push('no_clear_structural_story');
+  if (inp.mainBodyCoherence >= 0.6 && inp.relCoherence < 0.3 && inp.n >= 3)
+    warnings.push('main_body_relationship_disconnect');
+  if (inp.mainRelUncertainRatio > 0.6 && inp.mainRelCount >= 2)
+    warnings.push('excessive_main_face_uncertainty');
+  if (inp.mainCount >= 2 && inp.unpairedMain >= 2 && inp.structuralCoherence < 0.5)
+    warnings.push('weak_pair_coverage_on_main_body');
+  if (inp.uncertaintyRatio > 0.6 && inp.relTotal >= 3)
+    warnings.push('roof_understanding_mostly_uncertain');
+  if (contradictions.includes('strong_main_body_but_weak_relationships') &&
+      contradictions.includes('high_uncertainty_on_main_faces'))
+    warnings.push('competing_structural_interpretations');
+  return warnings;
+}
+
+function wholeRoofConsistencyAssessment(faces, v2p0, v2p1, v2p2, v2p3) {
+  const n = faces ? faces.length : 0;
+  if (n === 0) return null;
+
+  const inp = v2p4CollectInputs(faces, v2p0, v2p1, v2p2, v2p3);
+  const contradictions = v2p4DetectContradictions(inp);
+
+  const totalOrig = inp.v2p0StructureCount + inp.v2p0UncertainCount + inp.v2p0GroundCount;
+  const realismFactor = totalOrig > 0 ? _r2(inp.v2p0StructureCount / totalOrig) : 0.5;
+  const contradictionPenalty = Math.min(1, contradictions.length * 0.25);
+  const contradictionFactor = _r2(1 - contradictionPenalty);
+
+  let consistencyScore;
+  if (n === 1) {
+    consistencyScore = _r2(inp.mainBodyCoherence * 0.5 + realismFactor * 0.3 + contradictionFactor * 0.2);
+  } else {
+    consistencyScore = _r2(
+      inp.mainBodyCoherence * V2P4_W_MAIN_BODY +
+      inp.structuralCoherence * V2P4_W_STRUCTURAL +
+      inp.relCoherence * V2P4_W_RELATIONSHIP +
+      realismFactor * V2P4_W_REALISM +
+      contradictionFactor * V2P4_W_CONTRADICTION
+    );
+  }
+
+  const warnings = v2p4EmitWarnings(inp, contradictions);
+
+  const interpretedRelFrac = inp.relTotal > 0 ? _r2(1 - inp.uncertaintyRatio) : 0;
+  const dominantStoryStrength = _r2(
+    inp.mainAreaShare * 0.3 + interpretedRelFrac * 0.3 +
+    inp.structuralCoherence * 0.2 + consistencyScore * 0.2
+  );
+
+  return {
+    v2_whole_roof_logic_applied: true,
+    total_surviving_faces: n,
+    main_face_count: inp.mainCount,
+    secondary_face_count: inp.secCount,
+    uncertain_face_count: inp.uncFaceCount,
+    structural_pairing_score: _r2(inp.structuralCoherence),
+    main_body_score: _r2(inp.mainBodyCoherence),
+    relationship_score: _r2(inp.relCoherence),
+    realism_factor: realismFactor,
+    contradiction_factor: contradictionFactor,
+    uncertainty_ratio: _r2(inp.uncertaintyRatio),
+    dominant_story_strength: dominantStoryStrength,
+    whole_roof_consistency_score: consistencyScore,
+    whole_roof_warning_count: warnings.length,
+    whole_roof_warnings: warnings,
+    contradiction_flags: contradictions,
+    input_phase_summary: {
+      v2p0: { structure_like: inp.v2p0StructureCount, uncertain: inp.v2p0UncertainCount, ground_like: inp.v2p0GroundCount, suppressed: inp.suppressedCount },
+      v2p1: { coherence: _r2(inp.structuralCoherence), mirrored_pairs: inp.mirroredPairCount, unpaired_main: inp.unpairedMain, warning_count: inp.structuralWarnings.length },
+      v2p2: { main: inp.mainCount, secondary: inp.secCount, uncertain: inp.uncFaceCount, area_share: _r2(inp.mainAreaShare), coherence: _r2(inp.mainBodyCoherence), warning_count: inp.mainWarnings.length },
+      v2p3: { total_rels: inp.relTotal, uncertain_rels: inp.relUncertain, ridge: inp.ridgeCount, coherence: _r2(inp.relCoherence), warning_count: inp.relWarnings.length },
+    },
+    scoring_weights: {
+      main_body: V2P4_W_MAIN_BODY, structural: V2P4_W_STRUCTURAL,
+      relationship: V2P4_W_RELATIONSHIP, realism: V2P4_W_REALISM,
+      contradiction: V2P4_W_CONTRADICTION,
+    },
+    consistency_phase_notes: [],
+  };
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -26015,6 +26168,30 @@ app.post("/api/ml/auto-build", async (req, res) => {
     }
   } catch (e) {
     console.log(`[v2p3_relationships] skipped: ${e.message}`);
+  }
+
+  // V2P4: Whole-Roof Consistency Warnings (non-blocking, debug-only)
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 1) {
+      const md = cr.metadata || (cr.metadata = {});
+      const v2p0 = md.v2p0_ground_structure || null;
+      const v2p1 = md.v2p1_structural_coherence || null;
+      const v2p2 = md.v2p2_main_roof_coherence || null;
+      const v2p3 = md.v2p3_roof_relationships || null;
+      const v2p4 = wholeRoofConsistencyAssessment(roofFaces, v2p0, v2p1, v2p2, v2p3);
+      if (v2p4) {
+        md.v2p4_whole_roof_consistency = v2p4;
+        if (v2p4.whole_roof_warnings.length > 0 || v2p4.contradiction_flags.length > 0) {
+          console.log(`[v2p4_consistency] score=${v2p4.whole_roof_consistency_score} warns=[${v2p4.whole_roof_warnings.join(',')}] contradictions=[${v2p4.contradiction_flags.join(',')}]`);
+        } else {
+          console.log(`[v2p4_consistency] OK: score=${v2p4.whole_roof_consistency_score} story=${v2p4.dominant_story_strength} main=${v2p4.main_face_count}/${v2p4.total_surviving_faces}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p4_consistency] skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.

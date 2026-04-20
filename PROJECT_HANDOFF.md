@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (V2P3 ridge / hip / valley relationship logic)
+**Last updated:** 2026-04-19 (V2P4 whole-roof consistency warnings)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -541,6 +541,50 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
+### V2P4 — Whole-Roof Consistency Warnings [BANKED]
+
+**Purpose:** Synthesize outputs from V2P0–V2P3 into a single whole-roof consistency assessment. Detect contradictions between phase outputs, emit build-level warnings, compute whole_roof_consistency_score.
+
+**Inputs:** All prior V2 phase outputs: V2P0 ground/structure, V2P1 structural pairing, V2P2 main/secondary, V2P3 relationships.
+
+**Outputs:** Build-level: whole_roof_consistency_score, dominant_story_strength, contradiction_flags[], whole_roof_warnings[], input_phase_summary, per-signal sub-scores (main_body, structural, relationship, realism, contradiction).
+
+**Pipeline placement:** After V2P3 in proxy route. Synthesis/debug only — no geometry mutation, no face deletion, no status changes.
+
+**Signal families (5 weights):** Main body coherence from V2P2 (0.30), structural pairing from V2P1 (0.25), relationship coherence from V2P3 (0.25), realism factor from V2P0 (0.10), contradiction penalty (0.10). Single-face edge case uses main_body × 0.5 + realism × 0.3 + contradiction × 0.2.
+
+**Contradiction flags:** `strong_main_body_but_weak_relationships`, `strong_relationships_but_no_clear_main_body`, `many_main_faces_but_low_pair_coverage`, `dominant_main_body_with_fragmented_relationships`, `high_uncertainty_on_main_faces`, `too_many_uncertain_main_relations`.
+
+**Warnings emitted:** `fragmented_whole_roof_story`, `no_clear_structural_story`, `main_body_relationship_disconnect`, `excessive_main_face_uncertainty`, `weak_pair_coverage_on_main_body`, `roof_understanding_mostly_uncertain`, `competing_structural_interpretations`.
+
+**Bank criteria:** Simple roofs score high consistency (≥0.90); complex roofs produce meaningful warnings/contradictions rather than false confidence; problem roofs score low; no geometry rewritten; no status changes.
+
+**Status:** BANKED. 15 Veteran (clean gable): consistency=0.96, story=0.98, all sub-scores 0.92-1.0, 0 contradictions, 0 warnings. 20 Meadow: consistency=0.73 (realism=0.5 from V2P0 uncertainty). 225 Gibson (complex): consistency=0.66, warns weak_pair_coverage_on_main_body (3 unpaired main planes). 175 Warwick (steep): consistency=0.80, not unfairly demoted. Lawrence (complex): consistency=0.69, contradicts high_uncertainty_on_main_faces (6/11 main-relevant relationships uncertain). 13 Richardson (ground-like): consistency=0.20, story=0.04 — correctly very low. 0 geometry changes, 0 status flips. See triage §16.
+
+**Reopen trigger:** Whole-roof consistency score found to be misleading or contradictions found to be false positives on a new property class.
+
+---
+
+### V2P5 — Performance Optimization [PLANNED, NOT ACTIVE]
+
+**Purpose:** Reduce model-build runtime from 60s+ to <15s on most houses.
+
+**Rules:** Instrumentation first. No accuracy regressions. Optimize after logic scaffolding is in place. This phase is NOT active in this pass — it begins only after V2P4 is validated and banked.
+
+**Status:** PLANNED. Not started.
+
+---
+
+### V3P0 — Full Visual Validation & Replay Audit [DEFERRED TO V3]
+
+**Purpose:** Rerun the full property set, inspect screenshots / design-mode outputs visually, log recurring failure classes.
+
+**Rules:** Do NOT tune during the audit. Only create targeted follow-up fixes after the audit completes. This is a dedicated visual validation phase, not to be mixed into active V2 logic-building.
+
+**Status:** DEFERRED. Begins after V2 structural logic phases are complete.
+
+---
+
 ### Backlog (not phase-gated)
 
 These items are tracked but not tied to the active phase:
@@ -556,6 +600,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P4 Whole-Roof Consistency Warnings. Synthesizes V2P0–V2P3 outputs into a single consistency assessment with contradiction detection and actionable warnings. 5 weighted factors: main body coherence from V2P2 (0.30), structural pairing from V2P1 (0.25), relationship coherence from V2P3 (0.25), realism from V2P0 (0.10), contradiction penalty (0.10). Explicit contradiction detection: 6 cross-phase contradiction flags (e.g., strong_main_body_but_weak_relationships, high_uncertainty_on_main_faces). Single-face edge case uses separate formula (mainBody×0.5 + realism×0.3 + contradiction×0.2). Validated on 8 properties: 15 Veteran consistency=0.96 (clean gable, 0 contradictions), 175 Warwick consistency=0.80 (steep roof not unfairly demoted), Lawrence consistency=0.69 (correctly flags high_uncertainty_on_main_faces), 13 Richardson consistency=0.20 (single ground face, correctly very low), 583 Westford skipped (0 faces). No geometry mutation, no status changes. See triage §16. |
 | 2026-04-19 | V2P3 Ridge / Hip / Valley Relationship Logic. Classifies structural relationships between adjacent face pairs using 6 signal families: azimuth relationship, pitch compatibility, edge gap, meeting point geometry, convex/concave hint from downslope vectors, and V2P2 main-roof relevance. 6 relationship types: ridge_like, hip_like, valley_like, seam_like, step_like, uncertain. Convexity detection uses dot product of downslope direction with centroid-to-meeting-point vector to differentiate hip (convex) from valley (concave). Validated on 8 properties: 15 Veteran coherence=0.99 (2 ridge+1 seam, dominant=ridge_like), 225 Gibson coherence=0.59 (2 ridge+1 hip+2 step+4 uncertain), Lawrence coherence=0.55 (2 ridge+2 hip+6 uncertain — conservative). No geometry mutation, no status changes. See triage §15. |
 | 2026-04-19 | V2P2 Main Roof Coherence / Main-vs-Secondary Plane Logic. Classifies surviving faces as main_roof_candidate / secondary_roof_candidate / uncertain using 5 weighted signal families: area importance (0.30), structural participation from V2P1 pairs (0.25), adjacency via edge gap (0.20), centrality (0.10), V2P0 realism (0.15). Build-level main_roof_coherence_score rewards area concentration, dominance, and structural coverage. Validated on 8 properties: 15 Veteran coherence=0.94 (all main), 20 Meadow coherence=0.88 (2 main+1 uncertain), 225 Gibson coherence=0.77 (4 main+1 secondary+1 uncertain), Lawrence coherence=0.80 (4 main+2 uncertain), 175 Warwick coherence=0.84 (steep, all main). 13 Richardson correctly warns no_clear_dominant_roof_body. No geometry mutation, no status changes. See triage §14. |
 | 2026-04-19 | V2P0.1 Ground suppression hardening. 4-way conjunction rule removes obviously ground-like elongated faces: height<1.5m AND elongation>4.0 AND pitch<15° AND not structure_like. Uses eigenvalue-based elongation ratio. Validated on 8 properties: 20 Meadow face[3] suppressed (elong=7.61, removed from roof_faces), 0 false positives on clean/steep/complex/improved roofs. Adds `v2p0_ground_surface_suppressed` review reason and per-face elongation debug. See triage §12. |

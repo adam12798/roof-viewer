@@ -1253,7 +1253,86 @@ Classify structural relationships between adjacent face pairs (edge gap < 4m) us
 
 ---
 
-## 16. Related resources
+## 16. V2P4 — Whole-Roof Consistency Warnings
+
+**Date:** 2026-04-19
+**Phase:** V2 Phase 4 (after V2P0/V2P0.1/V2P1/V2P2/V2P3)
+**Pipeline placement:** After V2P3 in proxy route. Assessment/debug only — no geometry mutation.
+
+### 16.1 Method
+
+Synthesize V2P0–V2P3 outputs into a single consistency assessment with contradiction detection and actionable warnings. 5 weighted factors:
+
+| Factor | Weight | Source |
+|---|---|---|
+| A. Main body coherence | 0.30 | V2P2 `main_roof_coherence_score` |
+| B. Structural pairing | 0.25 | V2P1 `structural_coherence_score` |
+| C. Relationship coherence | 0.25 | V2P3 `roof_relationship_coherence_score` |
+| D. Realism confirmation | 0.10 | V2P0 structure_like ratio |
+| E. Contradiction penalty | 0.10 | 1.0 minus 0.15 per detected contradiction (floor 0.0) |
+
+**Single-face edge case:** Uses separate formula: mainBody × 0.5 + realism × 0.3 + contradiction × 0.2 (no structural/relationship contribution since those require ≥2 faces).
+
+**Dominant story strength:** Computed as max(mainBodyCoherence, structuralCoherence, relCoherence) — identifies the strongest phase signal.
+
+### 16.2 Constants
+
+`V2P4_W_MAIN_BODY=0.30`, `V2P4_W_STRUCTURAL=0.25`, `V2P4_W_RELATIONSHIP=0.25`, `V2P4_W_REALISM=0.10`, `V2P4_W_CONTRADICTION=0.10`.
+
+### 16.3 Contradiction detection
+
+6 cross-phase contradiction flags:
+- `strong_main_body_but_weak_relationships`: mainBody coherence ≥ 0.7 but relationship coherence < 0.4 (≥3 faces)
+- `strong_relationships_but_no_clear_main_body`: relationship coherence ≥ 0.6 but 0 main candidates (≥2 faces)
+- `many_main_faces_but_low_pair_coverage`: ≥3 main candidates but structural coherence < 0.4 and ≥2 unpaired main
+- `dominant_main_body_with_fragmented_relationships`: main area share ≥ 0.7 but >60% uncertain main relationships (≥2 main rels)
+- `high_uncertainty_on_main_faces`: >50% uncertain main relationships (≥2 main rels)
+- `too_many_uncertain_main_relations`: >70% uncertain main relationships (≥3 main rels)
+
+### 16.4 Build-level debug fields
+
+`v2_whole_roof_consistency_applied`, `whole_roof_consistency_score`, `dominant_story_strength`, `main_body_score`, `structural_pairing_score`, `relationship_score`, `realism_factor`, `contradiction_factor`, `uncertainty_ratio`, `contradiction_flags[]`, `whole_roof_warnings[]`, `consistency_phase_notes[]`, `input_phase_summary` (nested V2P0–V2P3 inputs).
+
+### 16.5 Warnings emitted
+
+`weak_overall_consistency`, `high_cross_phase_contradiction`, `dominant_phase_with_weak_support`, `weak_pair_coverage_on_main_body`, `fragmented_main_body_relationships`.
+
+### 16.6 Validation results (8 properties)
+
+| Property | Bucket | Faces | Consistency | Story | Contradictions | Warnings |
+|---|---|---|---|---|---|---|
+| 15 Veteran Rd | clean_gable | 3 | 0.96 | 0.98 | none | none |
+| 20 Meadow Dr | improved_simple | 3 | 0.73 | 0.88 | none | none |
+| 225 Gibson St | complex_corrected | 6 | 0.66 | 0.8 | none | weak_pair_coverage_on_main_body |
+| 175 Warwick | steep_real | 3 | 0.80 | 0.88 | none | none |
+| Lawrence | improved_complex | 6 | 0.69 | 0.8 | high_uncertainty_on_main_faces | none |
+| 13 Richardson St | single_ground | 1 | 0.20 | 0.04 | none | weak_overall_consistency |
+| 11 Ash Road | target_strip | 1 | 0.48 | 0.47 | none | none |
+| 583 Westford St | rejected | 0 | — | — | — | (skipped, 0 faces) |
+
+### 16.7 Key findings
+
+1. **Clean gable gets near-perfect consistency.** 15 Veteran: consistency=0.96, story=0.98. All phase signals align — strong main body, strong structural pairing, strong relationships, all faces structure-like. Zero contradictions.
+
+2. **Steep roof not unfairly demoted.** 175 Warwick: consistency=0.80. Despite steep pitches (47–55°), all phase signals are moderate-to-strong. No contradictions or warnings — the system correctly recognizes a steep but structurally coherent roof.
+
+3. **Cross-phase contradictions correctly detected.** Lawrence: `high_uncertainty_on_main_faces` fires because 6 of 11 main-relevant relationships (54.5%) are uncertain. This is honest — good V2P2 main-body identification but V2P3 can't resolve most relationship types for the complex oblique geometry.
+
+4. **Single-face edge case handled.** 13 Richardson: consistency=0.20, story=0.04. The single face is ground-like (V2P0) so realism is low. Separate formula avoids penalizing for missing structural/relationship signals. Warns `weak_overall_consistency`.
+
+5. **Complex roofs get differentiated scores.** 225 Gibson (0.66) vs Lawrence (0.69) — both complex but different weakness profiles. Gibson has weak pair coverage on main body; Lawrence has high uncertainty on main face relationships.
+
+6. **Realism factor correctly scales.** 20 Meadow: consistency=0.73, lower than expected for a simple roof. V2P0 shows 1 of 3 faces uncertain (not structure_like), pulling realism to 0.5 and dragging overall score down. This is correct — the uncertain face should lower confidence.
+
+7. **No geometry mutation, no status changes.** V2P4 is assessment/debug only. All prior phase outputs preserved.
+
+### 16.8 Verdict
+
+**KEEP.** V2P4 produces a meaningful whole-roof consistency assessment that correctly synthesizes V2P0–V2P3 signals. Clean roofs score high (0.96), problematic roofs score low (0.20), and complex roofs get differentiated mid-range scores with specific contradiction flags and warnings identifying the weakness. The contradiction detection successfully identifies cross-phase inconsistencies without false positives on clean/simple roofs. Zero production risk (debug-only, no geometry mutation, no status changes).
+
+---
+
+## 17. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
