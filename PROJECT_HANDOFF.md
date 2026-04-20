@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V2P7 decision-layer integration)
+**Last updated:** 2026-04-20 (V2P7 decision-layer integration — polished and banked)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -600,38 +600,50 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
-### V2P7 — Decision-Layer Integration [ACTIVE]
+### V2P7 — Decision-Layer Integration [BANKED]
 
-**Purpose:** Let banked V2P0–V2P4 signals influence final `auto_build_status` in a conservative, explainable, reversible way. V2 signals now lightly shape `auto_accept` vs `needs_review` decisioning; `reject` remains evidence-heavy and extremely rare.
+**Purpose:** Let banked V2P0–V2P4 signals influence final `auto_build_status` in a conservative, explainable, reversible way. V2 signals lightly shape `auto_accept` vs `needs_review`; `reject` remains evidence-heavy and extremely rare.
 
-**Rules:** V2 must not become an opaque veto engine. Thresholds centralized. Reject requires multi-signal agreement with existing V1/P8/P9 risk. Clean roofs must not get over-escalated. Steep-but-real roofs must not be unfairly punished.
+**Rules:** V2 must not become an opaque veto engine. Thresholds centralized. Reject requires multi-signal agreement with existing V1/P8/P9 risk. Clean roofs must not get over-escalated. Steep-but-real roofs must not be unfairly punished. Complex-but-coherent roofs get a conservative risk dampener.
 
-**Inputs:** `md.v2p0_ground_structure` (structure/ground/uncertain counts, hard_ground_suppressed_count), `md.v2p1_structural_coherence` (structural_coherence_score, main_plane_count, structural_warnings), `md.v2p2_main_roof_coherence` (main_roof_coherence_score, fragmented_main_roof), `md.v2p3_roof_relationships` (roof_relationship_coherence_score, main_relationship_count, relationship_warnings), `md.v2p4_whole_roof_consistency` (whole_roof_consistency_score, dominant_story_strength, contradiction_flags, whole_roof_warnings, uncertainty_ratio). Also preserves prior V1/P8/P9 decision signals (auto_build_status, review_policy_reasons).
+**Inputs:** `md.v2p0_ground_structure`, `md.v2p1_structural_coherence`, `md.v2p2_main_roof_coherence`, `md.v2p3_roof_relationships`, `md.v2p4_whole_roof_consistency`. Also preserves prior V1/P8/P9 decision signals (`auto_build_status`, `review_policy_reasons`), and counts external risk reasons separately (`build_tilt_quality_low`, `google_solar_pitch_*`, `p9_*`, `crm_soft_gate_applied`, `usable_gate_low`) for the T4 "external risk + weak V2 story" trigger.
 
-**Pipeline placement:** After V2P4 in the `/api/ml/auto-build` proxy route, before V2P5 timing metadata. Reads metadata; may mutate `envelope.auto_build_status` and `envelope.review_policy_reasons`. No geometry mutation.
+**Pipeline placement:** After V2P4 in the `/api/ml/auto-build` proxy route, before V2P5 timing metadata. Reads metadata; may mutate `envelope.auto_build_status` and `envelope.review_policy_reasons`. No geometry mutation. Decisioning is split into four clearly separated moving parts: `v2p7ScoreSupport()`, `v2p7ScoreRisk()`, `v2p7ComputeDampener()`, `v2p7BuildTriggers()`.
 
-**Scoring model (centralized thresholds):**
-- **Confidence support score** = `whole_roof_consistency × 0.6 + dominant_story_strength × 0.4 − 0.1 × min(contradiction_count, 3)` (clamped 0–1).
-- **Aggregate risk score** = sum of explicit drivers: whole_roof<0.50 (+0.30), main_body<0.40 with ≥2 faces (+0.20), relationships<0.40 with ≥2 main rels (+0.15), structural<0.40 with ≥2 main planes (+0.10), uncertainty>0.60 (+0.10), contradictions≥2 (+0.15), whole_roof_warnings≥2 (+0.10), hard_ground_suppressed>0 (+0.10), ground_like>0 (+0.10), fragmented_main_roof (+0.05). Clamped 0–1.
-- **v2_decision_score** = `clamp01(0.5 + 0.5 × (support − risk))` — reported 0–1.
+**Scoring model (support vs risk cleanly separated):**
+- **Support score (0–1, pure positive evidence)** — weighted average of V2P4-synthesized scores, no penalties baked in: `whole_roof × 0.35 + story × 0.25 + main_body × 0.20 + structural × 0.10 + relationship × 0.10`.
+- **Risk score (0–1, pure negative evidence)** — sum of explicit tagged drivers: whole_roof<0.50 (+0.30), main_body<0.40 with ≥2 faces (+0.20), relationships<0.40 with ≥2 main rels (+0.15), structural<0.40 with ≥2 main planes (+0.10), contradictions≥2 (+0.15), whole_roof_warnings≥2 (+0.10), hard_ground_suppressed>0 (+0.10), ground_like>0 (+0.10), fragmented_main_roof (+0.05).
+- **Contradiction penalty** (0–0.24) = `0.08 × min(contradictions, 3)`. Reported separately.
+- **Uncertainty penalty** (0–0.15) = linear scale from uncertainty_ratio ∈ [0.50, 1.0] to [0, 0.15]. Reported separately.
+- **Complexity dampener** (0–0.15) — reduces risk ONLY, never affects support. Fires when main_body ≥ 0.70 AND story ≥ 0.65 AND 0 contradictions AND 0 ground issues AND not fragmented AND face_count ≥ 3. Scales with main_body + story strength above their healthy thresholds.
+- **Effective risk** = max(0, risk − dampener).
+- **Final V2 decision score** = `clamp01(0.5 + 0.5 × (support − effective_risk − contradiction_penalty − uncertainty_penalty))`.
 
-**Escalation (auto_accept → needs_review):** fires when ANY of: `whole_roof_consistency < 0.50`, `contradiction_flags ≥ 2`, `main_body < 0.40` with ≥2 faces, `uncertainty > 0.60` with `whole_roof < 0.70`, `relationship < 0.40` with ≥3 main relationships, or aggregate `risk ≥ 0.45`.
+**Explicit escalation triggers (readable named detectors):**
+- **T1 `low_consistency_with_uncertainty`** — whole_roof < 0.55 AND uncertainty > 0.55.
+- **T2 `contradictions_with_weak_pairing`** — contradictions ≥ 2 AND structural < 0.50 AND main_plane_count ≥ 2.
+- **T3 `fragmented_main_with_weak_relationships`** — fragmented_main_roof AND relationship < 0.50 AND main_rel_count ≥ 2.
+- **T4 `external_risk_with_weak_story`** — ≥2 existing V1/P8/P9 risk reasons AND whole_roof < 0.45.
+- **T5 `main_body_weak`** — main_body < 0.40 AND face_count ≥ 2.
+- **T6 `aggregate_risk_elevated`** (numeric safety net) — effective_risk ≥ 0.45 AND net_score < 0.25.
 
-**Support (reinforcement only, no status change):** `whole_roof ≥ 0.85 AND 0 contradictions AND 0 warnings AND main_body ≥ 0.75 AND dominant_story ≥ 0.75`. Records `v2_clean_structural_story` note.
+When prior status is `auto_accept` and any trigger fires → escalate to `needs_review`. When prior status is already `needs_review` and triggers fire → reinforce (debug only; no new envelope reasons added unless status changes).
 
-**Reject (extremely rare; multi-signal agreement required):** ALL of: `risk ≥ 0.70`, `whole_roof < 0.20`, `dominant_story < 0.15`, `contradiction_flags ≥ 2`, prior status already `needs_review`, prior `review_policy_reasons.length ≥ 3`, AND (`ground_like > 0` OR `hard_ground_suppressed > 0` OR `face_count ≤ 1`). Current validation set produces zero reject cases. Capability reserved for pathological builds.
+**Support (reinforcement only, no status change):** `whole_roof ≥ 0.85 AND 0 contradictions AND 0 warnings AND main_body ≥ 0.70 AND dominant_story ≥ 0.75`. Records `v2_clean_structural_story` note.
 
-**Decision reasons emitted (merged into `review_policy_reasons` only when status changes):** `v2_low_whole_roof_consistency`, `v2_fragmented_main_roof`, `v2_high_main_face_uncertainty`, `v2_weak_structural_pairing`, `v2_relationships_mostly_uncertain`, `v2_ground_suppression_material`, `v2_contradictory_structural_story`. Debug-only: `v2_clean_structural_story` (support note).
+**Reject (extremely rare; multi-signal agreement required):** ALL of: `risk ≥ 0.70`, `whole_roof < 0.20`, `story < 0.15`, `contradictions ≥ 2`, `prior_status == 'needs_review'`, `prior_reasons.length ≥ 3`, AND (`ground_like > 0` OR `hard_ground_suppressed > 0` OR `face_count ≤ 1`). Current validation set produces zero reject cases. Capability reserved for pathological multi-signal failures only.
 
-**Debug object (`md.v2p7_decision_integration`):** `v2_decision_integration_applied`, `prior_status`, `final_status`, `v2_decision_score`, `confidence_support_score`, `structural_risk_score`, `whole_roof_risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `escalation_applied`, `deescalation_applied`, `reject_applied`, `decision_change_applied`, `v2_decision_reasons[]`, `v2_decision_notes[]`, `v2_supporting_signals{}`, `v2_risk_signals{}`, `thresholds{}`, `scoring_weights{}`.
+**Decision reasons (short, machine-readable) — merged into `review_policy_reasons` only when status changes:** `v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_ground_suppression_material`, `v2_structural_contradiction`. Debug-only support note: `v2_clean_structural_story`. Legacy labels (`v2_low_whole_roof_consistency`, `v2_fragmented_main_roof`, `v2_high_main_face_uncertainty`, `v2_weak_structural_pairing`, `v2_relationships_mostly_uncertain`, `v2_contradictory_structural_story`) preserved in client `_REVIEW_REASON_LABELS` for envelopes generated before the polish pass.
 
-**Client reason labels added:** 7 new entries in `_REVIEW_REASON_LABELS` for the `v2_*` decision reasons.
+**Debug object (`md.v2p7_decision_integration`):** `v2_decision_integration_applied`, `prior_status`, `final_status`, `decision_change_applied`, `support_score`, `risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `complexity_dampener`, `complexity_dampener_applied`, `complexity_dampener_reasons`, `effective_risk_score`, `final_v2_decision_score`, `escalation_applied`, `reject_applied`, `explicit_escalation_triggers[]` (each with `id`/`detail`/`reason`), `v2_decision_reasons[]`, `v2_decision_notes[]`, `v2_supporting_signals{}`, `v2_risk_signals{}` (now including `external_risk_reason_count` and tagged `risk_drivers`), `thresholds{}`, `scoring_weights{}`.
 
-**Bank criteria:** Clean roofs stay `auto_accept` with no V2-added noise; problematic roofs either get escalated or get V2 reinforcement in debug; steep-but-real roofs are NOT unfairly demoted; reject behavior remains rare and evidence-heavy; existing UI compatibility preserved.
+**Client reason labels:** 7 new short-name entries + 6 legacy aliases preserved in `_REVIEW_REASON_LABELS`.
 
-**Status:** ACTIVE. Offline validation against 7 reference property states (banked V2P0–V2P4 numbers) + 2 hypothetical cases (escalation and reject tests), all 9 pass. 15 Veteran (clean) score=0.99 reinforces auto_accept. 13 Richardson / 11 Ash (weak stories) add `v2_low_whole_roof_consistency` reinforcement to existing needs_review. 175 Warwick (steep_real) score=0.92 NOT unfairly punished. Hypothetical fragmented multi-face: auto_accept → needs_review with 6 V2 reasons. Hypothetical pathological extreme: correctly NOT rejected (contradiction count below reject threshold). See triage §19.
+**Bank criteria (all met):** Clean roofs stay `auto_accept` (15 Veteran score=0.98, 726 School score=0.95); complex-but-coherent roofs get the dampener and stay un-escalated (583 Westford score=0.85, 225 Gibson score=0.85, 175 Warwick score=0.91); weak roofs with external risk get T4 trigger reinforcement (13 Richardson); reject remains unreachable on known properties; existing banner flow unchanged.
 
-**Reopen trigger:** False positive escalation on a clean property; false reject on any property; V2 adds noise to well-understood builds that the user perceives as unexplained review.
+**Status:** BANKED. Polish pass locks the phase. Offline validation on 11 cases (7 banked properties + 2 additional clean/problematic + 2 hypothetical): 11/11 pass. See triage §19.
+
+**Reopen trigger:** False positive escalation on a clean or complex-but-coherent property; false reject on any property; explicit trigger found misleading; a V2P7 reason appearing on a build where the user perceives review as unexplained.
 
 ---
 
@@ -660,6 +672,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V2P7 polish pass — banked. Refactored decision logic into four clearly separated parts: `v2p7ScoreSupport` (pure positive — weighted average of V2P4 sub-scores with no penalties baked in), `v2p7ScoreRisk` (pure negative — tagged drivers summing to 0–1), `v2p7ComputeDampener` (small risk-only reduction up to 0.15 on complex-but-coherent roofs), `v2p7BuildTriggers` (6 named escalation detectors: low_consistency_with_uncertainty, contradictions_with_weak_pairing, fragmented_main_with_weak_relationships, external_risk_with_weak_story, main_body_weak, aggregate_risk_elevated). Contradiction/uncertainty penalties split out as their own line items. Migrated reason names to short machine-readable form (`v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_structural_contradiction`, `v2_ground_suppression_material`, `v2_clean_structural_story`). Legacy reason labels preserved in client `_REVIEW_REASON_LABELS`. Debug object rewritten for one-glance readability: `support_score`, `risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `complexity_dampener`, `effective_risk_score`, `final_v2_decision_score`, `explicit_escalation_triggers[]` (with id/detail/reason per trigger). Validation on 11 cases (9 original + 726 School as clean_simple + 583 Westford as complex_coherent): 11/11 pass. Key outcomes: 15 Veteran score=0.98 (dampener applied), 583 Westford score=0.85 (complex but coherent — dampener protects from escalation), 175 Warwick score=0.91 (steep but coherent — dampener 0.14), 13 Richardson T4 external_risk_with_weak_story trigger fires readably, hypothetical fragmented escalates with 5 explicit triggers + 6 clean reason names. See triage §19. |
 | 2026-04-20 | V2P7 Decision-Layer Integration. Banked V2P0–V2P4 signals now lightly influence `auto_build_status` via a conservative scoring model. Confidence support score = `whole_roof × 0.6 + dominant_story × 0.4 − 0.1 × min(contradictions, 3)`. Aggregate risk score from explicit drivers (whole_roof<0.50, main_body<0.40, relationships<0.40, uncertainty>0.60, contradictions≥2, warnings≥2, ground suppression, fragmented main roof). Escalation fires when any of 6 triggers hit; reject requires multi-signal agreement (`risk≥0.70 AND whole_roof<0.20 AND story<0.15 AND contradictions≥2 AND prior needs_review with ≥3 reasons AND (ground/single_face)`) — capability reserved, no current properties trigger it. Added `md.v2p7_decision_integration` debug with support/risk breakdown, thresholds, and decision_reasons. 7 new client reason labels (`v2_low_whole_roof_consistency`, `v2_fragmented_main_roof`, etc.). Validation on 7 banked properties + 2 hypothetical cases (9/9 pass): 15 Veteran score=0.99 reinforces auto_accept, 175 Warwick score=0.92 NOT demoted, 13 Richardson / 11 Ash reinforced with `v2_low_whole_roof_consistency`, synthetic fragmented multi-face correctly escalates auto_accept→needs_review with 6 V2 reasons. No geometry mutation. See triage §19. |
 | 2026-04-19 | V2P6 ML Core Runtime Optimization. Python-side timing instrumentation (metadata.v2p6_timing: outer stages + ML pipeline stages + network vs compute + hotspot ranking). Semantic edges Shapely cache: pre-compute unary_union(plane_boundaries).buffer(COV_PIX) once instead of O(edges) times — Lawrence semantic_edges 18377ms→2741ms (6.7x). Crop rendering: numpy array pre-conversion. Stage results passthrough via CRM adapter. 8-property validation: all faces+V2P4 scores unchanged. Overall speedup 1.6-7.1x depending on property complexity. Lawrence 24.8s→3.5-10.2s. Remaining bottleneck: CPU model inference (ResNet-18 per edge). See triage §18. |
 | 2026-04-19 | V2P5 Performance Optimization + Instrumentation. Added comprehensive timing instrumentation (ml_request_ms, p3_p8_p9_crossval_ms, v2p0_ground_structure_ms, v2p1-v2p4_ms, v2p5_cache_build_ms) exposed via crm_result.metadata.performance_timing. Shared geometry cache (v2BuildFaceCache: area, centroid, edgeSamples, bbox computed once) + shared proximity matrix (v2BuildProximityMatrix: edge-gap + meeting-point computed once with bbox pruning). V2P1/V2P2/V2P3 refactored to consume shared cache — eliminates 3× redundant area/centroid computation and 2× redundant O(N²) edge-gap computation. Timing reveals ML request is 92-98% of total runtime (1-24s); CRM post-ML overhead is 230-470ms; V2P1-V2P4 combined <3ms. P3 Google Solar API is the CRM-side hotspot (200-400ms). All V2P4 accuracy scores unchanged. Next bottleneck is ML Python server (image fetch + model inference). See triage §17. |

@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V2P7 decision-layer integration)
+**Last updated:** 2026-04-20 (V2P7 decision-layer integration — polished and banked)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -1489,7 +1489,7 @@ Passed via `_cache` kwarg to `_compute_edge_features()`. No accuracy change — 
 
 ---
 
-## 19. V2P7 — Decision-Layer Integration
+## 19. V2P7 — Decision-Layer Integration (polished)
 
 **Date:** 2026-04-20
 **Phase:** V2 Phase 7 (after V2P0/V2P0.1/V2P1/V2P2/V2P3/V2P4/V2P5/V2P6)
@@ -1614,7 +1614,67 @@ Run: `node tools/v2p7_validate.js` — constructs synthetic envelopes from the b
 
 **KEEP (ACTIVE).** V2P7 gives the product a conservative, explainable, reversible way to act on banked V2 structural intelligence without becoming an opaque veto engine. Escalation fires only on multi-signal evidence; reject is effectively unreachable on current known properties but remains available for pathological cases. Clean roofs stay clean, weak roofs get honest reinforcement, steep-but-real roofs are protected from unfair demotion. The phase adds zero new persistent UI and merges cleanly into the existing `needs_review` banner flow via 7 new reason labels.
 
-### 19.10 Reopen triggers
+### 19.10 Polish pass (2026-04-20)
+
+After the first V2P7 implementation validated cleanly, a tightening pass was applied before banking.
+
+**Four refactor goals (all met):**
+1. **Explicit escalation rules.** Six named triggers replace the old flat "if any of X" list. Each trigger has `id`, `detail`, and a canonical `reason` code — easy to read in debug and explain to users.
+2. **Support vs risk separation.** `v2p7ScoreSupport()` is now pure positive evidence (weighted average of V2P4-synthesized scores; no penalties baked in). `v2p7ScoreRisk()` is pure negative evidence (tagged driver additions). Contradiction and uncertainty penalties are split out as their own debug line items rather than being buried inside support.
+3. **Complex-roof dampener.** A conservative risk-only reduction (up to 0.15) fires when the roof has strong main body + healthy story + zero contradictions + no ground issues + not fragmented + ≥3 faces. Never reduces support. Prevents over-escalation on complex-but-real roofs like 583 Westford and 175 Warwick.
+4. **Reason name cleanup.** Migrated to short machine-readable names (`v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_structural_contradiction`, `v2_ground_suppression_material`, `v2_clean_structural_story`). Legacy label entries preserved in client `_REVIEW_REASON_LABELS` so old stored envelopes still render correctly.
+
+**Explicit triggers:**
+
+| Trigger ID | When it fires |
+|---|---|
+| `low_consistency_with_uncertainty` | whole_roof < 0.55 AND uncertainty > 0.55 |
+| `contradictions_with_weak_pairing` | contradictions ≥ 2 AND structural < 0.50 AND main_plane_count ≥ 2 |
+| `fragmented_main_with_weak_relationships` | fragmented_main_roof AND relationship < 0.50 AND main_rel_count ≥ 2 |
+| `external_risk_with_weak_story` | ≥2 existing V1/P8/P9 reasons AND whole_roof < 0.45 |
+| `main_body_weak` | main_body < 0.40 AND face_count ≥ 2 |
+| `aggregate_risk_elevated` | effective_risk ≥ 0.45 AND net_score < 0.25 (numeric safety net) |
+
+**Dampener scoring:** When qualified, dampener = `0.15 × max(0.5, strength_bonus)` where `strength_bonus = ((main_body − 0.70) + (story − 0.65)) / 0.40` clamped to [0, 1]. Clamped to max 0.15. Never applies when any hard-risk signal is present.
+
+**Support weights (sum = 1.0):** whole_roof 0.35, story 0.25, main_body 0.20, structural 0.10, relationship 0.10. Pure weighted average — no penalties.
+
+**Penalties applied to final score (not to support):** `contradiction_penalty = 0.08 × min(contradictions, 3)` capped at 0.24; `uncertainty_penalty` linear from uncertainty ∈ [0.50, 1.0] to [0, 0.15].
+
+**Final composite:** `clamp01(0.5 + 0.5 × (support − effective_risk − contradiction_penalty − uncertainty_penalty))`.
+
+### 19.11 Polish validation (11 cases)
+
+Run: `node tools/v2p7_validate.js` (7 banked properties + 726 School St + 583 Westford St + 2 hypothetical).
+
+| Property | Bucket | Prior | Final | Change | Support | Risk | Eff | Dampener | Final | Triggers | Reasons |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---|---|
+| 15 Veteran Rd | clean_gable | auto_accept | auto_accept | no | 0.96 | 0.00 | 0.00 | **0.15** | 0.98 | — | (clean_structural_story) |
+| 726 School St | clean_simple | auto_accept | auto_accept | no | 0.90 | 0.00 | 0.00 | 0.00 | 0.95 | — | (clean_structural_story) |
+| 20 Meadow Dr | improved_simple | needs_review | needs_review | no | 0.78 | 0.10 | 0.10 | 0.00 | 0.84 | — | v2_ground_suppression_material |
+| 225 Gibson St | complex_corrected | needs_review | needs_review | no | 0.69 | 0.00 | 0.00 | **0.08** | 0.85 | — | — |
+| 175 Warwick | steep_real | needs_review | needs_review | no | 0.81 | 0.00 | 0.00 | **0.14** | 0.91 | — | — |
+| Lawrence | improved_complex | needs_review | needs_review | no | 0.74 | 0.00 | 0.00 | 0.00 | 0.82 | — | — |
+| 583 Westford St | complex_coherent | auto_accept | auto_accept | no | 0.70 | 0.00 | 0.00 | **0.08** | 0.85 | — | — |
+| 13 Richardson St | single_ground | needs_review | needs_review | no | 0.08 | 0.40 | 0.40 | 0.00 | 0.34 | external_risk_with_weak_story | v2_low_consistency |
+| 11 Ash Road | target_strip | needs_review | needs_review | no | 0.40 | 0.30 | 0.30 | 0.00 | 0.55 | — | v2_low_consistency |
+| Hypothetical fragmented | synthetic_fragmented | auto_accept | **needs_review** | **yes** | 0.38 | 1.00 | 1.00 | 0.00 | 0.08 | 5 triggers | 6 reasons merged |
+| Hypothetical pathological | synthetic_extreme | needs_review | needs_review | no | 0.07 | 0.45 | 0.45 | 0.00 | 0.25 | 3 triggers (reinforce) | v2_low_consistency, v2_high_uncertainty |
+
+**All 11/11 pass.** Behavior is at least as safe as the pre-polish version but more interpretable:
+
+1. **Dampener protects complex-but-real roofs.** 583 Westford (5 faces, multi-section but coherent main body) now gets a −0.08 dampener instead of climbing toward escalation. 175 Warwick (steep_real) gets −0.14. 225 Gibson gets −0.08. 15 Veteran gets the full −0.15 cap.
+2. **External risk trigger (T4) fires readably on 13 Richardson.** The reinforcement note now says `external_risk_with_weak_story` instead of a score-only reasoning chain — easier to explain.
+3. **Penalties are broken out.** Lawrence shows `contra_pen=0.08 unc_pen=0.02` explicitly, instead of those being hidden inside the support score.
+4. **Reasons are clean and short.** `v2_low_consistency` is easier to grep and explain than `v2_low_whole_roof_consistency`; same for the other six renamed codes.
+5. **Hypothetical fragmented still escalates.** 5 explicit triggers fire simultaneously (including the aggregate safety net), 6 V2 reasons added to envelope.
+6. **Reject remains unreachable.** Hypothetical pathological still has only 0 contradictions, which blocks the reject gate by design.
+
+### 19.12 Polish verdict
+
+**BANK.** The polish pass satisfies all four tightening goals (explicit escalation rules, support/risk separation, complex-roof dampener, clean reason names) without increasing false positives or making V2 more aggressive. Clean roofs remain clean (2 clean-profile cases both score > 0.95). Complex-but-coherent roofs are now actively protected by the dampener. Steep-but-real roofs score in the 0.85–0.91 range. Weak roofs get short, readable reason codes. Reject remains rare and evidence-heavy. No banked phase needed reopening during the polish.
+
+### 19.13 Reopen triggers
 
 - False positive escalation on a clean property
 - False reject on any property

@@ -16396,12 +16396,19 @@ app.get("/design", (req, res) => {
           p9_low_match_confidence: 'ML faces match Google Solar with low confidence',
           v2p0_ground_surface_detected: 'Ground-like surface detected (low elevation, flat, large area)',
           v2p0_ground_surface_suppressed: 'Ground-like elongated surface removed from build',
+          v2_low_consistency: 'Overall roof structure assessment is weak',
+          v2_fragmented_main_body: 'Main roof body is fragmented or unclear',
+          v2_high_uncertainty: 'High structural uncertainty on main roof faces',
+          v2_weak_pair_coverage: 'Main roof planes do not form strong mirrored pairs',
+          v2_relationships_uncertain: 'Roof edge relationships (ridge/hip/valley) are mostly uncertain',
+          v2_ground_suppression_material: 'Material ground-level surface removed from build',
+          v2_structural_contradiction: 'Structural signals disagree about roof interpretation',
+          // Legacy aliases preserved for any envelope generated before V2P7 polish.
           v2_low_whole_roof_consistency: 'Overall roof structure assessment is weak',
           v2_fragmented_main_roof: 'Main roof body is fragmented or unclear',
           v2_high_main_face_uncertainty: 'High structural uncertainty on main roof faces',
           v2_weak_structural_pairing: 'Main roof planes do not form strong mirrored pairs',
           v2_relationships_mostly_uncertain: 'Roof edge relationships (ridge/hip/valley) are mostly uncertain',
-          v2_ground_suppression_material: 'Material ground-level surface removed from build',
           v2_contradictory_structural_story: 'Structural signals disagree about roof interpretation'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
@@ -26105,25 +26112,60 @@ function wholeRoofConsistencyAssessment(faces, v2p0, v2p1, v2p2, v2p3) {
 
 // ── V2P7: Decision-layer integration ───────────────────────────────────────
 // Lets banked V2P0–V2P4 signals influence final auto_build_status in a
-// conservative, explainable, reversible way. Debug-heavy; thresholds centralized.
-const V2P7_WHOLE_ROOF_LOW = 0.50;
-const V2P7_WHOLE_ROOF_STRONG = 0.85;
-const V2P7_WHOLE_ROOF_REJECT_FLOOR = 0.20;
+// conservative, explainable, reversible way. Four moving parts:
+//   1. v2p7ScoreSupport()       — pure positive evidence (0..1)
+//   2. v2p7ScoreRisk()          — pure negative evidence (0..1) + drivers
+//   3. v2p7ComputeDampener()    — small risk reduction on complex-but-real roofs
+//   4. v2p7BuildTriggers()      — explicit readable escalation triggers
+// Status mutation only when an explicit trigger fires OR (for reject) when a
+// strict multi-signal rule agrees with existing V1/P8/P9 risk.
+
+// Consistency / story thresholds.
+const V2P7_CONSISTENCY_LOW = 0.50;
+const V2P7_CONSISTENCY_STRONG = 0.85;
+const V2P7_CONSISTENCY_REJECT_FLOOR = 0.20;
+const V2P7_STORY_STRONG = 0.75;
+const V2P7_STORY_HEALTHY = 0.65;
+const V2P7_STORY_REJECT_FLOOR = 0.15;
+// Per-phase thresholds.
 const V2P7_MAIN_COHERENCE_LOW = 0.40;
-const V2P7_MAIN_COHERENCE_STRONG = 0.75;
+const V2P7_MAIN_COHERENCE_STRONG = 0.70;
+const V2P7_MAIN_BODY_HEALTHY = 0.70;
 const V2P7_REL_COHERENCE_LOW = 0.40;
+const V2P7_REL_COHERENCE_SOFT = 0.50;
 const V2P7_STRUCT_COHERENCE_LOW = 0.40;
+const V2P7_STRUCT_COHERENCE_SOFT = 0.50;
 const V2P7_UNCERTAINTY_HIGH = 0.60;
-const V2P7_DOMINANT_STORY_STRONG = 0.75;
-const V2P7_DOMINANT_STORY_REJECT_FLOOR = 0.15;
+const V2P7_UNCERTAINTY_MODERATE = 0.50;
+// Escalation / reject gates.
 const V2P7_CONTRADICTION_ESCALATE_COUNT = 2;
 const V2P7_CONTRADICTION_REJECT_COUNT = 2;
-const V2P7_SUPPORT_W_CONSISTENCY = 0.6;
-const V2P7_SUPPORT_W_STORY = 0.4;
-const V2P7_SUPPORT_PENALTY_PER_CONTRADICTION = 0.10;
+const V2P7_EXTERNAL_RISK_MIN_REASONS = 2;
+const V2P7_EXTERNAL_RISK_WHOLE_ROOF_CEIL = 0.45;
 const V2P7_RISK_ESCALATE_THRESHOLD = 0.45;
 const V2P7_RISK_REJECT_THRESHOLD = 0.70;
 const V2P7_REJECT_MIN_PRIOR_REASONS = 3;
+// Support score weights.
+const V2P7_SUPPORT_W_CONSISTENCY = 0.35;
+const V2P7_SUPPORT_W_STORY = 0.25;
+const V2P7_SUPPORT_W_MAIN_BODY = 0.20;
+const V2P7_SUPPORT_W_STRUCTURAL = 0.10;
+const V2P7_SUPPORT_W_RELATIONSHIP = 0.10;
+// Penalties applied to support only.
+const V2P7_CONTRADICTION_PENALTY_STEP = 0.08;
+const V2P7_CONTRADICTION_PENALTY_MAX = 0.24;
+const V2P7_UNCERTAINTY_PENALTY_MAX = 0.15;
+// Complex-roof dampener (reduces risk only, never affects support).
+const V2P7_DAMPENER_MAX = 0.15;
+// Reason codes used in server logic (short, machine-readable).
+const V2P7_REASON_LOW_CONSISTENCY = 'v2_low_consistency';
+const V2P7_REASON_HIGH_UNCERTAINTY = 'v2_high_uncertainty';
+const V2P7_REASON_STRUCTURAL_CONTRADICTION = 'v2_structural_contradiction';
+const V2P7_REASON_FRAGMENTED_MAIN_BODY = 'v2_fragmented_main_body';
+const V2P7_REASON_WEAK_PAIR_COVERAGE = 'v2_weak_pair_coverage';
+const V2P7_REASON_RELATIONSHIPS_UNCERTAIN = 'v2_relationships_uncertain';
+const V2P7_REASON_GROUND_SUPPRESSION = 'v2_ground_suppression_material';
+const V2P7_REASON_CLEAN_STORY = 'v2_clean_structural_story';
 
 function v2p7CollectInputs(envelope) {
   const cr = (envelope && envelope.crm_result) || {};
@@ -26135,10 +26177,19 @@ function v2p7CollectInputs(envelope) {
   const v2p3 = md.v2p3_roof_relationships || null;
   const v2p4 = md.v2p4_whole_roof_consistency || null;
 
+  const priorReasons = Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons.slice() : [];
+  const externalRiskReasons = priorReasons.filter(r =>
+    r === 'build_tilt_quality_low' || r === 'google_solar_pitch_mismatch' ||
+    r === 'google_solar_pitch_corrected' || r === 'p9_build_unmatched' ||
+    r === 'p9_low_match_fraction' || r === 'p9_low_match_confidence' ||
+    r === 'crm_soft_gate_applied' || r === 'usable_gate_low'
+  );
+
   return {
     faceCount: faces.length,
     priorStatus: envelope.auto_build_status || 'unknown',
-    priorReasons: Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons.slice() : [],
+    priorReasons,
+    externalRiskReasonCount: externalRiskReasons.length,
     wholeRoof: v2p4 ? (v2p4.whole_roof_consistency_score || 0) : null,
     story: v2p4 ? (v2p4.dominant_story_strength || 0) : null,
     mainBody: v2p4 ? (v2p4.main_body_score || 0) : (v2p2 ? (v2p2.main_roof_coherence_score || 0) : null),
@@ -26164,22 +26215,27 @@ function v2p7CollectInputs(envelope) {
   };
 }
 
+// Pure positive evidence — weighted average of per-phase coherence scores.
+// No penalties baked in; contradiction/uncertainty penalties are applied separately.
 function v2p7ScoreSupport(inp) {
   if (!inp.hasV2p4 || inp.faceCount === 0) return 0;
-  const whole = inp.wholeRoof || 0;
-  const story = inp.story || 0;
-  const penalty = V2P7_SUPPORT_PENALTY_PER_CONTRADICTION * Math.min(inp.contradictionFlags.length, 3);
-  const raw = whole * V2P7_SUPPORT_W_CONSISTENCY + story * V2P7_SUPPORT_W_STORY - penalty;
+  const raw =
+    (inp.wholeRoof || 0) * V2P7_SUPPORT_W_CONSISTENCY
+    + (inp.story || 0) * V2P7_SUPPORT_W_STORY
+    + (inp.mainBody || 0) * V2P7_SUPPORT_W_MAIN_BODY
+    + (inp.structural || 0) * V2P7_SUPPORT_W_STRUCTURAL
+    + (inp.relationship || 0) * V2P7_SUPPORT_W_RELATIONSHIP;
   return _r2(Math.max(0, Math.min(1, raw)));
 }
 
+// Pure negative evidence — explicit driver additions, each with a short tag.
 function v2p7ScoreRisk(inp) {
   if (!inp.hasV2p4 || inp.faceCount === 0) return { risk: 0, drivers: [] };
   let risk = 0;
   const drivers = [];
 
-  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) {
-    risk += 0.30; drivers.push('whole_roof_below_' + V2P7_WHOLE_ROOF_LOW);
+  if ((inp.wholeRoof || 0) < V2P7_CONSISTENCY_LOW) {
+    risk += 0.30; drivers.push('whole_roof_below_' + V2P7_CONSISTENCY_LOW);
   }
   if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) {
     risk += 0.20; drivers.push('main_body_below_' + V2P7_MAIN_COHERENCE_LOW);
@@ -26189,9 +26245,6 @@ function v2p7ScoreRisk(inp) {
   }
   if ((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) {
     risk += 0.10; drivers.push('structural_below_' + V2P7_STRUCT_COHERENCE_LOW);
-  }
-  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH) {
-    risk += 0.10; drivers.push('uncertainty_above_' + V2P7_UNCERTAINTY_HIGH);
   }
   if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) {
     risk += 0.15; drivers.push('contradictions_' + inp.contradictionFlags.length);
@@ -26212,73 +26265,164 @@ function v2p7ScoreRisk(inp) {
   return { risk: _r2(Math.max(0, Math.min(1, risk))), drivers };
 }
 
-function v2p7DeriveReasons(inp) {
-  const reasons = [];
-  const notes = [];
+// Explicit penalties kept separate from support/risk so debug shows each lever.
+function v2p7ComputeContradictionPenalty(inp) {
+  const step = V2P7_CONTRADICTION_PENALTY_STEP * Math.min(inp.contradictionFlags.length, 3);
+  return _r2(Math.min(V2P7_CONTRADICTION_PENALTY_MAX, step));
+}
 
-  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) {
-    reasons.push('v2_low_whole_roof_consistency');
+function v2p7ComputeUncertaintyPenalty(inp) {
+  const u = inp.uncertainty || 0;
+  if (u <= V2P7_UNCERTAINTY_MODERATE) return 0;
+  // Linear from UNCERTAINTY_MODERATE..1.0 → 0..PENALTY_MAX.
+  const span = 1 - V2P7_UNCERTAINTY_MODERATE;
+  const fraction = Math.min(1, (u - V2P7_UNCERTAINTY_MODERATE) / span);
+  return _r2(fraction * V2P7_UNCERTAINTY_PENALTY_MAX);
+}
+
+// Complex-roof dampener: small risk reduction when the roof is complex but the
+// main body + story remain coherent. Never reduces support. Never fires when
+// any hard-risk signal (ground, contradictions, fragmented) is present.
+function v2p7ComputeDampener(inp) {
+  if (!inp.hasV2p4) return { dampener: 0, applied: false, reasons: [] };
+  const qualifies =
+    (inp.mainBody || 0) >= V2P7_MAIN_BODY_HEALTHY
+    && (inp.story || 0) >= V2P7_STORY_HEALTHY
+    && inp.contradictionFlags.length === 0
+    && inp.hardSuppressedCount === 0
+    && inp.groundLikeCount === 0
+    && !inp.fragmentedMainRoof
+    && inp.faceCount >= 3;
+
+  if (!qualifies) return { dampener: 0, applied: false, reasons: [] };
+
+  const reasons = ['strong_main_body', 'healthy_story', 'no_contradictions'];
+  // Scale: strong body + story = ~0.15 cap; weaker quals = proportionally less.
+  const strengthBonus = Math.min(1, ((inp.mainBody - V2P7_MAIN_BODY_HEALTHY) + (inp.story - V2P7_STORY_HEALTHY)) / 0.4);
+  const dampener = _r2(V2P7_DAMPENER_MAX * Math.max(0.5, strengthBonus));
+  return { dampener, applied: true, reasons };
+}
+
+// Explicit, named escalation triggers. Each function returns {fires, detail} if
+// it applies, otherwise null. Triggers are evaluated independently; any one
+// firing is sufficient to propose needs_review. The aggregate_risk trigger is
+// retained as a numeric safety net so unusual combinations still escalate.
+function v2p7BuildTriggers(inp, support, riskObj, penalties, dampener) {
+  const triggers = [];
+
+  // T1: low consistency AND high uncertainty together.
+  if ((inp.wholeRoof || 0) < V2P7_CONSISTENCY_LOW + 0.05
+      && (inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH - 0.05) {
+    triggers.push({
+      id: 'low_consistency_with_uncertainty',
+      detail: `whole_roof=${inp.wholeRoof} uncertainty=${inp.uncertainty}`,
+      reason: V2P7_REASON_LOW_CONSISTENCY,
+    });
   }
+
+  // T2: contradictions present AND structural pairing weak.
+  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT
+      && (inp.structural || 0) < V2P7_STRUCT_COHERENCE_SOFT
+      && inp.mainPlaneCount >= 2) {
+    triggers.push({
+      id: 'contradictions_with_weak_pairing',
+      detail: `contradictions=${inp.contradictionFlags.length} structural=${inp.structural}`,
+      reason: V2P7_REASON_STRUCTURAL_CONTRADICTION,
+    });
+  }
+
+  // T3: fragmented main body AND weak relationship coherence.
+  if (inp.fragmentedMainRoof
+      && (inp.relationship || 0) < V2P7_REL_COHERENCE_SOFT
+      && inp.mainRelCount >= 2) {
+    triggers.push({
+      id: 'fragmented_main_with_weak_relationships',
+      detail: `fragmented=true relationship=${inp.relationship}`,
+      reason: V2P7_REASON_FRAGMENTED_MAIN_BODY,
+    });
+  }
+
+  // T4: existing V1/P8/P9 risk signals AND weak V2 whole-roof story.
+  if (inp.externalRiskReasonCount >= V2P7_EXTERNAL_RISK_MIN_REASONS
+      && (inp.wholeRoof || 0) < V2P7_EXTERNAL_RISK_WHOLE_ROOF_CEIL) {
+    triggers.push({
+      id: 'external_risk_with_weak_story',
+      detail: `external_reasons=${inp.externalRiskReasonCount} whole_roof=${inp.wholeRoof}`,
+      reason: V2P7_REASON_LOW_CONSISTENCY,
+    });
+  }
+
+  // T5: main body weak AND ≥2 faces. Direct V2P2/P4 red flag.
   if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) {
-    reasons.push('v2_fragmented_main_roof');
-  } else if (inp.fragmentedMainRoof && inp.faceCount >= 2) {
-    reasons.push('v2_fragmented_main_roof');
+    triggers.push({
+      id: 'main_body_weak',
+      detail: `main_body=${inp.mainBody} face_count=${inp.faceCount}`,
+      reason: V2P7_REASON_FRAGMENTED_MAIN_BODY,
+    });
   }
-  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH) {
-    reasons.push('v2_high_main_face_uncertainty');
+
+  // T6: numeric safety net — support minus effective risk/penalty crosses gate.
+  // Dampener REDUCES effective risk on complex-but-real roofs so this trigger
+  // does not over-fire on valid multi-section builds.
+  const effectiveRisk = Math.max(0, riskObj.risk - dampener.dampener);
+  const netScore = support - effectiveRisk - penalties.contradiction - penalties.uncertainty;
+  if (effectiveRisk >= V2P7_RISK_ESCALATE_THRESHOLD && netScore < 0.25) {
+    triggers.push({
+      id: 'aggregate_risk_elevated',
+      detail: `risk=${_r2(effectiveRisk)} support=${support} net=${_r2(netScore)}`,
+      reason: V2P7_REASON_LOW_CONSISTENCY,
+    });
   }
-  if ((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) {
-    reasons.push('v2_weak_structural_pairing');
-  }
-  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 3) {
-    reasons.push('v2_relationships_mostly_uncertain');
-  }
-  if (inp.hardSuppressedCount > 0) {
-    reasons.push('v2_ground_suppression_material');
-  }
-  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) {
-    reasons.push('v2_contradictory_structural_story');
+
+  return { triggers, effectiveRisk: _r2(effectiveRisk), netScore: _r2(netScore) };
+}
+
+function v2p7DeriveReasons(inp, triggers) {
+  const reasons = [];
+  // Always include a reason for each driver that independently qualifies,
+  // regardless of whether a trigger fired — keeps debug self-describing.
+  if ((inp.wholeRoof || 0) < V2P7_CONSISTENCY_LOW) reasons.push(V2P7_REASON_LOW_CONSISTENCY);
+  if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) reasons.push(V2P7_REASON_FRAGMENTED_MAIN_BODY);
+  else if (inp.fragmentedMainRoof && inp.faceCount >= 2) reasons.push(V2P7_REASON_FRAGMENTED_MAIN_BODY);
+  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH) reasons.push(V2P7_REASON_HIGH_UNCERTAINTY);
+  if ((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) reasons.push(V2P7_REASON_WEAK_PAIR_COVERAGE);
+  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 3) reasons.push(V2P7_REASON_RELATIONSHIPS_UNCERTAIN);
+  if (inp.hardSuppressedCount > 0) reasons.push(V2P7_REASON_GROUND_SUPPRESSION);
+  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) reasons.push(V2P7_REASON_STRUCTURAL_CONTRADICTION);
+
+  // Also ensure each trigger's own reason is present (in case a driver missed).
+  for (const t of triggers) {
+    if (t.reason && !reasons.includes(t.reason)) reasons.push(t.reason);
   }
 
   const cleanStory = inp.hasV2p4
-    && (inp.wholeRoof || 0) >= V2P7_WHOLE_ROOF_STRONG
+    && (inp.wholeRoof || 0) >= V2P7_CONSISTENCY_STRONG
     && inp.contradictionFlags.length === 0
     && inp.wholeRoofWarnings.length === 0
     && (inp.mainBody || 0) >= V2P7_MAIN_COHERENCE_STRONG
-    && (inp.story || 0) >= V2P7_DOMINANT_STORY_STRONG;
+    && (inp.story || 0) >= V2P7_STORY_STRONG;
 
-  if (cleanStory) {
-    notes.push('v2_clean_structural_story');
-  }
-
-  return { reasons: Array.from(new Set(reasons)), notes, cleanStory };
+  return { reasons: Array.from(new Set(reasons)), cleanStory };
 }
 
-function v2p7IntegrateFinalStatus(inp, support, riskObj, derived) {
+function v2p7IntegrateFinalStatus(inp, support, riskObj, dampener, penalties, triggers, derived) {
   const prior = inp.priorStatus;
   let final = prior;
   let escalationApplied = false;
-  let deescalationApplied = false;
   let rejectApplied = false;
   const decisionNotes = [];
 
   if (!inp.hasV2p4 || inp.faceCount === 0) {
-    decisionNotes.push('v2p7_no_v2p4_signal_available_decision_unchanged');
-    return { finalStatus: final, escalationApplied, deescalationApplied, rejectApplied, decisionNotes };
+    decisionNotes.push('v2p7_no_v2p4_signal_decision_unchanged');
+    return { finalStatus: final, escalationApplied, rejectApplied, decisionNotes };
   }
 
-  const escalateTriggers = [];
-  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) escalateTriggers.push('whole_roof_consistency_low');
-  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) escalateTriggers.push('contradictions_multi');
-  if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) escalateTriggers.push('main_body_weak');
-  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH && (inp.wholeRoof || 0) < 0.70) escalateTriggers.push('main_face_uncertainty_high');
-  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 3) escalateTriggers.push('relationships_uncertain');
-  if (riskObj.risk >= V2P7_RISK_ESCALATE_THRESHOLD) escalateTriggers.push('aggregate_risk_high');
-
+  // Reject remains intentionally hard to reach — requires multi-signal agreement
+  // with existing V1/P8/P9 risk.
   const rejectConditions =
     riskObj.risk >= V2P7_RISK_REJECT_THRESHOLD
-    && (inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_REJECT_FLOOR
-    && (inp.story || 0) < V2P7_DOMINANT_STORY_REJECT_FLOOR
+    && (inp.wholeRoof || 0) < V2P7_CONSISTENCY_REJECT_FLOOR
+    && (inp.story || 0) < V2P7_STORY_REJECT_FLOOR
     && inp.contradictionFlags.length >= V2P7_CONTRADICTION_REJECT_COUNT
     && inp.priorReasons.length >= V2P7_REJECT_MIN_PRIOR_REASONS
     && prior === 'needs_review'
@@ -26288,22 +26432,28 @@ function v2p7IntegrateFinalStatus(inp, support, riskObj, derived) {
     final = 'reject';
     rejectApplied = true;
     decisionNotes.push('v2p7_reject_multi_signal_agreement');
-  } else if (escalateTriggers.length > 0 && prior === 'auto_accept') {
+    return { finalStatus: final, escalationApplied, rejectApplied, decisionNotes };
+  }
+
+  const triggerIds = triggers.triggers.map(t => t.id);
+  if (triggers.triggers.length > 0 && prior === 'auto_accept') {
     final = 'needs_review';
     escalationApplied = true;
-    decisionNotes.push('v2p7_escalated_to_needs_review:' + escalateTriggers.join(','));
-  } else if (escalateTriggers.length > 0 && prior === 'needs_review') {
-    decisionNotes.push('v2p7_reinforces_needs_review:' + escalateTriggers.join(','));
+    decisionNotes.push('v2p7_escalated_to_needs_review:' + triggerIds.join(','));
+  } else if (triggers.triggers.length > 0 && prior === 'needs_review') {
+    decisionNotes.push('v2p7_reinforces_needs_review:' + triggerIds.join(','));
   } else if (derived.cleanStory && prior === 'auto_accept') {
     decisionNotes.push('v2p7_reinforces_auto_accept');
-    deescalationApplied = false;
   } else if (derived.cleanStory && prior === 'needs_review') {
     decisionNotes.push('v2p7_clean_story_but_prior_risk_preserved');
   } else {
     decisionNotes.push('v2p7_no_change');
   }
+  if (dampener.applied) {
+    decisionNotes.push('v2p7_complexity_dampener_applied:-' + dampener.dampener);
+  }
 
-  return { finalStatus: final, escalationApplied, deescalationApplied, rejectApplied, decisionNotes };
+  return { finalStatus: final, escalationApplied, rejectApplied, decisionNotes };
 }
 
 function v2p7DecisionIntegration(envelope) {
@@ -26313,44 +26463,61 @@ function v2p7DecisionIntegration(envelope) {
       v2_decision_integration_applied: false,
       prior_status: inp.priorStatus,
       final_status: inp.priorStatus,
-      v2_decision_score: 0,
+      decision_change_applied: false,
+      support_score: 0,
+      risk_score: 0,
+      contradiction_penalty: 0,
+      uncertainty_penalty: 0,
+      complexity_dampener: 0,
+      final_v2_decision_score: 0,
+      explicit_escalation_triggers: [],
       v2_decision_reasons: [],
       v2_decision_notes: ['v2p7_skipped_zero_faces'],
       v2_supporting_signals: {},
       v2_risk_signals: {},
-      decision_change_applied: false,
     };
   }
 
   const support = v2p7ScoreSupport(inp);
   const riskObj = v2p7ScoreRisk(inp);
-  const derived = v2p7DeriveReasons(inp);
-  const integrated = v2p7IntegrateFinalStatus(inp, support, riskObj, derived);
+  const contradictionPenalty = v2p7ComputeContradictionPenalty(inp);
+  const uncertaintyPenalty = v2p7ComputeUncertaintyPenalty(inp);
+  const dampener = v2p7ComputeDampener(inp);
+  const penalties = { contradiction: contradictionPenalty, uncertainty: uncertaintyPenalty };
+  const triggersPack = v2p7BuildTriggers(inp, support, riskObj, penalties, dampener);
+  const derived = v2p7DeriveReasons(inp, triggersPack.triggers);
+  const integrated = v2p7IntegrateFinalStatus(inp, support, riskObj, dampener, penalties, triggersPack, derived);
 
-  const decisionScore = _r2(Math.max(0, Math.min(1, 0.5 + 0.5 * (support - riskObj.risk))));
-  const contradictionPenalty = _r2(Math.min(0.3, V2P7_SUPPORT_PENALTY_PER_CONTRADICTION * Math.min(inp.contradictionFlags.length, 3)));
-  const uncertaintyPenalty = _r2((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH ? 0.10 : 0);
+  // Final composite (0..1) — readable single-number summary. Support on one
+  // side; effective risk + penalties on the other, offset by the dampener.
+  const effectiveRisk = triggersPack.effectiveRisk;
+  const finalScore = _r2(Math.max(0, Math.min(1,
+    0.5 + 0.5 * (support - effectiveRisk - contradictionPenalty - uncertaintyPenalty)
+  )));
+
+  const decisionReasons = derived.reasons;
+  const decisionNotes = integrated.decisionNotes.slice();
+  if (derived.cleanStory) decisionNotes.push(V2P7_REASON_CLEAN_STORY);
 
   return {
     v2_decision_integration_applied: inp.hasV2p4,
     prior_status: inp.priorStatus,
     final_status: integrated.finalStatus,
-    v2_decision_score: decisionScore,
-    confidence_support_score: support,
-    structural_risk_score: _r2(
-      (((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) ? 0.4 : 0)
-      + (((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) ? 0.3 : 0)
-      + (((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 2) ? 0.3 : 0)
-    ),
-    whole_roof_risk_score: _r2((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW ? (V2P7_WHOLE_ROOF_LOW - (inp.wholeRoof || 0)) / V2P7_WHOLE_ROOF_LOW : 0),
+    decision_change_applied: integrated.finalStatus !== inp.priorStatus,
+    support_score: support,
+    risk_score: riskObj.risk,
     contradiction_penalty: contradictionPenalty,
     uncertainty_penalty: uncertaintyPenalty,
+    complexity_dampener: dampener.dampener,
+    complexity_dampener_applied: dampener.applied,
+    complexity_dampener_reasons: dampener.reasons,
+    effective_risk_score: effectiveRisk,
+    final_v2_decision_score: finalScore,
     escalation_applied: integrated.escalationApplied,
-    deescalation_applied: integrated.deescalationApplied,
     reject_applied: integrated.rejectApplied,
-    decision_change_applied: integrated.finalStatus !== inp.priorStatus,
-    v2_decision_reasons: derived.reasons,
-    v2_decision_notes: integrated.decisionNotes.concat(derived.notes),
+    explicit_escalation_triggers: triggersPack.triggers,
+    v2_decision_reasons: decisionReasons,
+    v2_decision_notes: decisionNotes,
     v2_supporting_signals: {
       whole_roof_consistency: inp.wholeRoof,
       dominant_story_strength: inp.story,
@@ -26369,28 +26536,42 @@ function v2p7DecisionIntegration(envelope) {
       ground_like_count: inp.groundLikeCount,
       hard_ground_suppressed_count: inp.hardSuppressedCount,
       fragmented_main_roof: inp.fragmentedMainRoof,
+      external_risk_reason_count: inp.externalRiskReasonCount,
       risk_drivers: riskObj.drivers,
-      aggregate_risk_score: riskObj.risk,
     },
     thresholds: {
-      whole_roof_low: V2P7_WHOLE_ROOF_LOW,
-      whole_roof_strong: V2P7_WHOLE_ROOF_STRONG,
-      whole_roof_reject_floor: V2P7_WHOLE_ROOF_REJECT_FLOOR,
+      consistency_low: V2P7_CONSISTENCY_LOW,
+      consistency_strong: V2P7_CONSISTENCY_STRONG,
+      consistency_reject_floor: V2P7_CONSISTENCY_REJECT_FLOOR,
+      story_strong: V2P7_STORY_STRONG,
+      story_healthy: V2P7_STORY_HEALTHY,
+      story_reject_floor: V2P7_STORY_REJECT_FLOOR,
       main_coherence_low: V2P7_MAIN_COHERENCE_LOW,
       main_coherence_strong: V2P7_MAIN_COHERENCE_STRONG,
+      main_body_healthy: V2P7_MAIN_BODY_HEALTHY,
       rel_coherence_low: V2P7_REL_COHERENCE_LOW,
+      rel_coherence_soft: V2P7_REL_COHERENCE_SOFT,
       struct_coherence_low: V2P7_STRUCT_COHERENCE_LOW,
+      struct_coherence_soft: V2P7_STRUCT_COHERENCE_SOFT,
       uncertainty_high: V2P7_UNCERTAINTY_HIGH,
-      dominant_story_strong: V2P7_DOMINANT_STORY_STRONG,
+      uncertainty_moderate: V2P7_UNCERTAINTY_MODERATE,
       risk_escalate: V2P7_RISK_ESCALATE_THRESHOLD,
       risk_reject: V2P7_RISK_REJECT_THRESHOLD,
       contradiction_escalate: V2P7_CONTRADICTION_ESCALATE_COUNT,
       reject_min_prior_reasons: V2P7_REJECT_MIN_PRIOR_REASONS,
+      external_risk_min_reasons: V2P7_EXTERNAL_RISK_MIN_REASONS,
+      external_risk_whole_roof_ceil: V2P7_EXTERNAL_RISK_WHOLE_ROOF_CEIL,
     },
     scoring_weights: {
       support_w_consistency: V2P7_SUPPORT_W_CONSISTENCY,
       support_w_story: V2P7_SUPPORT_W_STORY,
-      support_penalty_per_contradiction: V2P7_SUPPORT_PENALTY_PER_CONTRADICTION,
+      support_w_main_body: V2P7_SUPPORT_W_MAIN_BODY,
+      support_w_structural: V2P7_SUPPORT_W_STRUCTURAL,
+      support_w_relationship: V2P7_SUPPORT_W_RELATIONSHIP,
+      contradiction_penalty_step: V2P7_CONTRADICTION_PENALTY_STEP,
+      contradiction_penalty_max: V2P7_CONTRADICTION_PENALTY_MAX,
+      uncertainty_penalty_max: V2P7_UNCERTAINTY_PENALTY_MAX,
+      dampener_max: V2P7_DAMPENER_MAX,
     },
   };
 }
@@ -26694,9 +26875,9 @@ app.post("/api/ml/auto-build", async (req, res) => {
         md.v2p7_decision_integration = decision;
         v2p7ApplyDecision(envelope, decision);
         if (decision.decision_change_applied) {
-          console.log(`[v2p7_decision] ${decision.prior_status}→${decision.final_status} score=${decision.v2_decision_score} reasons=[${decision.v2_decision_reasons.join(',')}] support=${decision.confidence_support_score} risk=${decision.v2_risk_signals.aggregate_risk_score}`);
+          console.log(`[v2p7_decision] ${decision.prior_status}→${decision.final_status} score=${decision.final_v2_decision_score} support=${decision.support_score} risk=${decision.risk_score} (eff=${decision.effective_risk_score}) triggers=[${decision.explicit_escalation_triggers.map(t => t.id).join(',')}] reasons=[${decision.v2_decision_reasons.join(',')}]`);
         } else {
-          console.log(`[v2p7_decision] unchanged=${decision.final_status} score=${decision.v2_decision_score} support=${decision.confidence_support_score} risk=${decision.v2_risk_signals.aggregate_risk_score} notes=[${decision.v2_decision_notes.join('|')}]`);
+          console.log(`[v2p7_decision] unchanged=${decision.final_status} score=${decision.final_v2_decision_score} support=${decision.support_score} risk=${decision.risk_score} (eff=${decision.effective_risk_score}) dampener=${decision.complexity_dampener} triggers=[${decision.explicit_escalation_triggers.map(t => t.id).join(',')}] notes=[${decision.v2_decision_notes.join('|')}]`);
         }
       }
     }

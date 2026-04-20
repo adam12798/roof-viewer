@@ -4,7 +4,6 @@
 // then runs v2p7DecisionIntegration() and checks prior/final status + reasons.
 // Run: node tools/v2p7_validate.js
 
-// Extract just the V2P7 functions from server.js.
 const fs = require('fs');
 const path = require('path');
 const serverPath = path.join(__dirname, '..', 'server.js');
@@ -23,8 +22,6 @@ const v2p7Block = extractBlock(
   'const ML_ENGINE_URL_DEFAULT'
 );
 
-// Minimal _r2 helper (server.js defines it earlier).
-const ctx = { module: { exports: {} } };
 const runtime = `
   function _r2(x) { return Math.round(x * 100) / 100; }
   ${v2p7Block}
@@ -51,7 +48,6 @@ function makeEnvelope({ status, reasons, faces, v2p0, v2p1, v2p2, v2p3, v2p4 }) 
   };
 }
 
-// Helper builders (defaults match a "no warning" case).
 const v2p4 = (wr, st, mb, sp, rel, uncertainty=0, contra=[], warnings=[]) => ({
   whole_roof_consistency_score: wr,
   dominant_story_strength: st,
@@ -65,7 +61,6 @@ const v2p4 = (wr, st, mb, sp, rel, uncertainty=0, contra=[], warnings=[]) => ({
 });
 
 const FIXTURES = [
-  // 15 Veteran Rd — clean gable.
   {
     name: '15 Veteran Rd',
     bucket: 'clean_gable',
@@ -80,7 +75,6 @@ const FIXTURES = [
       v2p4: v2p4(0.96, 0.98, 0.94, 0.92, 0.99, 0.0, [], []),
     },
   },
-  // 20 Meadow Dr — improved simple; prior=needs_review via V2P0 ground suppression.
   {
     name: '20 Meadow Dr',
     bucket: 'improved_simple',
@@ -97,7 +91,6 @@ const FIXTURES = [
       v2p4: v2p4(0.73, 0.88, 0.88, 0.63, 0.65, 0.0, [], []),
     },
   },
-  // 225 Gibson St — complex corrected; prior=needs_review from P8.
   {
     name: '225 Gibson St',
     bucket: 'complex_corrected',
@@ -114,7 +107,6 @@ const FIXTURES = [
       v2p4: v2p4(0.66, 0.8, 0.77, 0.44, 0.59, 0.4, [], ['weak_pair_coverage_on_main_body']),
     },
   },
-  // 175 Warwick — steep_real; prior=needs_review from build_tilt_quality_low.
   {
     name: '175 Warwick',
     bucket: 'steep_real',
@@ -131,7 +123,6 @@ const FIXTURES = [
       v2p4: v2p4(0.80, 0.88, 0.84, 0.50, 0.88, 0.0, [], []),
     },
   },
-  // Lawrence — improved_complex; prior=needs_review from ground or tilt gate.
   {
     name: 'Lawrence',
     bucket: 'improved_complex',
@@ -148,7 +139,6 @@ const FIXTURES = [
       v2p4: v2p4(0.69, 0.80, 0.80, 0.81, 0.55, 0.55, ['high_uncertainty_on_main_faces'], []),
     },
   },
-  // 13 Richardson — ground single face; prior=needs_review from p9 + v2p0.
   {
     name: '13 Richardson St',
     bucket: 'single_ground',
@@ -165,7 +155,6 @@ const FIXTURES = [
       v2p4: v2p4(0.20, 0.04, 0.0, 0.0, 0.0, 0.0, [], ['weak_overall_consistency']),
     },
   },
-  // 11 Ash Road — target_strip; prior=needs_review from p9 + soft gate + tilt.
   {
     name: '11 Ash Road',
     bucket: 'target_strip',
@@ -182,13 +171,45 @@ const FIXTURES = [
       v2p4: v2p4(0.48, 0.47, 0.55, 0.0, 0.0, 0.0, [], []),
     },
   },
-  // HYPOTHETICAL fragmented multi-face (additional problematic case for escalation proof).
+  // Additional clean/simple roof — 726 School St (clean reference, 2 faces).
+  {
+    name: '726 School St',
+    bucket: 'clean_simple',
+    expectFinal: 'auto_accept',
+    expectChange: false,
+    env: {
+      status: 'auto_accept', reasons: [], faces: 2,
+      v2p0: { structure_like_count: 2, ground_like_count: 0, uncertain_count: 0, hard_ground_suppressed_count: 0 },
+      v2p1: { structural_coherence_score: 0.85, mirrored_pair_count: 1, structural_warnings: [], main_plane_count: 2, unpaired_main_planes: 0 },
+      v2p2: { main_roof_coherence_score: 0.88, main_roof_candidate_count: 2, main_roof_warnings: [], fragmented_main_roof: false },
+      v2p3: { roof_relationship_coherence_score: 0.92, ridge_like_count: 1, hip_like_count: 0, valley_like_count: 0, seam_like_count: 0, step_like_count: 0, uncertain_relationship_count: 0, main_relationship_count: 1, relationship_warnings: [] },
+      v2p4: v2p4(0.91, 0.93, 0.88, 0.85, 0.92, 0.0, [], []),
+    },
+  },
+  // Additional problematic/fragmented roof — 583 Westford (ugly, 5 faces, multi-section).
+  // Tests complex-but-coherent: if main body stays healthy and no contradictions,
+  // the dampener should keep this from being unnecessarily escalated.
+  {
+    name: '583 Westford St',
+    bucket: 'ugly_multisection_coherent',
+    expectFinal: 'auto_accept',
+    expectChange: false,
+    env: {
+      status: 'auto_accept', reasons: [], faces: 5,
+      v2p0: { structure_like_count: 4, ground_like_count: 0, uncertain_count: 1, hard_ground_suppressed_count: 0 },
+      v2p1: { structural_coherence_score: 0.55, mirrored_pair_count: 1, structural_warnings: ['major_plane_unpaired'], main_plane_count: 4, unpaired_main_planes: 2 },
+      v2p2: { main_roof_coherence_score: 0.75, main_roof_candidate_count: 3, main_roof_warnings: [], fragmented_main_roof: false },
+      v2p3: { roof_relationship_coherence_score: 0.60, ridge_like_count: 1, hip_like_count: 1, valley_like_count: 0, seam_like_count: 1, step_like_count: 0, uncertain_relationship_count: 3, main_relationship_count: 4, relationship_warnings: [] },
+      v2p4: v2p4(0.70, 0.75, 0.75, 0.55, 0.60, 0.45, [], []),
+    },
+  },
+  // Hypothetical fragmented — must still escalate even with the polish.
   {
     name: 'Hypothetical fragmented multi-face',
     bucket: 'synthetic_fragmented',
     expectFinal: 'needs_review',
-    expectChange: true,  // auto_accept -> needs_review escalation
-    expectReasonSubset: ['v2_low_whole_roof_consistency', 'v2_fragmented_main_roof'],
+    expectChange: true,
+    expectReasonSubset: ['v2_low_consistency', 'v2_fragmented_main_body'],
     env: {
       status: 'auto_accept',
       reasons: [],
@@ -200,11 +221,11 @@ const FIXTURES = [
       v2p4: v2p4(0.40, 0.45, 0.35, 0.30, 0.30, 0.70, ['high_uncertainty_on_main_faces', 'many_main_faces_but_low_pair_coverage'], ['weak_overall_consistency', 'fragmented_main_body_relationships']),
     },
   },
-  // HYPOTHETICAL extreme pathological (reject candidate) — verify reject remains unlikely.
+  // Hypothetical pathological — still NOT rejected by design (contradictions=0).
   {
     name: 'Hypothetical extreme pathological',
     bucket: 'synthetic_extreme',
-    expectFinal: 'needs_review',  // Should NOT reject — conservative by design
+    expectFinal: 'needs_review',
     expectChange: false,
     env: {
       status: 'needs_review',
@@ -221,7 +242,7 @@ const FIXTURES = [
 
 function fmt(n) { return n === null || n === undefined ? '—' : String(n); }
 
-console.log('V2P7 offline validation');
+console.log('V2P7 offline validation (polish pass)');
 console.log('='.repeat(80));
 
 let pass = 0;
@@ -255,9 +276,15 @@ for (const fx of FIXTURES) {
     prior: priorStatus,
     final: finalStatus,
     changed: decision.decision_change_applied,
-    score: decision.v2_decision_score,
-    support: decision.confidence_support_score,
-    risk: decision.v2_risk_signals.aggregate_risk_score,
+    score: decision.final_v2_decision_score,
+    support: decision.support_score,
+    risk: decision.risk_score,
+    effRisk: decision.effective_risk_score,
+    contraPen: decision.contradiction_penalty,
+    uncPen: decision.uncertainty_penalty,
+    damp: decision.complexity_dampener,
+    dampApplied: decision.complexity_dampener_applied,
+    triggers: (decision.explicit_escalation_triggers || []).map(t => t.id),
     reasonsAdded: finalReasons.filter(r => !priorReasons.includes(r)),
     decisionReasons: decision.v2_decision_reasons,
     notes: decision.v2_decision_notes,
@@ -272,7 +299,9 @@ for (const r of rows) {
   console.log('');
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name} [${r.bucket}]`);
   console.log(`  prior=${r.prior}  final=${r.final}  changed=${r.changed}`);
-  console.log(`  decision_score=${fmt(r.score)}  support=${fmt(r.support)}  risk=${fmt(r.risk)}`);
+  console.log(`  support=${fmt(r.support)}  risk=${fmt(r.risk)}  effRisk=${fmt(r.effRisk)}  dampener=${fmt(r.damp)}${r.dampApplied ? ' (applied)' : ''}`);
+  console.log(`  contra_pen=${fmt(r.contraPen)}  unc_pen=${fmt(r.uncPen)}  final_score=${fmt(r.score)}`);
+  console.log(`  triggers=[${r.triggers.join(',')}]`);
   console.log(`  decision_reasons=[${r.decisionReasons.join(',')}]`);
   console.log(`  reasons_added_to_envelope=[${r.reasonsAdded.join(',')}]`);
   console.log(`  notes=[${r.notes.join(' | ')}]`);
