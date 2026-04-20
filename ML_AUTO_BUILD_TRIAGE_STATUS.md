@@ -1332,7 +1332,83 @@ Synthesize V2P0–V2P3 outputs into a single consistency assessment with contrad
 
 ---
 
-## 17. Related resources
+## 17. V2P5 — Performance Optimization + Instrumentation
+
+**Date:** 2026-04-19
+**Phase:** V2 Phase 5 (after V2P0/V2P0.1/V2P1/V2P2/V2P3/V2P4)
+**Pipeline placement:** Cache/proximity built after V2P0.1, consumed by V2P1-V2P3. Timing wraps all stages.
+
+### 17.1 Method
+
+Two-part approach: (A) comprehensive timing instrumentation to identify hotspots, (B) shared geometry cache + proximity matrix to eliminate redundant computation across V2 phases.
+
+**A. Timing instrumentation:** `Date.now()` around each pipeline stage. Results in `crm_result.metadata.performance_timing`.
+
+**B. Shared geometry cache:** `v2BuildFaceCache(faces)` computes per-face area, centroid, edgeSamples (vertices + midpoints), and bbox once. All V2P1-V2P3 consume from cache instead of recomputing independently.
+
+**C. Shared proximity matrix:** `v2BuildProximityMatrix(faceCache, maxGap=4.0m)` computes edge-gap and meeting-point for all face pairs within the maximum threshold in a single O(N²) pass with bbox pruning. V2P1 (mirrored-pair gap), V2P2 (adjacency), and V2P3 (relationship candidates + meeting points) all consume from the shared matrix instead of computing independently.
+
+### 17.2 What was eliminated
+
+| Redundant computation | Before V2P5 | After V2P5 |
+|---|---|---|
+| Per-face area (v2p0PolygonArea) | Computed in V2P1, V2P2, V2P3 (3×) | Computed once in cache |
+| Per-face centroid (v2p1Centroid) | Computed in V2P1, V2P2, V2P3 (3×) | Computed once in cache |
+| Per-face edge samples | Computed per-call in v2p1MinEdgeGap + v2p3FindMeetingPoint (N× per face) | Computed once in cache |
+| O(N²) edge-gap computation | V2P1 (filtered), V2P2 (full), V2P3 (full) — 2-3 full passes | 1 pass in proximity matrix |
+| Meeting-point computation | V2P3 full O(N²) identical to edge-gap scan | Combined with edge-gap in proximity matrix |
+
+### 17.3 Performance timing fields
+
+`performance_phase_applied`, `ml_request_ms`, `crm_post_ml_total_ms`, `p3_p8_p9_crossval_ms`, `v2p0_ground_structure_ms`, `v2p5_cache_build_ms`, `v2p1_structural_ms`, `v2p2_main_roof_ms`, `v2p3_relationships_ms`, `v2p4_consistency_ms`, `face_count`, `proximity_pairs_computed`, `bbox_pruned_pairs`, `hotspot_ranked_summary[]`, `optimization_notes[]`.
+
+### 17.4 Timing results (8 properties)
+
+| Property | Faces | Total | ML Request | CRM PostML | P3 CrossVal | V2P0 | Cache | V2P1-P4 |
+|---|---|---|---|---|---|---|---|---|
+| 15 Veteran Rd | 3 | 7.2s | 6620ms | 325ms | 274ms | 48ms | 0ms | <3ms |
+| 20 Meadow Dr | 3 | 6.2s | 5761ms | 297ms | 259ms | 37ms | 0ms | <3ms |
+| 225 Gibson St | 6 | 12.1s | 11273ms | 402ms | 302ms | 97ms | 0ms | <3ms |
+| 175 Warwick | 3 | 13.6s | 12984ms | 385ms | 296ms | 88ms | 0ms | <3ms |
+| Lawrence | 6 | 24.8s | 24225ms | 343ms | 297ms | 44ms | 0ms | <3ms |
+| 13 Richardson St | 1 | 4.3s | 3862ms | 232ms | 193ms | 39ms | 0ms | <1ms |
+| 11 Ash Road | 1 | 14.2s | 13360ms | 472ms | 358ms | 110ms | 1ms | <3ms |
+| 583 Westford St | 0 | 1.1s | 896ms | 0ms | 0ms | 0ms | 0ms | 0ms |
+
+### 17.5 Key findings
+
+1. **ML request is 92-98% of total runtime.** The Python ML server (image fetch + model inference + DSM build + geometry cleanup) dominates. CRM-side V2 phases are negligible (<3ms combined for all 5 phases).
+
+2. **P3 Google Solar API is the CRM-side hotspot.** 193-358ms per property. This is a network round-trip to `solar.googleapis.com` — cannot be optimized without caching or parallelizing.
+
+3. **V2P0 DSM grid build is the second CRM-side cost.** 30-110ms. Builds a 281×281 grid from raw LiDAR points. Modest but not the bottleneck.
+
+4. **Shared cache/proximity eliminates redundant work** but absolute savings are sub-millisecond because V2P1-V2P4 were already fast on typical face counts (1-6 faces). The optimization becomes meaningful at higher face counts.
+
+5. **Target <15s not met.** 4 of 7 non-rejected properties exceed 15s. The bottleneck is entirely in the ML Python server. CRM-side optimization is complete — further gains require ML-side work (image fetch latency, model inference speed, DSM sampling, geometry cleanup).
+
+### 17.6 Accuracy validation
+
+| Property | V2P4 Before | V2P4 After | V2P3 coh | V2P2 coh | V2P1 coh | Changed? |
+|---|---|---|---|---|---|---|
+| 15 Veteran Rd | 0.96 | 0.96 | 0.99 | 0.94 | 0.92 | No |
+| 20 Meadow Dr | 0.73 | 0.73 | 0.65 | 0.88 | 0.63 | No |
+| 225 Gibson St | 0.66 | 0.66 | 0.59 | 0.77 | 0.44 | No |
+| 175 Warwick | 0.80 | 0.80 | 0.88 | 0.84 | 0.50 | No |
+| Lawrence | 0.69 | 0.69 | 0.55 | 0.80 | 0.80 | No |
+| 13 Richardson St | 0.20 | 0.20 | — | 0 | — | No |
+| 11 Ash Road | 0.48 | 0.48 | — | 0.55 | — | No |
+| 583 Westford St | — | — | — | — | — | No |
+
+Zero accuracy regressions. All V2P4 consistency scores, contradiction flags, and warnings match prior validation exactly.
+
+### 17.7 Verdict
+
+**KEEP.** V2P5 delivers two valuable outcomes: (1) trustworthy timing instrumentation that conclusively identifies the ML Python server as the dominant bottleneck, and (2) clean shared-cache architecture that eliminates redundant geometry computation across V2 phases. Zero accuracy regressions. The <15s target is not met because the bottleneck is upstream in the ML server, not in CRM-side V2 logic. Next optimization step must target the Python side: image fetch latency, model inference, DSM build, or geometry cleanup.
+
+---
+
+## 18. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

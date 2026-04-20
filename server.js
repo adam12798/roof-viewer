@@ -25057,6 +25057,77 @@ function groundStructureAssessment(lidarPoints, centerLat, centerLng, faces) {
   };
 }
 
+// ── V2P5: Shared Geometry Cache & Proximity Matrix ──────────────────────────
+
+function v2BuildFaceCache(faces) {
+  return faces.map((f, i) => {
+    const verts = f.vertices || [];
+    const area = v2p0PolygonArea(verts);
+    const centroid = verts.length >= 3 ? v2p1Centroid(verts) : { x: 0, z: 0 };
+    const edgeSamples = [];
+    for (let k = 0; k < verts.length; k++) {
+      edgeSamples.push(verts[k]);
+      const nxt = (k + 1) % verts.length;
+      edgeSamples.push({ x: (verts[k].x + verts[nxt].x) / 2, z: (verts[k].z + verts[nxt].z) / 2 });
+    }
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const v of verts) {
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+    }
+    return {
+      idx: i, area, centroid, vertices: verts,
+      pitch: f.pitch || 0, azimuth: f.azimuth || 0,
+      edgeSamples,
+      bbox: { minX, maxX, minZ, maxZ },
+    };
+  });
+}
+
+function v2BuildProximityMatrix(faceCache, maxGap) {
+  const n = faceCache.length;
+  const pairs = new Map();
+  let bboxPruned = 0;
+  for (let i = 0; i < n; i++) {
+    if (faceCache[i].vertices.length < 3) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (faceCache[j].vertices.length < 3) continue;
+      const bi = faceCache[i].bbox, bj = faceCache[j].bbox;
+      if (bi.minX - bj.maxX > maxGap || bj.minX - bi.maxX > maxGap ||
+          bi.minZ - bj.maxZ > maxGap || bj.minZ - bi.maxZ > maxGap) {
+        bboxPruned++;
+        continue;
+      }
+      const ptsA = faceCache[i].edgeSamples;
+      const ptsB = faceCache[j].edgeSamples;
+      let minD = Infinity, bestA = null, bestB = null;
+      for (const a of ptsA) {
+        for (const b of ptsB) {
+          const d = Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2);
+          if (d < minD) { minD = d; bestA = a; bestB = b; }
+        }
+      }
+      if (minD < maxGap) {
+        const meetPt = { x: (bestA.x + bestB.x) / 2, z: (bestA.z + bestB.z) / 2 };
+        pairs.set(`${i},${j}`, { gap: minD, meetPt });
+      }
+    }
+  }
+  return { pairs, bboxPruned, totalChecked: n * (n - 1) / 2 };
+}
+
+function v2ProxGap(proximity, i, j) {
+  const key = i < j ? `${i},${j}` : `${j},${i}`;
+  const entry = proximity.pairs.get(key);
+  return entry ? entry.gap : Infinity;
+}
+
+function v2ProxMeetPt(proximity, i, j) {
+  const key = i < j ? `${i},${j}` : `${j},${i}`;
+  const entry = proximity.pairs.get(key);
+  return entry ? entry.meetPt : { x: 0, z: 0 };
+}
+
 // ── V2 Phase 1: Structural Coherence / Mirrored-Pair Logic ─────────────────
 const V2P1_MAIN_PLANE_MIN_AREA_M2 = 10.0;
 const V2P1_MAIN_PLANE_MIN_AREA_FRACTION = 0.15;
@@ -25118,7 +25189,7 @@ function v2p1CollectSurvivingFaces(faces) {
   });
 }
 
-function v2p1ScoreMirroredPair(fA, fB) {
+function v2p1ScoreMirroredPair(fA, fB, preGap) {
   const expectedOpposite = (fA.azimuth + 180) % 360;
   const azOppositionError = v2p1AngularDistance(fB.azimuth, expectedOpposite);
   const pitchDelta = Math.abs(fA.pitch - fB.pitch);
@@ -25126,7 +25197,7 @@ function v2p1ScoreMirroredPair(fA, fB) {
   const centroidDist = Math.sqrt(
     (fA.centroid.x - fB.centroid.x) ** 2 + (fA.centroid.z - fB.centroid.z) ** 2
   );
-  const edgeGap = v2p1MinEdgeGap(fA.vertices, fB.vertices);
+  const edgeGap = preGap !== undefined ? preGap : v2p1MinEdgeGap(fA.vertices, fB.vertices);
 
   const azScore = Math.max(0, 1 - azOppositionError / V2P1_MAX_AZ_OPPOSITION_DEG);
   const pitchScore = Math.max(0, 1 - pitchDelta / V2P1_MAX_PITCH_DELTA_DEG);
@@ -25161,7 +25232,7 @@ function v2p1ScoreMirroredPair(fA, fB) {
   };
 }
 
-function v2p1BuildCandidatePairs(annotatedFaces) {
+function v2p1BuildCandidatePairs(annotatedFaces, proximity) {
   const pairs = [];
   for (let i = 0; i < annotatedFaces.length; i++) {
     for (let j = i + 1; j < annotatedFaces.length; j++) {
@@ -25172,7 +25243,8 @@ function v2p1BuildCandidatePairs(annotatedFaces) {
       if (Math.abs(fA.pitch - fB.pitch) > V2P1_MAX_PITCH_DELTA_DEG) continue;
       const cd = Math.sqrt((fA.centroid.x - fB.centroid.x) ** 2 + (fA.centroid.z - fB.centroid.z) ** 2);
       if (cd > V2P1_MAX_CENTROID_DIST_M) continue;
-      pairs.push(v2p1ScoreMirroredPair(fA, fB));
+      const preGap = proximity ? v2ProxGap(proximity, fA.idx, fB.idx) : undefined;
+      pairs.push(v2p1ScoreMirroredPair(fA, fB, preGap));
     }
   }
   pairs.sort((a, b) => b.pair_confidence - a.pair_confidence);
@@ -25259,10 +25331,21 @@ function v2p1SummarizeStructuralPairing(pairs, annotatedFaces) {
   };
 }
 
-function structuralCoherenceAssessment(faces) {
+function structuralCoherenceAssessment(faces, faceCache, proximity) {
   if (!faces || faces.length < 2) return null;
-  const annotated = v2p1CollectSurvivingFaces(faces);
-  const pairs = v2p1BuildCandidatePairs(annotated);
+  let annotated;
+  if (faceCache) {
+    const maxArea = Math.max(...faceCache.map(f => f.area));
+    const areaThreshold = Math.max(V2P1_MAIN_PLANE_MIN_AREA_M2, maxArea * V2P1_MAIN_PLANE_MIN_AREA_FRACTION);
+    annotated = faceCache.map(fc => ({
+      idx: fc.idx, pitch: fc.pitch, azimuth: fc.azimuth, area: fc.area,
+      vertices: fc.vertices, centroid: fc.centroid,
+      is_main_plane: fc.area >= areaThreshold && fc.vertices.length >= 3,
+    }));
+  } else {
+    annotated = v2p1CollectSurvivingFaces(faces);
+  }
+  const pairs = v2p1BuildCandidatePairs(annotated, proximity);
   return v2p1SummarizeStructuralPairing(pairs, annotated);
 }
 
@@ -25277,17 +25360,30 @@ const V2P2_W_ADJACENCY = 0.20;
 const V2P2_W_CENTRALITY = 0.10;
 const V2P2_W_REALISM = 0.15;
 
-function v2p2ComputeAdjacency(faceData) {
+function v2p2ComputeAdjacency(faceData, proximity) {
   const n = faceData.length;
   const adj = Array.from({ length: n }, () => []);
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
-      const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
-      if (gap < V2P2_ADJACENCY_GAP_M) {
-        const strong = gap < V2P2_STRONG_ADJACENCY_GAP_M;
-        adj[i].push({ idx: j, gap: _r2(gap), strong });
-        adj[j].push({ idx: i, gap: _r2(gap), strong });
+  if (proximity) {
+    for (const [key, entry] of proximity.pairs) {
+      const [si, sj] = key.split(',');
+      const i = parseInt(si), j = parseInt(sj);
+      if (i >= n || j >= n) continue;
+      if (entry.gap < V2P2_ADJACENCY_GAP_M) {
+        const strong = entry.gap < V2P2_STRONG_ADJACENCY_GAP_M;
+        adj[i].push({ idx: j, gap: _r2(entry.gap), strong });
+        adj[j].push({ idx: i, gap: _r2(entry.gap), strong });
+      }
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
+        const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
+        if (gap < V2P2_ADJACENCY_GAP_M) {
+          const strong = gap < V2P2_STRONG_ADJACENCY_GAP_M;
+          adj[i].push({ idx: j, gap: _r2(gap), strong });
+          adj[j].push({ idx: i, gap: _r2(gap), strong });
+        }
       }
     }
   }
@@ -25492,11 +25588,11 @@ function v2p2SummarizeMainRoof(faceAssessments, components, compIds, totalArea, 
   };
 }
 
-function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndices) {
+function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndices, faceCache, proximity) {
   if (!faces || faces.length === 0) return null;
 
   const n = faces.length;
-  const faceData = faces.map((f, i) => {
+  const faceData = faceCache || faces.map((f, i) => {
     const verts = f.vertices || [];
     return {
       idx: i,
@@ -25523,7 +25619,6 @@ function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndice
   }
   const extent = Math.max(maxX - minX, maxZ - minZ, 1);
 
-  // Map surviving face indices back to original V2P0 face assessments
   let v2p0Mapped = null;
   if (v2p0Data && v2p0Data.face_assessments) {
     const totalOrig = v2p0Data.total_faces || v2p0Data.face_assessments.length;
@@ -25539,7 +25634,7 @@ function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndice
     }
   }
 
-  const adj = v2p2ComputeAdjacency(faceData);
+  const adj = v2p2ComputeAdjacency(faceData, proximity);
   const scored = v2p2ScoreFaces(faceData, adj, totalArea, maxArea, meanCx, meanCz, extent, v2p1Data, v2p0Mapped);
 
   const { components, compIds } = v2p2BuildComponents(n, adj);
@@ -25684,9 +25779,9 @@ function v2p3ClassifyRelationship(azRel, pitchDelta, edgeGap, convexHint) {
   return { relType, confidence, reasons };
 }
 
-function v2p3CollectCandidatePairs(faces, v2p2Data) {
+function v2p3CollectCandidatePairs(faces, v2p2Data, faceCache, proximity) {
   const n = faces.length;
-  const faceData = faces.map((f, i) => {
+  const faceData = faceCache || faces.map((f, i) => {
     const verts = f.vertices || [];
     return {
       idx: i, area: v2p0PolygonArea(verts),
@@ -25701,23 +25796,24 @@ function v2p3CollectCandidatePairs(faces, v2p2Data) {
   }
 
   const relationships = [];
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
-      const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
-      if (gap >= V2P3_CANDIDATE_GAP_M) continue;
+
+  if (proximity) {
+    for (const [key, entry] of proximity.pairs) {
+      const [si, sj] = key.split(',');
+      const i = parseInt(si), j = parseInt(sj);
+      if (i >= n || j >= n) continue;
+      if (entry.gap >= V2P3_CANDIDATE_GAP_M) continue;
 
       const fA = faceData[i], fB = faceData[j];
       const azRel = v2p3AzimuthRelationship(fA.azimuth, fB.azimuth);
       const pitchDelta = Math.abs(fA.pitch - fB.pitch);
-      const meetPt = v2p3FindMeetingPoint(fA.vertices, fB.vertices);
-      const convexHint = v2p3ConvexityHint(fA, fB, meetPt);
+      const convexHint = v2p3ConvexityHint(fA, fB, entry.meetPt);
       const clsA = v2p2Cls[i] || 'uncertain';
       const clsB = v2p2Cls[j] || 'uncertain';
       const isMainRelevant = clsA === 'main_roof_candidate' || clsB === 'main_roof_candidate';
       const bothMain = clsA === 'main_roof_candidate' && clsB === 'main_roof_candidate';
 
-      const { relType, confidence, reasons } = v2p3ClassifyRelationship(azRel, pitchDelta, gap, convexHint);
+      const { relType, confidence, reasons } = v2p3ClassifyRelationship(azRel, pitchDelta, entry.gap, convexHint);
 
       relationships.push({
         face_a_idx: i, face_b_idx: j,
@@ -25728,14 +25824,52 @@ function v2p3CollectCandidatePairs(faces, v2p2Data) {
         azimuth_opposition_error: azRel.opposition_error,
         pitch_a: _r2(fA.pitch), pitch_b: _r2(fB.pitch),
         pitch_delta: _r2(pitchDelta),
-        edge_gap_m: _r2(gap),
-        shared_or_near_edge_score: _r2(Math.max(0, 1 - gap / V2P3_CANDIDATE_GAP_M)),
+        edge_gap_m: _r2(entry.gap),
+        shared_or_near_edge_score: _r2(Math.max(0, 1 - entry.gap / V2P3_CANDIDATE_GAP_M)),
         convexity_hint: convexHint,
         relationship_confidence: confidence,
         relationship_type: relType,
         relationship_reasons: reasons,
         main_secondary_pattern: `${clsA.replace('_roof_candidate', '').replace('_candidate', '')}/${clsB.replace('_roof_candidate', '').replace('_candidate', '')}`,
       });
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
+        const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
+        if (gap >= V2P3_CANDIDATE_GAP_M) continue;
+
+        const fA = faceData[i], fB = faceData[j];
+        const azRel = v2p3AzimuthRelationship(fA.azimuth, fB.azimuth);
+        const pitchDelta = Math.abs(fA.pitch - fB.pitch);
+        const meetPt = v2p3FindMeetingPoint(fA.vertices, fB.vertices);
+        const convexHint = v2p3ConvexityHint(fA, fB, meetPt);
+        const clsA = v2p2Cls[i] || 'uncertain';
+        const clsB = v2p2Cls[j] || 'uncertain';
+        const isMainRelevant = clsA === 'main_roof_candidate' || clsB === 'main_roof_candidate';
+        const bothMain = clsA === 'main_roof_candidate' && clsB === 'main_roof_candidate';
+
+        const { relType, confidence, reasons } = v2p3ClassifyRelationship(azRel, pitchDelta, gap, convexHint);
+
+        relationships.push({
+          face_a_idx: i, face_b_idx: j,
+          pair_is_main_relevant: isMainRelevant, both_main: bothMain,
+          azimuth_a: _r2(fA.azimuth), azimuth_b: _r2(fB.azimuth),
+          azimuth_relationship: azRel.type,
+          azimuth_diff: azRel.angular_diff,
+          azimuth_opposition_error: azRel.opposition_error,
+          pitch_a: _r2(fA.pitch), pitch_b: _r2(fB.pitch),
+          pitch_delta: _r2(pitchDelta),
+          edge_gap_m: _r2(gap),
+          shared_or_near_edge_score: _r2(Math.max(0, 1 - gap / V2P3_CANDIDATE_GAP_M)),
+          convexity_hint: convexHint,
+          relationship_confidence: confidence,
+          relationship_type: relType,
+          relationship_reasons: reasons,
+          main_secondary_pattern: `${clsA.replace('_roof_candidate', '').replace('_candidate', '')}/${clsB.replace('_roof_candidate', '').replace('_candidate', '')}`,
+        });
+      }
     }
   }
   relationships.sort((a, b) => b.relationship_confidence - a.relationship_confidence);
@@ -25803,9 +25937,9 @@ function v2p3SummarizeRelationships(relationships, totalFaces, v2p2Data) {
   };
 }
 
-function roofRelationshipAssessment(faces, v2p2Data, v2p1Data) {
+function roofRelationshipAssessment(faces, v2p2Data, v2p1Data, faceCache, proximity) {
   if (!faces || faces.length < 2) return null;
-  const relationships = v2p3CollectCandidatePairs(faces, v2p2Data);
+  const relationships = v2p3CollectCandidatePairs(faces, v2p2Data, faceCache, proximity);
   return v2p3SummarizeRelationships(relationships, faces.length, v2p2Data);
 }
 
@@ -25976,6 +26110,8 @@ app.post("/api/ml/auto-build", async (req, res) => {
   if (!projectId) return res.status(400).json({ error: "projectId required" });
 
   let envelope;
+  const _t0_ml = Date.now();
+  let _ml_request_ms = 0;
   try {
     const resp = await fetch(`${ML_URL}${ML_PATH}`, {
       method: "POST",
@@ -25991,6 +26127,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       });
     }
     envelope = await resp.json();
+    _ml_request_ms = Date.now() - _t0_ml;
   } catch (e) {
     // Most common cause at this point is "ML wrapper not running on
     // the configured URL." Surface the URL being tried, whether it
@@ -26004,7 +26141,11 @@ app.post("/api/ml/auto-build", async (req, res) => {
     });
   }
 
+  const _t = {}; // V2P5 timing accumulator
+  const _t0_total = Date.now();
+
   // P3 solar cross-validation (non-blocking — failure skips silently)
+  const _t0_p3 = Date.now();
   try {
     const dc = body.design_center;
     if (dc && dc.lat && dc.lng) {
@@ -26059,8 +26200,10 @@ app.post("/api/ml/auto-build", async (req, res) => {
   } catch (e) {
     console.log(`[p3_solar_crossval] skipped: ${e.message}`);
   }
+  _t.p3_p8_p9_ms = Date.now() - _t0_p3;
 
   // V2P0: Ground / Structure Separation (non-blocking)
+  const _t0_v2p0 = Date.now();
   try {
     const lidarPts = body.lidar && body.lidar.points;
     const dc = body.design_center;
@@ -26104,13 +26247,39 @@ app.post("/api/ml/auto-build", async (req, res) => {
   } catch (e) {
     console.log(`[v2p0_ground_structure] skipped: ${e.message}`);
   }
+  _t.v2p0_v2p01_ms = Date.now() - _t0_v2p0;
+
+  // V2P5: Build shared geometry cache + proximity matrix (after V2P0.1 suppression)
+  const _t0_cache = Date.now();
+  let _faceCache = null;
+  let _proximity = null;
+  let _cacheDebug = { face_count: 0, proximity_pairs: 0, bbox_pruned: 0 };
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 1) {
+      _faceCache = v2BuildFaceCache(roofFaces);
+      _cacheDebug.face_count = _faceCache.length;
+      if (roofFaces.length >= 2) {
+        const proxResult = v2BuildProximityMatrix(_faceCache, V2P3_CANDIDATE_GAP_M);
+        _proximity = proxResult;
+        _cacheDebug.proximity_pairs = proxResult.pairs.size;
+        _cacheDebug.bbox_pruned = proxResult.bboxPruned;
+        _cacheDebug.total_checked = proxResult.totalChecked;
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p5_cache] skipped: ${e.message}`);
+  }
+  _t.v2p5_cache_ms = Date.now() - _t0_cache;
 
   // V2P1: Structural Coherence / Mirrored-Pair Logic (non-blocking, debug-only)
+  const _t0_v2p1 = Date.now();
   try {
     const cr = envelope.crm_result || {};
     const roofFaces = cr.roof_faces || [];
     if (roofFaces.length >= 2) {
-      const v2p1 = structuralCoherenceAssessment(roofFaces);
+      const v2p1 = structuralCoherenceAssessment(roofFaces, _faceCache, _proximity);
       if (v2p1) {
         const md = cr.metadata || (cr.metadata = {});
         md.v2p1_structural_coherence = v2p1;
@@ -26124,8 +26293,10 @@ app.post("/api/ml/auto-build", async (req, res) => {
   } catch (e) {
     console.log(`[v2p1_structural] skipped: ${e.message}`);
   }
+  _t.v2p1_ms = Date.now() - _t0_v2p1;
 
   // V2P2: Main Roof Coherence / Main-vs-Secondary (non-blocking, debug-only)
+  const _t0_v2p2 = Date.now();
   try {
     const cr = envelope.crm_result || {};
     const roofFaces = cr.roof_faces || [];
@@ -26134,7 +26305,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       const v2p1 = md.v2p1_structural_coherence || null;
       const v2p0 = md.v2p0_ground_structure || null;
       const suppressed = v2p0 && v2p0.v2p0_hard_suppression_applied ? v2p0.hard_ground_suppressed_faces : [];
-      const v2p2 = mainRoofCoherenceAssessment(roofFaces, v2p1, v2p0, suppressed);
+      const v2p2 = mainRoofCoherenceAssessment(roofFaces, v2p1, v2p0, suppressed, _faceCache, _proximity);
       if (v2p2) {
         md.v2p2_main_roof_coherence = v2p2;
         if (v2p2.main_roof_warnings.length > 0) {
@@ -26147,8 +26318,10 @@ app.post("/api/ml/auto-build", async (req, res) => {
   } catch (e) {
     console.log(`[v2p2_main_roof] skipped: ${e.message}`);
   }
+  _t.v2p2_ms = Date.now() - _t0_v2p2;
 
   // V2P3: Ridge / Hip / Valley Relationship Logic (non-blocking, debug-only)
+  const _t0_v2p3 = Date.now();
   try {
     const cr = envelope.crm_result || {};
     const roofFaces = cr.roof_faces || [];
@@ -26156,7 +26329,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       const md = cr.metadata || (cr.metadata = {});
       const v2p2 = md.v2p2_main_roof_coherence || null;
       const v2p1 = md.v2p1_structural_coherence || null;
-      const v2p3 = roofRelationshipAssessment(roofFaces, v2p2, v2p1);
+      const v2p3 = roofRelationshipAssessment(roofFaces, v2p2, v2p1, _faceCache, _proximity);
       if (v2p3) {
         md.v2p3_roof_relationships = v2p3;
         if (v2p3.relationship_warnings.length > 0) {
@@ -26169,8 +26342,10 @@ app.post("/api/ml/auto-build", async (req, res) => {
   } catch (e) {
     console.log(`[v2p3_relationships] skipped: ${e.message}`);
   }
+  _t.v2p3_ms = Date.now() - _t0_v2p3;
 
   // V2P4: Whole-Roof Consistency Warnings (non-blocking, debug-only)
+  const _t0_v2p4 = Date.now();
   try {
     const cr = envelope.crm_result || {};
     const roofFaces = cr.roof_faces || [];
@@ -26192,6 +26367,49 @@ app.post("/api/ml/auto-build", async (req, res) => {
     }
   } catch (e) {
     console.log(`[v2p4_consistency] skipped: ${e.message}`);
+  }
+  _t.v2p4_ms = Date.now() - _t0_v2p4;
+
+  // V2P5: Performance timing metadata
+  _t.crm_post_ml_total_ms = Date.now() - _t0_total;
+  try {
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const md = cr.metadata || (cr.metadata = {});
+    const stages = [
+      { name: 'ml_request', ms: _ml_request_ms },
+      { name: 'p3_p8_p9', ms: _t.p3_p8_p9_ms },
+      { name: 'v2p0_v2p01', ms: _t.v2p0_v2p01_ms },
+      { name: 'v2p5_cache', ms: _t.v2p5_cache_ms },
+      { name: 'v2p1', ms: _t.v2p1_ms },
+      { name: 'v2p2', ms: _t.v2p2_ms },
+      { name: 'v2p3', ms: _t.v2p3_ms },
+      { name: 'v2p4', ms: _t.v2p4_ms },
+    ];
+    stages.sort((a, b) => b.ms - a.ms);
+    md.performance_timing = {
+      performance_phase_applied: true,
+      ml_request_ms: _ml_request_ms,
+      crm_post_ml_total_ms: _t.crm_post_ml_total_ms,
+      p3_p8_p9_crossval_ms: _t.p3_p8_p9_ms,
+      v2p0_ground_structure_ms: _t.v2p0_v2p01_ms,
+      v2p5_cache_build_ms: _t.v2p5_cache_ms,
+      v2p1_structural_ms: _t.v2p1_ms,
+      v2p2_main_roof_ms: _t.v2p2_ms,
+      v2p3_relationships_ms: _t.v2p3_ms,
+      v2p4_consistency_ms: _t.v2p4_ms,
+      face_count: _cacheDebug.face_count,
+      proximity_pairs_computed: _cacheDebug.proximity_pairs,
+      bbox_pruned_pairs: _cacheDebug.bbox_pruned,
+      hotspot_ranked_summary: stages.map(s => `${s.name}:${s.ms}ms`),
+      optimization_notes: [
+        'v2p5_shared_face_cache: area+centroid+edgeSamples+bbox computed once',
+        'v2p5_shared_proximity_matrix: edge-gap+meeting-point computed once for all V2 phases',
+        `v2p5_bbox_pruning: ${_cacheDebug.bbox_pruned} of ${_cacheDebug.total_checked || 0} pairs skipped`,
+      ],
+    };
+    console.log(`[v2p5_perf] ml=${_ml_request_ms}ms post-ML=${_t.crm_post_ml_total_ms}ms hotspots=[${stages.slice(0, 3).map(s => `${s.name}:${s.ms}ms`).join(', ')}] faces=${_cacheDebug.face_count} prox_pairs=${_cacheDebug.proximity_pairs}`);
+  } catch (e) {
+    console.log(`[v2p5_perf] timing skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.

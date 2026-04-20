@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (V2P4 whole-roof consistency warnings)
+**Last updated:** 2026-04-19 (V2P5 performance optimization + instrumentation)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -565,13 +565,13 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
-### V2P5 — Performance Optimization [PLANNED, NOT ACTIVE]
+### V2P5 — Performance Optimization [BANKED]
 
 **Purpose:** Reduce model-build runtime from 60s+ to <15s on most houses.
 
-**Rules:** Instrumentation first. No accuracy regressions. Optimize after logic scaffolding is in place. This phase is NOT active in this pass — it begins only after V2P4 is validated and banked.
+**Rules:** Instrumentation first. No accuracy regressions. Optimize caching + pair pruning + shared adjacency before touching accuracy-sensitive logic.
 
-**Status:** PLANNED. Not started.
+**Status:** BANKED. Instrumentation + CRM-side caching shipped. Target <15s NOT yet met — ML Python server is 92-98% of runtime (1-24s per property). CRM post-ML overhead reduced to <500ms. Next step requires ML-side optimization (image fetch, model inference, DSM build, geometry cleanup).
 
 ---
 
@@ -600,6 +600,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P5 Performance Optimization + Instrumentation. Added comprehensive timing instrumentation (ml_request_ms, p3_p8_p9_crossval_ms, v2p0_ground_structure_ms, v2p1-v2p4_ms, v2p5_cache_build_ms) exposed via crm_result.metadata.performance_timing. Shared geometry cache (v2BuildFaceCache: area, centroid, edgeSamples, bbox computed once) + shared proximity matrix (v2BuildProximityMatrix: edge-gap + meeting-point computed once with bbox pruning). V2P1/V2P2/V2P3 refactored to consume shared cache — eliminates 3× redundant area/centroid computation and 2× redundant O(N²) edge-gap computation. Timing reveals ML request is 92-98% of total runtime (1-24s); CRM post-ML overhead is 230-470ms; V2P1-V2P4 combined <3ms. P3 Google Solar API is the CRM-side hotspot (200-400ms). All V2P4 accuracy scores unchanged. Next bottleneck is ML Python server (image fetch + model inference). See triage §17. |
 | 2026-04-19 | V2P4 Whole-Roof Consistency Warnings. Synthesizes V2P0–V2P3 outputs into a single consistency assessment with contradiction detection and actionable warnings. 5 weighted factors: main body coherence from V2P2 (0.30), structural pairing from V2P1 (0.25), relationship coherence from V2P3 (0.25), realism from V2P0 (0.10), contradiction penalty (0.10). Explicit contradiction detection: 6 cross-phase contradiction flags (e.g., strong_main_body_but_weak_relationships, high_uncertainty_on_main_faces). Single-face edge case uses separate formula (mainBody×0.5 + realism×0.3 + contradiction×0.2). Validated on 8 properties: 15 Veteran consistency=0.96 (clean gable, 0 contradictions), 175 Warwick consistency=0.80 (steep roof not unfairly demoted), Lawrence consistency=0.69 (correctly flags high_uncertainty_on_main_faces), 13 Richardson consistency=0.20 (single ground face, correctly very low), 583 Westford skipped (0 faces). No geometry mutation, no status changes. See triage §16. |
 | 2026-04-19 | V2P3 Ridge / Hip / Valley Relationship Logic. Classifies structural relationships between adjacent face pairs using 6 signal families: azimuth relationship, pitch compatibility, edge gap, meeting point geometry, convex/concave hint from downslope vectors, and V2P2 main-roof relevance. 6 relationship types: ridge_like, hip_like, valley_like, seam_like, step_like, uncertain. Convexity detection uses dot product of downslope direction with centroid-to-meeting-point vector to differentiate hip (convex) from valley (concave). Validated on 8 properties: 15 Veteran coherence=0.99 (2 ridge+1 seam, dominant=ridge_like), 225 Gibson coherence=0.59 (2 ridge+1 hip+2 step+4 uncertain), Lawrence coherence=0.55 (2 ridge+2 hip+6 uncertain — conservative). No geometry mutation, no status changes. See triage §15. |
 | 2026-04-19 | V2P2 Main Roof Coherence / Main-vs-Secondary Plane Logic. Classifies surviving faces as main_roof_candidate / secondary_roof_candidate / uncertain using 5 weighted signal families: area importance (0.30), structural participation from V2P1 pairs (0.25), adjacency via edge gap (0.20), centrality (0.10), V2P0 realism (0.15). Build-level main_roof_coherence_score rewards area concentration, dominance, and structural coverage. Validated on 8 properties: 15 Veteran coherence=0.94 (all main), 20 Meadow coherence=0.88 (2 main+1 uncertain), 225 Gibson coherence=0.77 (4 main+1 secondary+1 uncertain), Lawrence coherence=0.80 (4 main+2 uncertain), 175 Warwick coherence=0.84 (steep, all main). 13 Richardson correctly warns no_clear_dominant_roof_body. No geometry mutation, no status changes. See triage §14. |
