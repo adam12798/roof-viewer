@@ -16403,6 +16403,10 @@ app.get("/design", (req, res) => {
           v2_relationships_uncertain: 'Roof edge relationships (ridge/hip/valley) are mostly uncertain',
           v2_ground_suppression_material: 'Material ground-level surface removed from build',
           v2_structural_contradiction: 'Structural signals disagree about roof interpretation',
+          v3_lidar_ground_veto: 'LiDAR rejects plane as ground-level surface',
+          v3_lidar_plane_disagreement: 'ML plane disagrees with LiDAR slope/elevation',
+          v3_ridge_conflict: 'Plane appears to span a ridge — may need splitting',
+          v3_partial_build_rescue: 'LiDAR preserved a plane that would otherwise be vetoed',
           // Legacy aliases preserved for any envelope generated before V2P7 polish.
           v2_low_whole_roof_consistency: 'Overall roof structure assessment is weak',
           v2_fragmented_main_roof: 'Main roof body is fragmented or unclear',
@@ -26589,6 +26593,470 @@ function v2p7ApplyDecision(envelope, decision) {
   envelope.review_policy_reasons = reasons;
 }
 
+// ── V3P1: LiDAR authority / fusion hardening ───────────────────────────────
+// Each candidate plane gets an explicit LiDAR support assessment. Planes that
+// strongly disagree with LiDAR evidence are vetoed (removed from roof_faces)
+// before V2 structural logic and V2P7 decision integration run on the
+// survivors. Ridge conflicts are flagged (not split — polygonization is next).
+// Partial build rescue keeps at least one plane when all would otherwise be
+// vetoed AND LiDAR supports at least some structure.
+//
+// Build this correctly, not creatively. Thresholds centralized. Logic readable.
+
+const V3P1_MIN_SAMPLES_FOR_FIT = 12;
+const V3P1_FIT_RESIDUAL_OK_M = 0.35;
+const V3P1_FIT_RESIDUAL_MAX_M = 0.60;
+const V3P1_FIT_RESIDUAL_SEVERE_M = 1.00;
+const V3P1_SLOPE_AGREEMENT_TOLERANCE_DEG = 25.0;
+const V3P1_SLOPE_AGREEMENT_MAX_DEG = 45.0;
+const V3P1_SLOPE_DISAGREEMENT_SEVERE_DEG = 60.0;
+const V3P1_RIDGE_CONFLICT_DOT_THRESHOLD = -0.30;
+const V3P1_ML_SUPPORT_WEIGHT = 0.45;
+const V3P1_LIDAR_SUPPORT_WEIGHT = 0.55;
+const V3P1_FUSED_SUPPRESSION_THRESHOLD = 0.30;
+const V3P1_GROUND_VETO_MAX_HEIGHT_M = 1.0;
+const V3P1_GROUND_VETO_MAX_PITCH_DEG = 12.0;
+const V3P1_RESCUE_MIN_KEEP = 1;
+const V3P1_RESCUE_MIN_LIDAR_SUPPORT = 0.30;
+const V3P1_RIDGE_MIN_SAMPLES_PER_HALF = 8;
+
+function v3p1PlaneNormalFromPitchAzimuth(pitchDeg, azimuthDeg) {
+  // Compass azimuth (0=N, 90=E, 180=S, 270=W) → downslope direction in local
+  // coords where +x is east, +z is north.
+  const pitchRad = (pitchDeg || 0) * Math.PI / 180;
+  const azRad = (azimuthDeg || 0) * Math.PI / 180;
+  const sinP = Math.sin(pitchRad);
+  const cosP = Math.cos(pitchRad);
+  // Downslope horizontal direction: east=sin(az), north=cos(az).
+  const dx = Math.sin(azRad);
+  const dz = Math.cos(azRad);
+  // Outward normal (pointing up + opposite to downslope horizontal component).
+  // Normal = (-dx*sinP, cosP, -dz*sinP), already unit length.
+  return { nx: -dx * sinP, ny: cosP, nz: -dz * sinP };
+}
+
+function v3p1PointInPolygon(x, z, vertices) {
+  let inside = false;
+  const n = vertices.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = vertices[i].x, zi = vertices[i].z;
+    const xj = vertices[j].x, zj = vertices[j].z;
+    const crosses = ((zi > z) !== (zj > z))
+      && (x < (xj - xi) * (z - zi) / ((zj - zi) || 1e-12) + xi);
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function v3p1CollectFootprintSamples(grid, vertices) {
+  if (!grid || !vertices || vertices.length < 3) return [];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const v of vertices) {
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+    if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+  }
+  const res = V2P0_GRID_RES;
+  const half = V2P0_GRID_HALF;
+  const size = V2P0_GRID_SIZE;
+  const gx0 = Math.max(0, Math.floor((minX + half) / res));
+  const gx1 = Math.min(size - 1, Math.ceil((maxX + half) / res));
+  const gz0 = Math.max(0, Math.floor((minZ + half) / res));
+  const gz1 = Math.min(size - 1, Math.ceil((maxZ + half) / res));
+  const samples = [];
+  for (let gz = gz0; gz <= gz1; gz++) {
+    const z = gz * res - half;
+    for (let gx = gx0; gx <= gx1; gx++) {
+      const idx = gz * size + gx;
+      const elev = grid[idx];
+      if (!isFinite(elev)) continue;
+      const x = gx * res - half;
+      if (v3p1PointInPolygon(x, z, vertices)) samples.push({ x, z, elev });
+    }
+  }
+  return samples;
+}
+
+function v3p1FitLocalPlane(samples) {
+  const n = samples.length;
+  if (n < V3P1_MIN_SAMPLES_FOR_FIT) return null;
+  // Fit h = a*x + b*z + c  via normal equations on (x, z, 1).
+  let sxx = 0, szz = 0, sxz = 0, sx = 0, sz = 0, s1 = 0;
+  let shx = 0, shz = 0, sh = 0;
+  for (const p of samples) {
+    sxx += p.x * p.x; szz += p.z * p.z; sxz += p.x * p.z;
+    sx += p.x; sz += p.z; s1 += 1;
+    shx += p.elev * p.x; shz += p.elev * p.z; sh += p.elev;
+  }
+  // Solve 3x3 system: [sxx sxz sx; sxz szz sz; sx sz s1] * [a; b; c] = [shx; shz; sh].
+  const m = [
+    [sxx, sxz, sx, shx],
+    [sxz, szz, sz, shz],
+    [sx, sz, s1, sh],
+  ];
+  // Gaussian elimination.
+  for (let i = 0; i < 3; i++) {
+    let maxRow = i;
+    for (let k = i + 1; k < 3; k++) if (Math.abs(m[k][i]) > Math.abs(m[maxRow][i])) maxRow = k;
+    if (Math.abs(m[maxRow][i]) < 1e-9) return null;
+    [m[i], m[maxRow]] = [m[maxRow], m[i]];
+    for (let k = i + 1; k < 3; k++) {
+      const f = m[k][i] / m[i][i];
+      for (let j = i; j < 4; j++) m[k][j] -= f * m[i][j];
+    }
+  }
+  const c = m[2][3] / m[2][2];
+  const b = (m[1][3] - m[1][2] * c) / m[1][1];
+  const a = (m[0][3] - m[0][1] * b - m[0][2] * c) / m[0][0];
+  // Normal (pointing up): (-a, 1, -b) normalized.
+  const mag = Math.sqrt(a * a + 1 + b * b);
+  const normal = { nx: -a / mag, ny: 1 / mag, nz: -b / mag };
+  // RMSE to this plane.
+  let sumSq = 0;
+  for (const p of samples) {
+    const pred = a * p.x + b * p.z + c;
+    const d = p.elev - pred;
+    sumSq += d * d;
+  }
+  const rmse = Math.sqrt(sumSq / n);
+  return { a, b, c, normal, rmse, sampleCount: n };
+}
+
+function v3p1MedianAbs(values) {
+  if (!values.length) return NaN;
+  const v = values.slice().sort((x, y) => Math.abs(x) - Math.abs(y));
+  return Math.abs(v[Math.floor(v.length / 2)]);
+}
+
+function v3p1ComputeFitResidualToMlPlane(samples, face, centroidElev) {
+  const n = samples.length;
+  if (n < V3P1_MIN_SAMPLES_FOR_FIT || !isFinite(centroidElev)) return null;
+  const { nx, ny, nz } = v3p1PlaneNormalFromPitchAzimuth(face.pitch, face.azimuth);
+  // Centroid of footprint samples as plane anchor.
+  let cx = 0, cz = 0;
+  for (const p of samples) { cx += p.x; cz += p.z; }
+  cx /= n; cz /= n;
+  // Use the centroid elevation as the anchor height.
+  const residuals = samples.map(p => {
+    // Signed perpendicular distance from point to plane through (cx, centroidElev, cz) with normal (nx, ny, nz).
+    const dx = p.x - cx, dy = p.elev - centroidElev, dz = p.z - cz;
+    return dx * nx + dy * ny + dz * nz;
+  });
+  return v3p1MedianAbs(residuals);
+}
+
+function v3p1SlopeAgreementError(n1, n2) {
+  const dot = n1.nx * n2.nx + n1.ny * n2.ny + n1.nz * n2.nz;
+  const clamped = Math.max(-1, Math.min(1, dot));
+  return Math.acos(clamped) * 180 / Math.PI;
+}
+
+function v3p1DetectRidgeConflict(samples) {
+  // Split samples by their X median into two halves; fit each half; compare
+  // horizontal downslope directions. Strong opposing horizontal slope components
+  // (dot < threshold) suggest the plane straddles a ridge.
+  const n = samples.length;
+  if (n < V3P1_RIDGE_MIN_SAMPLES_PER_HALF * 2) return { conflict: false, dot: null };
+  const xs = samples.map(p => p.x).sort((a, b) => a - b);
+  const xMed = xs[Math.floor(xs.length / 2)];
+  const lo = [], hi = [];
+  for (const p of samples) (p.x <= xMed ? lo : hi).push(p);
+  if (lo.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF || hi.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF) {
+    return { conflict: false, dot: null };
+  }
+  const fitLo = v3p1FitLocalPlane(lo);
+  const fitHi = v3p1FitLocalPlane(hi);
+  if (!fitLo || !fitHi) return { conflict: false, dot: null };
+  // Horizontal downslope vectors (in x-z plane): -∇h = (-a, -b). For ridge
+  // conflict, these should be near-opposite.
+  const vLo = { x: -fitLo.a, z: -fitLo.b };
+  const vHi = { x: -fitHi.a, z: -fitHi.b };
+  const magLo = Math.hypot(vLo.x, vLo.z) || 1e-9;
+  const magHi = Math.hypot(vHi.x, vHi.z) || 1e-9;
+  const dot = (vLo.x * vHi.x + vLo.z * vHi.z) / (magLo * magHi);
+  return { conflict: dot < V3P1_RIDGE_CONFLICT_DOT_THRESHOLD, dot: _r2(dot) };
+}
+
+function v3p1ScoreMlSupport(face) {
+  // roof_faces do not carry ML confidence directly. Use a simple heuristic:
+  // moderate baseline, docked if pitch is in the known suspect band (>40°)
+  // without explicit confirmation.
+  const pitch = face.pitch || 0;
+  let score = 0.60;
+  if (pitch > 55) score -= 0.20;
+  else if (pitch > 45) score -= 0.10;
+  return Math.max(0, Math.min(1, score));
+}
+
+function v3p1ScoreLidarSupport(fitResidual, slopeAgreementError, heightAboveGround, classification) {
+  // Start from a clean 1.0 and subtract graduated penalties. This reads plainly
+  // in debug and makes it obvious which dimension dragged the score down.
+  let score = 1.0;
+  const penalties = [];
+
+  if (fitResidual != null) {
+    if (fitResidual > V3P1_FIT_RESIDUAL_SEVERE_M) {
+      score -= 0.50; penalties.push(`fit_residual_severe(${_r2(fitResidual)})`);
+    } else if (fitResidual > V3P1_FIT_RESIDUAL_MAX_M) {
+      score -= 0.30; penalties.push(`fit_residual_high(${_r2(fitResidual)})`);
+    } else if (fitResidual > V3P1_FIT_RESIDUAL_OK_M) {
+      score -= 0.15; penalties.push(`fit_residual_moderate(${_r2(fitResidual)})`);
+    }
+  } else {
+    score -= 0.10; penalties.push('fit_residual_unavailable');
+  }
+
+  if (slopeAgreementError != null) {
+    if (slopeAgreementError > V3P1_SLOPE_DISAGREEMENT_SEVERE_DEG) {
+      score -= 0.40; penalties.push(`slope_disagreement_severe(${_r2(slopeAgreementError)}deg)`);
+    } else if (slopeAgreementError > V3P1_SLOPE_AGREEMENT_MAX_DEG) {
+      score -= 0.20; penalties.push(`slope_disagreement_high(${_r2(slopeAgreementError)}deg)`);
+    } else if (slopeAgreementError > V3P1_SLOPE_AGREEMENT_TOLERANCE_DEG) {
+      score -= 0.10; penalties.push(`slope_disagreement_moderate(${_r2(slopeAgreementError)}deg)`);
+    }
+  } else {
+    score -= 0.10; penalties.push('slope_agreement_unavailable');
+  }
+
+  if (classification === 'ground_like') {
+    score -= 0.30; penalties.push('v2p0_ground_like');
+  } else if (classification === 'uncertain' && heightAboveGround != null && heightAboveGround < 1.5) {
+    score -= 0.10; penalties.push('v2p0_uncertain_low');
+  }
+
+  return { score: _r2(Math.max(0, Math.min(1, score))), penalties };
+}
+
+function v3p1FuseScores(mlScore, lidarScore) {
+  return _r2(Math.max(0, Math.min(1,
+    mlScore * V3P1_ML_SUPPORT_WEIGHT + lidarScore * V3P1_LIDAR_SUPPORT_WEIGHT
+  )));
+}
+
+function v3p1DecideFusion(plane) {
+  const reasons = [];
+  let decision = 'keep';
+  if (plane.ground_veto_flag) { decision = 'suppress'; reasons.push('ground_veto'); }
+  else if (plane.fit_residual != null && plane.fit_residual > V3P1_FIT_RESIDUAL_SEVERE_M
+           && plane.slope_agreement_error != null && plane.slope_agreement_error > V3P1_SLOPE_AGREEMENT_MAX_DEG) {
+    decision = 'suppress'; reasons.push('lidar_strong_disagreement');
+  } else if (plane.fused_plane_score < V3P1_FUSED_SUPPRESSION_THRESHOLD) {
+    decision = 'suppress'; reasons.push('fused_score_below_threshold');
+  } else if (plane.ridge_conflict_flag) {
+    decision = 'split'; reasons.push('ridge_conflict_flag');
+  } else if (plane.lidar_support_score < 0.50 && plane.slope_agreement_error > V3P1_SLOPE_AGREEMENT_MAX_DEG) {
+    decision = 'uncertain'; reasons.push('lidar_weak_slope_disagree');
+  }
+  return { decision, reasons };
+}
+
+function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, centerLng) {
+  const cr = (envelope && envelope.crm_result) || {};
+  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces : [];
+  const n = faces.length;
+  if (n === 0) {
+    return {
+      v3_lidar_authority_applied: false,
+      plane_count_in: 0,
+      plane_count_out: 0,
+      lidar_veto_count: 0,
+      ridge_split_enforced_count: 0,
+      fused_plane_count: 0,
+      partial_build_rescue_applied: false,
+      lidar_fusion_warnings: ['no_faces_to_fuse'],
+      per_face: [],
+    };
+  }
+
+  // Build a fresh DSM grid for V3P1. Cheap (~5-20ms) and keeps V2P0 untouched.
+  let grid = null;
+  let gridDebug = { valid_cells: 0, total_cells: 0, fill_fraction: 0 };
+  if (Array.isArray(lidarPoints) && lidarPoints.length > 0 && isFinite(centerLat) && isFinite(centerLng)) {
+    const built = v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng);
+    grid = built.grid;
+    gridDebug = {
+      valid_cells: built.validCount,
+      total_cells: built.totalCells,
+      fill_fraction: _r2(built.validCount / built.totalCells),
+    };
+  }
+  const haveGrid = !!grid && gridDebug.valid_cells > 0;
+
+  // Map V2P0 per-face classifications (post-V2P0.1 suppression may have shifted
+  // indices; match by vertex centroid closest to the V2P0 assessment centroid).
+  const v2p0Assessments = (v2p0Data && Array.isArray(v2p0Data.face_assessments)) ? v2p0Data.face_assessments : [];
+  function findV2p0ForFace(face) {
+    if (!v2p0Assessments.length) return null;
+    const verts = face.vertices || [];
+    if (!verts.length) return null;
+    let cx = 0, cz = 0;
+    for (const v of verts) { cx += v.x; cz += v.z; }
+    cx /= verts.length; cz /= verts.length;
+    let best = null, bestD = Infinity;
+    for (const a of v2p0Assessments) {
+      const ax = a.centroid_x, az = a.centroid_z;
+      if (!isFinite(ax) || !isFinite(az)) continue;
+      const d = (ax - cx) * (ax - cx) + (az - cz) * (az - cz);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    return bestD < 4 ? best : null; // within 2m is considered the same face.
+  }
+
+  const perFace = [];
+  for (let i = 0; i < n; i++) {
+    const face = faces[i];
+    const verts = face.vertices || [];
+    const v2p0 = findV2p0ForFace(face);
+    const heightAboveGround = v2p0 ? v2p0.height_above_ground_m : null;
+    const classification = v2p0 ? v2p0.classification : null;
+
+    let samples = [];
+    let fitResidual = null;
+    let slopeAgreementError = null;
+    let ridge = { conflict: false, dot: null };
+    let localFit = null;
+    if (haveGrid && verts.length >= 3) {
+      samples = v3p1CollectFootprintSamples(grid, verts);
+      const centroidElev = v2p0 ? v2p0.face_elevation_m : null;
+      fitResidual = v3p1ComputeFitResidualToMlPlane(samples, face, centroidElev);
+      localFit = v3p1FitLocalPlane(samples);
+      if (localFit) {
+        const mlN = v3p1PlaneNormalFromPitchAzimuth(face.pitch, face.azimuth);
+        slopeAgreementError = _r2(v3p1SlopeAgreementError(mlN, localFit.normal));
+      }
+      ridge = v3p1DetectRidgeConflict(samples);
+    }
+
+    const groundVetoFlag =
+      classification === 'ground_like'
+      && heightAboveGround != null
+      && heightAboveGround < V3P1_GROUND_VETO_MAX_HEIGHT_M
+      && (face.pitch || 0) < V3P1_GROUND_VETO_MAX_PITCH_DEG;
+
+    const mlSupport = v3p1ScoreMlSupport(face);
+    const lidarSupportObj = v3p1ScoreLidarSupport(fitResidual, slopeAgreementError, heightAboveGround, classification);
+    const fused = v3p1FuseScores(mlSupport, lidarSupportObj.score);
+
+    const plane = {
+      face_idx: i,
+      sample_count: samples.length,
+      fit_residual: fitResidual != null ? _r2(fitResidual) : null,
+      slope_agreement_error: slopeAgreementError,
+      height_above_ground: heightAboveGround,
+      v2p0_classification: classification,
+      ridge_conflict_flag: ridge.conflict,
+      ridge_dot: ridge.dot,
+      ground_veto_flag: groundVetoFlag,
+      ml_support_score: _r2(mlSupport),
+      lidar_support_score: lidarSupportObj.score,
+      lidar_support_penalties: lidarSupportObj.penalties,
+      fused_plane_score: fused,
+      pitch: _r2(face.pitch || 0),
+      azimuth: _r2(face.azimuth || 0),
+    };
+    const decision = v3p1DecideFusion(plane);
+    plane.fusion_decision = decision.decision;
+    plane.fusion_reasons = decision.reasons;
+    perFace.push(plane);
+  }
+
+  // Partial build rescue: if EVERY surviving plane got 'suppress', keep the one
+  // with the highest fused score (as long as its lidar_support >= threshold).
+  let partialRescueApplied = false;
+  const allSuppress = perFace.length > 0 && perFace.every(p => p.fusion_decision === 'suppress');
+  if (allSuppress) {
+    const sorted = perFace.slice().sort((a, b) => b.fused_plane_score - a.fused_plane_score);
+    const best = sorted[0];
+    if (best && best.lidar_support_score >= V3P1_RESCUE_MIN_LIDAR_SUPPORT) {
+      best.fusion_decision = 'keep';
+      best.fusion_reasons = [...(best.fusion_reasons || []), 'partial_build_rescue'];
+      partialRescueApplied = true;
+    }
+  }
+
+  const vetoCount = perFace.filter(p => p.fusion_decision === 'suppress').length;
+  const ridgeCount = perFace.filter(p => p.ridge_conflict_flag).length;
+  const ridgeSplitEnforcedCount = perFace.filter(p => p.fusion_decision === 'split').length;
+  const keptCount = perFace.filter(p => p.fusion_decision === 'keep' || p.fusion_decision === 'split' || p.fusion_decision === 'uncertain').length;
+
+  const warnings = [];
+  if (!haveGrid) warnings.push('lidar_grid_unavailable');
+  if (vetoCount > 0) warnings.push('lidar_veto_applied_count_' + vetoCount);
+  if (ridgeCount > 0) warnings.push('ridge_conflict_detected_count_' + ridgeCount);
+  if (partialRescueApplied) warnings.push('partial_build_rescue_applied');
+  if (keptCount === 0) warnings.push('all_planes_suppressed_no_rescue');
+
+  return {
+    v3_lidar_authority_applied: haveGrid,
+    plane_count_in: n,
+    plane_count_out: keptCount,
+    lidar_veto_count: vetoCount,
+    ridge_split_enforced_count: ridgeSplitEnforcedCount,
+    ridge_conflict_flag_count: ridgeCount,
+    fused_plane_count: keptCount,
+    partial_build_rescue_applied: partialRescueApplied,
+    lidar_fusion_warnings: warnings,
+    grid: gridDebug,
+    thresholds: {
+      fit_residual_ok_m: V3P1_FIT_RESIDUAL_OK_M,
+      fit_residual_max_m: V3P1_FIT_RESIDUAL_MAX_M,
+      fit_residual_severe_m: V3P1_FIT_RESIDUAL_SEVERE_M,
+      slope_agreement_tolerance_deg: V3P1_SLOPE_AGREEMENT_TOLERANCE_DEG,
+      slope_agreement_max_deg: V3P1_SLOPE_AGREEMENT_MAX_DEG,
+      slope_disagreement_severe_deg: V3P1_SLOPE_DISAGREEMENT_SEVERE_DEG,
+      ridge_conflict_dot_threshold: V3P1_RIDGE_CONFLICT_DOT_THRESHOLD,
+      fused_suppression_threshold: V3P1_FUSED_SUPPRESSION_THRESHOLD,
+      ground_veto_max_height_m: V3P1_GROUND_VETO_MAX_HEIGHT_M,
+      ground_veto_max_pitch_deg: V3P1_GROUND_VETO_MAX_PITCH_DEG,
+    },
+    scoring_weights: {
+      ml_support_weight: V3P1_ML_SUPPORT_WEIGHT,
+      lidar_support_weight: V3P1_LIDAR_SUPPORT_WEIGHT,
+    },
+    per_face: perFace,
+  };
+}
+
+// Apply V3P1 vetoes: remove suppressed faces from roof_faces and surface the
+// right review_policy_reasons. Called right after lidarFusionAssessment.
+function v3p1ApplyFusion(envelope, fusion) {
+  if (!fusion || !fusion.v3_lidar_authority_applied) return { applied: false };
+  const cr = envelope.crm_result || {};
+  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces : [];
+  const toRemove = new Set();
+  let groundVetoed = 0;
+  let disagreementVetoed = 0;
+  let ridgeFlagged = 0;
+  for (const p of fusion.per_face) {
+    if (p.fusion_decision === 'suppress') {
+      toRemove.add(p.face_idx);
+      if ((p.fusion_reasons || []).includes('ground_veto')) groundVetoed++;
+      else disagreementVetoed++;
+    }
+    if (p.ridge_conflict_flag) ridgeFlagged++;
+  }
+  if (toRemove.size > 0) {
+    cr.roof_faces = faces.filter((_, i) => !toRemove.has(i));
+  }
+  const reasons = Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons : [];
+  if (groundVetoed > 0 && !reasons.includes('v3_lidar_ground_veto')) reasons.push('v3_lidar_ground_veto');
+  if (disagreementVetoed > 0 && !reasons.includes('v3_lidar_plane_disagreement')) reasons.push('v3_lidar_plane_disagreement');
+  if (ridgeFlagged > 0 && !reasons.includes('v3_ridge_conflict')) reasons.push('v3_ridge_conflict');
+  if (fusion.partial_build_rescue_applied && !reasons.includes('v3_partial_build_rescue')) reasons.push('v3_partial_build_rescue');
+  if ((groundVetoed + disagreementVetoed > 0 || ridgeFlagged > 0 || fusion.partial_build_rescue_applied)
+      && envelope.auto_build_status === 'auto_accept') {
+    envelope.auto_build_status = 'needs_review';
+  }
+  envelope.review_policy_reasons = reasons;
+  return {
+    applied: true,
+    faces_removed: toRemove.size,
+    ground_vetoed: groundVetoed,
+    disagreement_vetoed: disagreementVetoed,
+    ridge_flagged: ridgeFlagged,
+    partial_rescue: !!fusion.partial_build_rescue_applied,
+  };
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -26741,6 +27209,36 @@ app.post("/api/ml/auto-build", async (req, res) => {
     console.log(`[v2p0_ground_structure] skipped: ${e.message}`);
   }
   _t.v2p0_v2p01_ms = Date.now() - _t0_v2p0;
+
+  // V3P1: LiDAR authority / fusion hardening. Runs AFTER V2P0.1 suppression so
+  // it sees the already-cleaned face list, and BEFORE V2P5 cache so that V2P1-
+  // V2P4 and V2P7 all see the post-fusion survivors. Conservative by design:
+  // only suppress on strong LiDAR evidence; flag (don't split) ridge conflicts;
+  // partial build rescue keeps at least one plane when all would be vetoed.
+  const _t0_v3p1 = Date.now();
+  try {
+    const lidarPts = body.lidar && body.lidar.points;
+    const dc = body.design_center;
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const roofFaces = cr.roof_faces || [];
+    if (lidarPts && lidarPts.length > 0 && roofFaces.length > 0 && dc && dc.lat && dc.lng) {
+      const md = cr.metadata || (cr.metadata = {});
+      const v2p0Data = md.v2p0_ground_structure || null;
+      const fusion = lidarFusionAssessment(envelope, v2p0Data, lidarPts, +dc.lat, +dc.lng);
+      md.v3p1_lidar_fusion = fusion;
+      const applied = v3p1ApplyFusion(envelope, fusion);
+      if (applied.applied) {
+        console.log(`[v3p1_lidar_fusion] in=${fusion.plane_count_in} out=${fusion.plane_count_out} vetoed=${fusion.lidar_veto_count} ridge_flag=${fusion.ridge_conflict_flag_count} rescue=${fusion.partial_build_rescue_applied} warns=[${fusion.lidar_fusion_warnings.join(',')}]`);
+      } else {
+        console.log(`[v3p1_lidar_fusion] skipped (no grid or no faces)`);
+      }
+    } else {
+      console.log('[v3p1_lidar_fusion] skipped: no lidar or no faces');
+    }
+  } catch (e) {
+    console.log(`[v3p1_lidar_fusion] skipped: ${e.message}`);
+  }
+  _t.v3p1_ms = Date.now() - _t0_v3p1;
 
   // V2P5: Build shared geometry cache + proximity matrix (after V2P0.1 suppression)
   const _t0_cache = Date.now();
@@ -26914,6 +27412,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       { name: 'ml_request', ms: _ml_request_ms },
       { name: 'p3_p8_p9', ms: _t.p3_p8_p9_ms },
       { name: 'v2p0_v2p01', ms: _t.v2p0_v2p01_ms },
+      { name: 'v3p1_lidar_fusion', ms: _t.v3p1_ms },
       { name: 'v2p5_cache', ms: _t.v2p5_cache_ms },
       { name: 'v2p1', ms: _t.v2p1_ms },
       { name: 'v2p2', ms: _t.v2p2_ms },
@@ -26934,6 +27433,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       v2p3_relationships_ms: _t.v2p3_ms,
       v2p4_consistency_ms: _t.v2p4_ms,
       v2p7_decision_ms: _t.v2p7_ms,
+      v3p1_lidar_fusion_ms: _t.v3p1_ms,
       face_count: _cacheDebug.face_count,
       proximity_pairs_computed: _cacheDebug.proximity_pairs,
       bbox_pruned_pairs: _cacheDebug.bbox_pruned,

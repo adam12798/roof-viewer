@@ -12,6 +12,15 @@
     { "projectId": "mo4drfnho9i", "label": "11 Ash Road",        "address": "11 Ash St, Woburn MA",           "lat": 42.4697017, "lng": -71.1502378,  "bucket_expected": "target_strip" },
     { "projectId": "mnb6yh8q3v2", "label": "254 Foster St",      "address": "254 Foster St, Lowell MA",       "lat": 42.6322265, "lng": -71.3377793,  "bucket_expected": "borderline_soft_gate" },
     { "projectId": "mno1jikqx5x", "label": "42 Tanager St",      "address": "42 Tanager St, Arlington MA",    "lat": 42.4227407, "lng": -71.1873932,  "bucket_expected": "reject_too_strict" },
-    { "projectId": "mo4ds3p992l", "label": "21 Stoddard",        "address": "21 Stoddard St, Woburn MA",      "lat": 42.4681236, "lng": -71.1498183,  "bucket_expected": "wrong_pitch_resolved" }
+    { "projectId": "mo4ds3p992l", "label": "21 Stoddard",        "address": "21 Stoddard St, Woburn MA",      "lat": 42.4681236, "lng": -71.1498183,  "bucket_expected": "wrong_pitch_resolved" },
+    { "projectId": "mo39fahcilm", "label": "52 Spaulding",       "address": "52 New Spaulding St, Lowell MA", "lat": 42.6298074, "lng": -71.3258097,  "bucket_expected": "reject_too_strict" },
+    { "projectId": "mo39et102aj", "label": "94 C St",            "address": "94 C St, Lowell MA",             "lat": 42.6292729, "lng": -71.3274221,  "bucket_expected": "reject_edge" },
+    { "projectId": "mo39fj4nitp", "label": "44 D St",            "address": "44 D St, Lowell MA",             "lat": 42.6300528, "lng": -71.3257714,  "bucket_expected": "reject_correct" },
+    { "projectId": "mo22auk85lc", "label": "12 Brown St",        "address": "12 Brown St, Brockton MA",       "lat": 42.093748,  "lng": -71.0764986,  "bucket_expected": "reject_correct" },
+    { "projectId": "mnhm2fmoweo", "label": "Salem",              "address": "22 Ocean Ave, Salem MA",         "lat": 42.5086972, "lng": -70.8890690,  "bucket_expected": "reject_correct" },
+    { "projectId": "mo4dn2nv9yn", "label": "17 Church Ave",      "address": "17 Church Ave, Woburn MA",       "lat": 42.4782017, "lng": -71.1530252,  "bucket_expected": "ridge_slope_issue" },
+    { "projectId": "mo39ego79gj", "label": "Puffer",             "address": "17 Puffer St, Lowell MA",        "lat": 42.6295317, "lng": -71.3280592,  "bucket_expected": "reject_correct" },
+    { "projectId": "mnhvluxhgm7", "label": "573 Westford St",    "address": "573 Westford St, Lowell MA",     "lat": 42.634007,  "lng": -71.3366528,  "bucket_expected": "ground_false_positive" },
+    { "projectId": "mo39h4rect1", "label": "74 Gates",           "address": "74 Gates St, Lowell MA",         "lat": 42.6354581, "lng": -71.3196416,  "bucket_expected": "construction_fusion" }
   ]
 }

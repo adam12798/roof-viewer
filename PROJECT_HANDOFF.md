@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V3P0 replay harness — V3 started, 12-case audit batch run)
+**Last updated:** 2026-04-20 (V3P1 LiDAR authority / fusion hardening active — 21-case validation)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -769,9 +769,98 @@ V3 is the next active track and will be broken into phases analogous to V2.
 
 **Validation (first batch, 2026-04-20, 12 cases):** 12/12 success, zero replay failures. Status distribution: 1 `auto_accept`, 10 `needs_review`, 1 `reject`. Runtime min=3.3s, median=4.6s, max=6.0s (V2P6 optimization holding). Top visual-review candidates surfaced: 254 Foster St (priority 13 — contradiction+weak_story+high_uncertainty), 42 Tanager St (reject confirmed), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (likely_ground_issue — unexpected drift from clean baseline worth visual check).
 
-**Status:** ACTIVE. First batch complete. Harness is reusable — run `node tools/v3p0_replay.js` against a running CRM (3001) + ML (5001) pair to regenerate outputs. Next V3 phase will consume `replay_results.md` recommendations for visual review.
+**Status:** BANKED. First batch complete (12 cases); 21-case V3P1 validation batch re-ran against the same harness with full success. Harness is reusable — run `node tools/v3p0_replay.js` against a running CRM (3001) + ML (5001) pair to regenerate outputs.
 
 **Reopen trigger:** Replay harness silently loses cases; output schema breaks downstream tooling; a new bucket category proves needed after visual review.
+
+---
+
+### V3P1 — LiDAR Authority / Fusion Hardening [ACTIVE]
+
+**Purpose:** Shift the balance of power so ML proposes candidate planes while LiDAR validates or vetoes slope / height / ridge / plane truth. Planes that strongly disagree with LiDAR evidence are removed from `roof_faces` before V2 structural logic and V2P7 decision integration run on the survivors. Ridge conflicts are flagged (not split — polygonization is next). Partial build rescue keeps at least one plane when all would otherwise be vetoed AND LiDAR supports structure.
+
+**Rules:** No retraining. No polygonization yet. No broad V1/V2 retuning. Thresholds centralized. Logic readable. Conservative: only suppress on strong LiDAR evidence.
+
+**Inputs:**
+- `envelope.crm_result.roof_faces` (post-V2P0/V2P0.1)
+- `envelope.crm_result.metadata.v2p0_ground_structure` (per-face classification + height_above_ground)
+- `body.lidar.points` (re-used to rebuild the 281×281 DSM grid via `v2p0BuildElevationGrid` — same helper, no V2P0 modification)
+
+**Pipeline placement:** After V2P0/V2P0.1 suppression, before V2P5 geometry cache. V2P1/V2P2/V2P3/V2P4/V2P7 all see the post-V3P1 face list. V2P0 metadata is untouched (still describes the pre-V3P1 classification).
+
+**Per-plane assessment (8 signals):**
+1. `fit_residual` — median perpendicular distance from footprint DSM samples to the ML plane (centroid anchor, pitch+azimuth normal)
+2. `slope_agreement_error` — angle between ML normal and locally-lstsq-fit LiDAR normal (degrees)
+3. `ridge_conflict_flag` — two half-slope fits within the footprint have dot < −0.30 on horizontal downslope vectors (plane likely straddles a ridge)
+4. `ground_veto_flag` — V2P0 classification is `ground_like` AND height_above_ground < 1.0m AND pitch < 12°
+5. `ml_support_score` — heuristic from face pitch (moderate baseline, docked in the known suspect 45°+ band)
+6. `lidar_support_score` — starts at 1.0, subtracts graduated penalties for fit_residual, slope disagreement, ground-like classification; each penalty tagged in `lidar_support_penalties[]`
+7. `fused_plane_score` — `ml_support × 0.45 + lidar_support × 0.55` (LiDAR weighted slightly higher — that's the authority shift)
+8. `fusion_decision` — one of `keep` / `split` / `suppress` / `uncertain`
+
+**Fusion decision rules (in order):**
+- `suppress` if `ground_veto_flag`
+- `suppress` if `fit_residual > 1.0m AND slope_agreement_error > 45°` (severe LiDAR rejection)
+- `suppress` if `fused_plane_score < 0.30`
+- `split` if `ridge_conflict_flag` (flag only — actual splitting is polygonization, future phase)
+- `uncertain` if `lidar_support < 0.50 AND slope_agreement_error > 45°`
+- otherwise `keep`
+
+**Partial build rescue:** If every plane ends up `suppress` AND the highest-scoring plane has `lidar_support ≥ 0.30`, promote it back to `keep` and append `partial_build_rescue` reason. Prevents over-vetoing.
+
+**Mutation rules:**
+- Planes marked `suppress` are REMOVED from `roof_faces` via `v3p1ApplyFusion()`
+- `split` and `uncertain` planes remain (V3P1 does not rewrite geometry)
+- Review reasons added when applicable: `v3_lidar_ground_veto`, `v3_lidar_plane_disagreement`, `v3_ridge_conflict`, `v3_partial_build_rescue`
+- If any veto or ridge flag fires, status is escalated from `auto_accept` to `needs_review`
+- V3P1 does NOT invent planes. When ML returns 0 planes (usable_gate rejects), V3P1 cannot rescue — the reject stands.
+
+**Debug object (`md.v3p1_lidar_fusion`):**
+Build-level: `v3_lidar_authority_applied`, `plane_count_in`, `plane_count_out`, `lidar_veto_count`, `ridge_split_enforced_count`, `ridge_conflict_flag_count`, `fused_plane_count`, `partial_build_rescue_applied`, `lidar_fusion_warnings[]`, `grid{valid_cells, total_cells, fill_fraction}`, `thresholds{}`, `scoring_weights{}`.
+Per-plane (`per_face[]`): `face_idx`, `sample_count`, `fit_residual`, `slope_agreement_error`, `height_above_ground`, `v2p0_classification`, `ridge_conflict_flag`, `ridge_dot`, `ground_veto_flag`, `ml_support_score`, `lidar_support_score`, `lidar_support_penalties[]`, `fused_plane_score`, `pitch`, `azimuth`, `fusion_decision`, `fusion_reasons[]`.
+
+Timing field `v3p1_lidar_fusion_ms` added to `performance_timing` and `hotspot_ranked_summary`.
+
+**Centralized thresholds:**
+`V3P1_FIT_RESIDUAL_OK_M=0.35`, `V3P1_FIT_RESIDUAL_MAX_M=0.60`, `V3P1_FIT_RESIDUAL_SEVERE_M=1.0`, `V3P1_SLOPE_AGREEMENT_TOLERANCE_DEG=25`, `V3P1_SLOPE_AGREEMENT_MAX_DEG=45`, `V3P1_SLOPE_DISAGREEMENT_SEVERE_DEG=60`, `V3P1_RIDGE_CONFLICT_DOT_THRESHOLD=-0.30`, `V3P1_FUSED_SUPPRESSION_THRESHOLD=0.30`, `V3P1_GROUND_VETO_MAX_HEIGHT_M=1.0`, `V3P1_GROUND_VETO_MAX_PITCH_DEG=12`, `V3P1_RESCUE_MIN_LIDAR_SUPPORT=0.30`.
+
+**Client reason labels added:** `v3_lidar_ground_veto`, `v3_lidar_plane_disagreement`, `v3_ridge_conflict`, `v3_partial_build_rescue`.
+
+**Bank criteria:**
+- Fewer visible houses end in 0-plane reject (_partial — only applies when ML returns ≥1 face; ML-level rejects are out of scope for V3P1_)
+- Fewer giant planes survive across obvious ridge breaks (flagged, not yet split)
+- Ground/driveway false positives reduced (573 Westford ground face correctly suppressed)
+- ML suggestions that conflict with LiDAR are less likely to survive (3/6 Lawrence, 3/8 Stoddard, 2/5 583 Westford suppressed on severe fit+slope disagreement)
+- Fusion logic explicit and debuggable (full per-face scoring + tagged penalties)
+- No material regression on cleaner V2 cases (15 Veteran unchanged: score=0.98)
+
+**Validation (21-case batch, 2026-04-20):** 21/21 success. 1 auto_accept, 14 needs_review, 6 reject. All rejects remain (ML returns 0 planes, V3P1 can't rescue without hallucinating). Suppression activity:
+
+| Property | Faces in | Faces out | Vetoed | Ridge flagged | Notes |
+|---|---:|---:|---:|---:|---|
+| 15 Veteran Rd | 3 | 3 | 0 | 0 | clean unchanged |
+| 20 Meadow Dr | 3 | 2 | 1 | 1 | ground-like + ridge |
+| Lawrence | 6 | 3 | 3 | 2 | severe fit+slope, 2 ridge flags |
+| 583 Westford St | 5 | 3 | 2 | 0 | severe fit residuals |
+| 21 Stoddard | 8 | 5 | 3 | 2 | severe fit+slope |
+| 17 Church Ave | 5 | 4 | 1 | 1 | extreme fit (6.28m) |
+| 573 Westford St | 4 | 3 | 1 | 0 | ground_like veto on driveway (fit=10m) |
+| 225 Gibson St | 6 | 5 | 1 | 1 | — |
+| 13 Richardson St | 5 | 4 | 1 | 1 | — |
+| 726 School St | 3 | 2 | 1 | 0 | ground veto |
+
+Zero partial_build_rescue invocations (no case had all planes suppressed). Rejected cases (42 Tanager, 52 Spaulding, 94 C, 44 D, 12 Brown, Salem) unchanged — all ML-level rejects.
+
+**Status:** ACTIVE. Ready to bank pending visual review of Lawrence + 21 Stoddard drops (both had 3-face suppressions on LiDAR severe-disagreement; per-face penalties are transparent in debug).
+
+**Reopen trigger:** False positive suppression on a clean/improved roof; false ground_veto on a legitimate low-pitch plane; ridge_conflict flag rate proven misleading once polygonization ships.
+
+**NOT in scope for V3P1 (deferred to later V3 phases):**
+- Polygonization / plane clipping / shared-edge graph rewrite
+- Splitting planes when ridge_conflict flag fires (current V3P1 flags only)
+- Rescuing ML-level rejects (usable_gate_very_low cases) — requires relaxing the upstream ML gate with LiDAR evidence, a future V3 phase
+- Dormer-specialized logic
+- Retraining
 
 ---
 
@@ -790,6 +879,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V3P1 LiDAR authority / fusion hardening — active. New layer between V2P0.1 suppression and V2P5 cache that validates/vetoes ML planes with LiDAR evidence. Per-plane scoring: `fit_residual` (median perpendicular distance to ML plane), `slope_agreement_error` (ML normal vs lstsq LiDAR normal), `ridge_conflict_flag` (half-plane opposing horizontal downslope), `ground_veto_flag` (V2P0 ground_like + height<1m + pitch<12°), `ml_support_score`, `lidar_support_score` (1.0 with graduated penalties + tagged reasons), `fused_plane_score = 0.45×ml + 0.55×lidar`, `fusion_decision` ∈ {keep, split, suppress, uncertain}. Suppression rules: ground_veto OR (fit>1m AND slope>45°) OR fused<0.30. Ridge conflicts flagged (not split — polygonization next). Partial build rescue: keep best plane when all would veto AND lidar_support≥0.30. Planes are removed from roof_faces before V2P1-V2P7 run. New review reasons: v3_lidar_ground_veto, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_partial_build_rescue. 21-case validation batch: 21/21 success. Key impact: 573 Westford driveway correctly suppressed (fit=10.18m, ground_like); Lawrence 6→3 (3 severe LiDAR disagreements); 21 Stoddard 8→5; 17 Church extreme fit (6.28m) plane suppressed; 583 Westford 5→3. Zero regression on 15 Veteran clean (still score=0.98). Zero partial_rescue invocations. ML-level rejects (6 cases: 42 Tanager, 52 Spaulding, 94 C, 44 D, 12 Brown, Salem) unchanged — V3P1 cannot rescue 0-plane ML rejects without hallucinating. Full per-face debug exposed via `md.v3p1_lidar_fusion`. No retraining, no polygonization, no V1/V2 retuning. |
 | 2026-04-20 | V3P0 Replay Harness / Server-Driven Audit — active. Added `tools/v3p0_replay.js` and `tools/v3p0_replay_cases.json` (12 cases covering clean_gable, clean_simple, improved_simple, complex_corrected, steep_real, improved_complex, complex_coherent, single_ground, target_strip, borderline_soft_gate, reject_too_strict, wrong_pitch_resolved). Harness logs in, fetches LiDAR via `/api/lidar/points`, calls `/api/ml/auto-build`, normalizes response into ~50 flat audit fields (replay health + outcome + runtime + V1/P8/P9 + V2P0–V2P8), auto-buckets into 5 category families, computes visual_review_priority, writes JSON + CSV + Markdown to `tools/v3p0_replay_output/`. First batch: 12/12 success, 0 replay failures — 1 auto_accept, 10 needs_review, 1 reject. Runtimes: min=3.3s, median=4.6s, max=6.0s. Top visual-review candidates: 254 Foster St (priority 13: contradiction+weak_story+high_uncertainty), 42 Tanager St (reject), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (unexpected likely_ground_issue). Zero V1/V2 phases reopened; evidence-collection only. Harness reusable for future batches via `node tools/v3p0_replay.js`. |
 | 2026-04-20 | V2P8 closeout / stabilization — banked. V2 track locked. Final regression sweep on 11 property states (11/11 pass, zero drift vs V2P7). Stability/coupling check with 8 degraded-metadata scenarios (all 8 pass — V2P4 missing, V2P3 missing, V2P2 missing, V2P1 missing, V2P0 missing, V2P4-only, all-metadata missing, zero-faces). Every V2 phase degrades gracefully via null-safe upstream fallbacks; V2P7 sets `v2_decision_integration_applied=false` and preserves prior status when V2P4 is absent. Added non-behavioral `md.v2p8_closeout` marker with `v2_phase_status:'banked'`, `v2_phases_banked[]`, `next_track:'V3'` — gives downstream tooling a runtime signal that V2 is locked. Zero bugs found. Zero banked phase reopens. Debug surface final. PROJECT_HANDOFF.md + ML_AUTO_BUILD_TRIAGE_STATUS.md §20 updated to reflect V2 complete / V3P0 next. |
 | 2026-04-20 | V2P7 polish pass — banked. Refactored decision logic into four clearly separated parts: `v2p7ScoreSupport` (pure positive — weighted average of V2P4 sub-scores with no penalties baked in), `v2p7ScoreRisk` (pure negative — tagged drivers summing to 0–1), `v2p7ComputeDampener` (small risk-only reduction up to 0.15 on complex-but-coherent roofs), `v2p7BuildTriggers` (6 named escalation detectors: low_consistency_with_uncertainty, contradictions_with_weak_pairing, fragmented_main_with_weak_relationships, external_risk_with_weak_story, main_body_weak, aggregate_risk_elevated). Contradiction/uncertainty penalties split out as their own line items. Migrated reason names to short machine-readable form (`v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_structural_contradiction`, `v2_ground_suppression_material`, `v2_clean_structural_story`). Legacy reason labels preserved in client `_REVIEW_REASON_LABELS`. Debug object rewritten for one-glance readability: `support_score`, `risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `complexity_dampener`, `effective_risk_score`, `final_v2_decision_score`, `explicit_escalation_triggers[]` (with id/detail/reason per trigger). Validation on 11 cases (9 original + 726 School as clean_simple + 583 Westford as complex_coherent): 11/11 pass. Key outcomes: 15 Veteran score=0.98 (dampener applied), 583 Westford score=0.85 (complex but coherent — dampener protects from escalation), 175 Warwick score=0.91 (steep but coherent — dampener 0.14), 13 Richardson T4 external_risk_with_weak_story trigger fires readably, hypothetical fragmented escalates with 5 explicit triggers + 6 clean reason names. See triage §19. |

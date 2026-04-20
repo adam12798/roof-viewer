@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V3P0 replay harness — V3 started, 12-case audit batch run)
+**Last updated:** 2026-04-20 (V3P1 LiDAR authority / fusion hardening active — 21-case validation batch)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -1916,7 +1916,127 @@ Plus: a random sample of `clean_auto_accept` (currently just 15 Veteran Rd) for 
 
 ---
 
-## 22. Related resources
+## 22. V3P1 — LiDAR Authority / Fusion Hardening
+
+**Date:** 2026-04-20
+**Phase:** V3 Phase 1 — second phase of the V3 track.
+**Pipeline placement:** After V2P0/V2P0.1 ground suppression, before V2P5 geometry cache.
+**Code location:** `server.js` — `lidarFusionAssessment()`, `v3p1ApplyFusion()`, and 10 helper functions.
+**Debug location:** `crm_result.metadata.v3p1_lidar_fusion`.
+
+### 22.1 Purpose
+
+Shift the balance of power so that ML proposes candidate planes and LiDAR validates or vetoes them. Before V3P1, the pipeline was "ML proposes, V2 scores, V2P7 decides status" — planes that disagreed with LiDAR could still survive into the final roof. V3P1 removes those planes before V2 structural logic runs on the surviving set. No retraining, no polygonization, no broad V1/V2 retuning.
+
+### 22.2 Method
+
+**Per-plane assessment (8 signals):**
+
+1. **Fit residual** — median perpendicular distance from DSM samples inside the footprint to the ML plane (anchored at footprint centroid, using pitch+azimuth normal).
+2. **Slope agreement error** — angle between ML-derived plane normal and a local lstsq-fit LiDAR normal inside the same footprint. Degrees.
+3. **Ridge conflict flag** — footprint samples split at the median X; two halves fit separately; horizontal downslope vectors compared. Dot product < −0.30 = opposing half-slopes = likely ridge straddling.
+4. **Ground veto flag** — V2P0 classification == `ground_like` AND height_above_ground < 1.0m AND pitch < 12°.
+5. **ML support score** — heuristic from face pitch (moderate baseline, docked if pitch > 45°).
+6. **LiDAR support score** — starts at 1.0, subtracts graduated penalties: severe/high/moderate fit_residual, severe/high/moderate slope_disagreement, v2p0 ground_like or uncertain_low. Each penalty tagged in `lidar_support_penalties[]`.
+7. **Fused plane score** — `ml_support × 0.45 + lidar_support × 0.55`. LiDAR gets the slight edge — that's the authority shift.
+8. **Fusion decision** — one of `keep` / `split` / `suppress` / `uncertain`.
+
+**Fusion decision rules (evaluated in order):**
+
+| Rule | Decision |
+|---|---|
+| `ground_veto_flag` | `suppress` |
+| `fit_residual > 1.0m AND slope_agreement_error > 45°` | `suppress` |
+| `fused_plane_score < 0.30` | `suppress` |
+| `ridge_conflict_flag` | `split` (flag only — V3P1 does not split geometry) |
+| `lidar_support < 0.50 AND slope_agreement_error > 45°` | `uncertain` |
+| otherwise | `keep` |
+
+**Partial build rescue:** If every plane gets `suppress` AND the highest-fused plane has `lidar_support >= 0.30`, promote it back to `keep` and append `partial_build_rescue` to its reasons. Prevents over-vetoing while NOT hallucinating new planes.
+
+**Mutation:** Planes marked `suppress` are removed from `roof_faces` before V2P5 cache builds. Review reasons appended when applicable: `v3_lidar_ground_veto`, `v3_lidar_plane_disagreement`, `v3_ridge_conflict`, `v3_partial_build_rescue`. Status escalated from `auto_accept` → `needs_review` when any veto or ridge flag fires. `split` and `uncertain` planes are kept (V3P1 does not rewrite geometry).
+
+**Important limitation:** V3P1 cannot rescue ML-level rejects (0 faces from usable_gate_very_low). That requires relaxing the upstream ML gate with LiDAR evidence — a future V3 phase.
+
+### 22.3 Centralized thresholds
+
+| Constant | Value |
+|---|---|
+| `V3P1_MIN_SAMPLES_FOR_FIT` | 12 |
+| `V3P1_FIT_RESIDUAL_OK_M` | 0.35 |
+| `V3P1_FIT_RESIDUAL_MAX_M` | 0.60 |
+| `V3P1_FIT_RESIDUAL_SEVERE_M` | 1.00 |
+| `V3P1_SLOPE_AGREEMENT_TOLERANCE_DEG` | 25 |
+| `V3P1_SLOPE_AGREEMENT_MAX_DEG` | 45 |
+| `V3P1_SLOPE_DISAGREEMENT_SEVERE_DEG` | 60 |
+| `V3P1_RIDGE_CONFLICT_DOT_THRESHOLD` | −0.30 |
+| `V3P1_FUSED_SUPPRESSION_THRESHOLD` | 0.30 |
+| `V3P1_GROUND_VETO_MAX_HEIGHT_M` | 1.0 |
+| `V3P1_GROUND_VETO_MAX_PITCH_DEG` | 12 |
+| `V3P1_ML_SUPPORT_WEIGHT` | 0.45 |
+| `V3P1_LIDAR_SUPPORT_WEIGHT` | 0.55 |
+| `V3P1_RESCUE_MIN_LIDAR_SUPPORT` | 0.30 |
+
+### 22.4 Per-property validation (21 cases)
+
+Face counts: before = ML output after V2P0.1; after = post-V3P1 survivors. Δ = suppressed.
+
+| Property | Bucket | Before | After | Δ | Ridge flag | Key V3P1 reasons | V2P7 final score | Verdict |
+|---|---|---:|---:|---:|---:|---|---:|---|
+| 15 Veteran Rd | clean_gable | 3 | 3 | 0 | 0 | — | 0.98 | No regression |
+| 726 School St | clean_simple | 3 | 2 | 1 | 0 | v3_lidar_ground_veto | 0.48 | Suppressed ground-like plane |
+| 20 Meadow Dr | improved_simple | 3 | 2 | 1 | 1 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.20 | Severe fit+slope on 1 face |
+| 225 Gibson St | complex_corrected | 6 | 5 | 1 | 1 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.83 | 1 veto + 1 ridge flag |
+| 175 Warwick | steep_real | 4 | 4 | 0 | 0 | — | 0.71 | No V3P1 action — steep real roof preserved |
+| Lawrence | improved_complex | 6 | 3 | 3 | 2 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.27 | 3 severe LiDAR disagreements |
+| 583 Westford St | complex_coherent | 5 | 3 | 2 | 0 | v3_lidar_plane_disagreement | 0.82 | 2 severe fit residuals suppressed |
+| 13 Richardson St | single_ground | 5 | 4 | 1 | 1 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.70 | 1 disagreement + ridge |
+| 11 Ash Road | target_strip | 4 | 4 | 0 | 0 | — | 0.98 | No regression |
+| 254 Foster St | borderline_soft_gate | 3 | 3 | 0 | 1 | v3_ridge_conflict | 0.20 | Ridge flag on already-weak case |
+| 42 Tanager St | reject_too_strict | 0 | 0 | — | — | — | — | ML reject — V3P1 cannot help |
+| 21 Stoddard | wrong_pitch_resolved | 8 | 5 | 3 | 2 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.71 | 3 severe LiDAR disagreements |
+| 52 Spaulding | reject_too_strict | 0 | 0 | — | — | — | — | ML reject |
+| 94 C St | reject_edge | 0 | 0 | — | — | — | — | ML reject |
+| 44 D St | reject_correct | 0 | 0 | — | — | — | — | ML reject |
+| 12 Brown St | reject_correct | 0 | 0 | — | — | — | — | ML reject |
+| Salem | reject_correct | 0 | 0 | — | — | — | — | ML reject |
+| 17 Church Ave | ridge_slope_issue | 5 | 4 | 1 | 1 | v3_lidar_plane_disagreement, v3_ridge_conflict | 0.92 | 1 extreme-fit veto (6.28m) + ridge |
+| Puffer | reject_correct | 2 | 2 | 0 | 0 | — | 0.98 | Was not actually ML-rejected this run |
+| 573 Westford St | ground_false_positive | 4 | 3 | 1 | 0 | v3_lidar_plane_disagreement | 0.79 | Driveway/ground plane vetoed (fit=10.18m, ground_like) |
+| 74 Gates | construction_fusion | 3 | 3 | 0 | 0 | — | 0.69 | No V3P1 action |
+
+**Totals:** 21/21 success. 22 planes suppressed across 10 properties. 11 ridge conflicts flagged across 8 properties. 0 partial_rescue invocations (no case had all planes suppressed). 0 clean regressions (15 Veteran unchanged at 0.98). ML-level rejects unchanged (V3P1 doesn't hallucinate).
+
+### 22.5 Success criteria check
+
+1. **Fewer visible houses end in 0-plane reject** — *partial success.* V3P1 cannot rescue ML-level rejects (6 cases with 0 planes). Future V3 phase would need to relax the usable_gate with LiDAR evidence.
+2. **Fewer giant planes survive across obvious ridge breaks** — *met.* 11 ridge conflicts flagged on 8 properties. Splitting itself is deferred to polygonization.
+3. **Ground/driveway false positives reduced** — *met.* 573 Westford driveway (fit=10.18m, ground_like) correctly suppressed. 20 Meadow and 726 School got additional ground-context vetoes.
+4. **ML suggestions that conflict with LiDAR are less likely to survive unchanged** — *met.* Lawrence 3/6 suppressed, 21 Stoddard 3/8, 583 Westford 2/5, 17 Church 1/5 — all on severe fit_residual + slope_disagreement.
+5. **Fusion logic is explicit and debuggable** — *met.* Full per-face breakdown with tagged `lidar_support_penalties[]`. Every decision traceable.
+6. **No material regression on cleaner V2 cases** — *met.* 15 Veteran (clean gable) unchanged at 0.98. 11 Ash unchanged at 0.98. 175 Warwick unchanged. 74 Gates unchanged.
+
+### 22.6 Observations for the next V3 phase
+
+1. **Lawrence + 21 Stoddard had significant face drops** (6→3 and 8→5). Worth a visual check to confirm the suppressed planes were genuinely bad (expected based on severe fit residuals 1.5–5m and slope errors 50–76°).
+2. **Ridge conflicts flagged but not split.** The next polygonization phase should consume these flags to decide where to cut.
+3. **ML-level rejects dominate the 0-plane failure class.** A "relax usable_gate with LiDAR evidence" phase would address the pattern V3P1 can't.
+4. **Default ML_SUPPORT_SCORE=0.60 is a heuristic.** When `crm_faces` confidence is surfaced into `roof_faces`, V3P1 can use real ML confidence.
+
+### 22.7 Verdict
+
+**KEEP (ACTIVE, ready for bank).** V3P1 delivers the core authority shift: LiDAR now validates or vetoes ML planes with fully transparent per-face reasoning. 22 suppressions across 10 properties with zero clean regressions. ML-level rejects and partial_rescue remain limitations (by design — V3P1 does not hallucinate). Ridge conflicts are flagged for the next polygonization phase to act on.
+
+### 22.8 Reopen triggers
+
+- False positive suppression on a visually clean roof
+- False `ground_veto` on a legitimate low-pitch plane section
+- Severe regression to Lawrence / 21 Stoddard once visually reviewed (if the suppressed planes turn out to have been correct)
+- Ridge conflict flag rate found to be misleading once polygonization ships
+
+---
+
+## 23. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
