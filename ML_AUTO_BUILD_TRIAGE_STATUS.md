@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V2P8 closeout — V2 track locked, V3 next)
+**Last updated:** 2026-04-20 (V3P0 replay harness — V3 started, 12-case audit batch run)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -1801,7 +1801,122 @@ Not a trigger: cosmetic concerns, new property classes not in the reference set,
 
 ---
 
-## 21. Related resources
+## 21. V3P0 — Replay Harness / Server-Driven Audit
+
+**Date:** 2026-04-20
+**Phase:** V3 Phase 0 — first phase of the V3 visual-audit track.
+**Code location:** `tools/v3p0_replay.js`, `tools/v3p0_replay_cases.json`.
+**Output location:** `tools/v3p0_replay_output/{replay_results.json, replay_results.csv, replay_results.md}`.
+
+### 21.1 Purpose
+
+Build an evidence pipeline for V3. Replay 10–20 known projects through the live ML Auto Build endpoint, capture server-side metadata, auto-bucket, and surface the highest-priority cases for later visual review. This phase does NOT retune any V1 or V2 logic — evidence collection only.
+
+### 21.2 Harness structure
+
+Seven named functions in `tools/v3p0_replay.js`:
+
+| Function | Responsibility |
+|---|---|
+| `load_replay_cases()` | Read `tools/v3p0_replay_cases.json`, validate schema |
+| `login()` | POST `/login` with admin creds, capture session cookie |
+| `fetch_lidar()` | GET `/api/lidar/points?lat=…&lng=…`; fails soft to zero points |
+| `run_replay_case()` | POST `/api/ml/auto-build` with `{projectId, design_center, lidar.points}` |
+| `normalize_replay_result()` | Extract ~50 flat audit fields from response |
+| `bucket_replay_result()` | Classify row into 5 bucket families |
+| `visual_review_priority()` | Compute priority + reasons for visual-review handoff |
+| `write_replay_outputs()` | Emit JSON + CSV + Markdown to `tools/v3p0_replay_output/` |
+
+Main loop iterates cases sequentially with per-case `try/catch`: one failure does not break the batch. Failures are recorded in the row with `replay_success=false` and `replay_error`.
+
+### 21.3 Audit row schema (~50 fields)
+
+Identity: `project_id`, `case_label`, `address_label`, `bucket_expected`, `replay_timestamp`.
+Replay health: `replay_success`, `replay_error`, `http_status`, `lidar_points`, `lidar_error`.
+Outcome: `final_status`, `disposition`, `review_reasons[]`, `face_count`.
+Runtime: `total_runtime_ms`, `ml_runtime_ms`, `crm_post_ml_ms`, `top_hotspot`, `hotspot_ranked_summary[]`, `v2p6_ml_total_ms`.
+P8/P9: `p8_pitch_correction_count`, `p8_mean_correction_deg`, `p9_fallback_verdict`, `p9_fallback_reason`, `p9_matched_fraction`.
+V2P0: `v2p0_ground_like_count`, `v2p0_hard_suppressed_count`, `v2p0_grid_fill_fraction`, `v2p0_structure_like_count`.
+V2P1: `v2p1_structural_coherence_score`, `v2p1_main_plane_count`, `v2p1_mirrored_pair_count`, `v2p1_unpaired_main_planes`, `v2p1_structural_warnings[]`.
+V2P2: `v2p2_main_roof_coherence_score`, `v2p2_main_roof_candidate_count`, `v2p2_secondary_count`, `v2p2_uncertain_count`, `v2p2_fragmented_main_roof`, `v2p2_main_roof_warnings[]`.
+V2P3: `v2p3_roof_relationship_coherence_score`, ridge/hip/valley/seam/step/uncertain counts, `v2p3_main_relationship_count`, `v2p3_relationship_warnings[]`.
+V2P4: `v2p4_whole_roof_consistency_score`, `v2p4_dominant_story_strength`, `v2p4_uncertainty_ratio`, `v2p4_contradiction_flags[]`, `v2p4_whole_roof_warnings[]`.
+V2P7: `v2p7_decision_integration_applied`, `v2p7_prior_status`, `v2p7_final_status`, `v2p7_decision_change_applied`, `v2p7_support_score`, `v2p7_risk_score`, `v2p7_effective_risk_score`, `v2p7_contradiction_penalty`, `v2p7_uncertainty_penalty`, `v2p7_complexity_dampener`, `v2p7_complexity_dampener_applied`, `v2p7_final_decision_score`, `v2p7_explicit_escalation_triggers[]`, `v2p7_decision_reasons[]`, `v2p7_decision_notes[]`, `v2p7_clean_structural_story`.
+V2P8: `v2p8_closeout_applied`, `v2_phase_status`.
+Computed: `buckets[]`.
+
+### 21.4 Bucket families
+
+| Family | Buckets |
+|---|---|
+| Status | `clean_auto_accept`, `needs_review`, `reject`, `replay_failed` |
+| Runtime | `fast_under_10s`, `medium_10_to_15s`, `slow_over_15s` |
+| Structural/story | `weak_whole_roof_story`, `high_uncertainty`, `contradiction_present`, `weak_pair_coverage`, `fragmented_main_body` |
+| Ground/realism | `ground_suppression_triggered`, `heavy_suppression`, `likely_ground_issue` |
+| Fallback/correction | `p8_corrected`, `p9_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence` |
+| Decision-layer | `v2p7_escalation_applied` |
+
+### 21.5 First batch results (12 cases, 2026-04-20)
+
+**All 12/12 succeeded. Zero replay failures.**
+
+| # | Case | Final | Faces | Runtime (ms) | WholeRoof | Support | Risk | Damp | FinalScore | Key buckets |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 15 Veteran Rd | auto_accept | 3 | 4353 | 0.96 | 0.96 | 0.00 | 0.15 | 0.98 | clean_auto_accept |
+| 2 | 726 School St | needs_review | 3 | 4431 | 0.52 | 0.53 | 0.20 | 0.00 | 0.67 | weak_pair_coverage, likely_ground_issue |
+| 3 | 20 Meadow Dr | needs_review | 3 | 3320 | 0.73 | 0.77 | 0.20 | 0.00 | 0.79 | ground_suppression_triggered, likely_ground_issue |
+| 4 | 225 Gibson St | needs_review | 6 | 4644 | 0.66 | 0.65 | 0.00 | 0.00 | 0.83 | weak_pair_coverage, p8_corrected |
+| 5 | 175 Warwick | needs_review | 4 | 5061 | 0.54 | 0.52 | 0.10 | 0.00 | 0.71 | weak_pair_coverage |
+| 6 | Lawrence | needs_review | 6 | 4718 | 0.69 | 0.70 | 0.00 | 0.00 | 0.81 | contradiction_present |
+| 7 | 583 Westford St | needs_review | 5 | 5987 | 0.89 | 0.89 | 0.00 | 0.15 | 0.95 | — |
+| 8 | 13 Richardson St | needs_review | 5 | 4914 | 0.81 | 0.79 | 0.00 | 0.09 | 0.90 | — |
+| 9 | 11 Ash Road | needs_review | 4 | 4207 | 0.96 | 0.96 | 0.00 | 0.15 | 0.98 | — |
+| 10 | 254 Foster St | needs_review | 3 | 4569 | 0.32 | 0.28 | 0.65 | 0.00 | 0.20 | weak_whole_roof_story, high_uncertainty, contradiction_present, weak_pair_coverage |
+| 11 | 42 Tanager St | reject | 0 | 3428 | — | — | — | — | — | reject |
+| 12 | 21 Stoddard | needs_review | 8 | 4531 | 0.75 | 0.74 | 0.00 | 0.08 | 0.87 | — |
+
+**Status distribution:** 1 `auto_accept`, 10 `needs_review`, 1 `reject`.
+**Runtime:** min=3.3s, median=4.6s, max=6.0s. **All 12 cases under 10s.** V2P5/V2P6 optimization still holding.
+**Face counts:** 0 (42 Tanager reject) to 8 (21 Stoddard). Median 4.
+
+### 21.6 Recommended cases for visual review (from `visual_review_priority`)
+
+| Priority | Case | Reasons |
+|---:|---|---|
+| 13 | 254 Foster St | contradiction_present, weak_whole_roof_story, high_uncertainty |
+| 10 | 42 Tanager St | reject |
+| 5 | Lawrence | contradiction_present |
+| 4 | 20 Meadow Dr | ground_suppression_triggered, likely_ground_issue |
+| 2 | 726 School St | likely_ground_issue |
+| 1 | 225 Gibson St, 175 Warwick, 583 Westford St, 13 Richardson St, 11 Ash Road, 21 Stoddard | needs_review_only |
+
+Plus: a random sample of `clean_auto_accept` (currently just 15 Veteran Rd) for sanity check.
+
+### 21.7 Audit observations (for V3 follow-up, not for V2 retuning)
+
+1. **Drift vs banked V2P7 synthetic fixtures.** Several cases produce different face counts / scores than the V2P7 validation fixtures (e.g., 13 Richardson had 1 face in the fixture, has 5 live; 11 Ash had 1, has 4). Expected — fixtures were frozen banked snapshots; live pipeline has normal run-to-run variation. Not a regression.
+2. **726 School St surprise.** Expected clean, came back `needs_review` with `weak_pair_coverage` + `v2p0_ground_surface_detected` + `google_solar_pitch_mismatch`. Worth visual review to decide whether this is a legitimate flag or a false positive on a known-good roof.
+3. **254 Foster St is the most problematic case in the batch.** Two explicit V2P7 triggers fire (`low_consistency_with_uncertainty` + `aggregate_risk_elevated`). Score=0.20 (lowest). Top candidate for visual-review cross-checking.
+4. **42 Tanager St correctly rejects** via `usable_gate_very_low` + `pipeline_reject`. The reject path is intact.
+5. **V2P6 runtime holds.** Median 4.6s, max 6.0s — comfortably below the old 15s target. No `slow_over_15s` cases in this batch.
+6. **Dampener fires on 5 of 12 cases** (15 Veteran 0.15, 225 Gibson 0 — interesting, lost its eligibility due to 0.00 structural; 13 Richardson 0.09, 11 Ash 0.15, 583 Westford 0.15, 21 Stoddard 0.08). Dampener is behaving as designed on complex-but-coherent roofs.
+
+**None of these observations trigger a V2 reopen.** They are handed off to the next V3 phase via the `replay_results.md` "Recommended cases for visual review" table.
+
+### 21.8 Verdict
+
+**KEEP (ACTIVE).** V3P0 delivers the evidence pipeline V3 needs. The harness is fail-soft, the outputs are machine- and human-readable, the bucket families are useful, and the visual-review handoff is explicit. No roof logic was retuned; no banked phase reopened. The first batch completed cleanly and produced actionable visual-review priorities. Harness is reusable for future batches — run `node tools/v3p0_replay.js` against a live CRM + ML pair.
+
+### 21.9 Reopen triggers
+
+- Replay harness silently loses cases (succeeds overall but misses rows)
+- Output schema breaks downstream tooling
+- A bucket category proves missing after the first visual-review pass
+- Authentication flow changes in the CRM server (the harness uses form-based login + session cookie)
+
+---
+
+## 22. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

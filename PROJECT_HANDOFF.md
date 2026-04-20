@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V2P8 closeout — V2 track locked, V3 next)
+**Last updated:** 2026-04-20 (V3P0 replay harness — V3 started, 12-case audit batch run)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -204,7 +204,7 @@ python3 ml_ui_server.py
 9. Click **ML Auto Build** on 20 Meadow Dr. Wait ~10-60s. Expect 5 roof faces in single-slope mode.
 10. Click **Save**. Reload the page. Confirm ML faces re-render in single-slope mode (not hip-roof mini-houses).
 11. Click **Undo** (Cmd+Z). Confirm prior state restores. Click **Redo** (Cmd+Shift+Z). Confirm ML faces come back in single-slope mode.
-12. Continue from the next task in section I. **V2 is locked — next active track is V3, starting with V3P0 visual replay audit. Do not modify V2 phases without a concrete debug-evidenced bug.** Confirm V2 lock is live by inspecting any ML response: `crm_result.metadata.v2p8_closeout.v2_phase_status` should read `'banked'`.
+12. Continue from the next task in section I. **V2 is locked. V3 is the active track; V3P0 replay harness is in `tools/v3p0_replay.js` with outputs in `tools/v3p0_replay_output/`.** Do not modify V2 phases without a concrete debug-evidenced bug. Confirm V2 lock is live by inspecting any ML response: `crm_result.metadata.v2p8_closeout.v2_phase_status` should read `'banked'`. Run `node tools/v3p0_replay.js` against the running server pair to regenerate audit outputs.
 
 ---
 
@@ -602,7 +602,7 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ### V2 track — COMPLETE AND LOCKED
 
-V2 is now a closed track. V2P0 through V2P7 are all banked. V2P8 (closeout/stabilization) is banked. **V3 is the next active track** and begins with V3P0 — Full Visual Validation & Replay Audit.
+V2 is now a closed track. V2P0 through V2P7 are all banked. V2P8 (closeout/stabilization) is banked. **V3 is the active track** and began with V3P0 — Replay Harness / Server-Driven Audit.
 
 **V2 scope summary:**
 - **V2P0 / V2P0.1** — ground vs structure separation + hard suppression of elongated ground strips
@@ -731,23 +731,47 @@ V3 is the next active track and will be broken into phases analogous to V2.
 
 ---
 
-### V3P0 — Full Visual Validation & Replay Audit [NEXT ACTIVE]
+### V3P0 — Replay Harness / Server-Driven Audit [ACTIVE]
 
-**Purpose:** Rerun the full property set, inspect screenshots / design-mode outputs visually, log recurring failure classes. This is the first phase of the V3 visual-audit track.
+**Purpose:** Build a replay harness that reruns known projects through the live ML Auto Build endpoint, captures server-side metadata, normalizes into audit rows, auto-buckets, and writes JSON/CSV/Markdown outputs. This is the first phase of the V3 track and the evidence pipeline for later visual review / targeted refinement phases.
 
-**Inputs:** Live ML Auto Build runs against the reference property set; design-mode screenshots; `md.v2p7_decision_integration` + `md.v2p4_whole_roof_consistency` + `md.v2p8_closeout` debug objects from each build.
+**Inputs:** `tools/v3p0_replay_cases.json` — 10–20 project IDs with lat/lng, address labels, and expected bucket tags. Each case corresponds to a real project in `data/projects.json`.
 
-**Outputs:** A visual regression record per property (pass/fail visual judgement + V2 scores + final status + reasons). A list of recurring visual failure classes that are NOT already surfaced by V2 warnings.
+**Pipeline (in `tools/v3p0_replay.js`):**
+1. `login()` — POST `/login`, capture session cookie for auth-gated CRM endpoints
+2. `fetch_lidar()` — GET `/api/lidar/points?lat=…&lng=…` (fails soft — zero points falls through to default-pitch)
+3. `run_replay_case()` — POST `/api/ml/auto-build` with `{projectId, design_center, lidar.points}`
+4. `normalize_replay_result()` — extract ~50 flat audit fields covering replay health, outcome, runtime, V1/P8/P9, and V2P0–V2P8 signals
+5. `bucket_replay_result()` — classify each row into status/runtime/structural/ground/fallback buckets
+6. `visual_review_priority()` — compute priority + reasons for handoff to the next V3 phase
+7. `write_replay_outputs()` — JSON + CSV + Markdown emitted to `tools/v3p0_replay_output/`
+
+**Output files (`tools/v3p0_replay_output/`):**
+- `replay_results.json` — full audit rows (machine-readable)
+- `replay_results.csv` — flat columnar view for spreadsheet tooling
+- `replay_results.md` — human-readable summary with status distribution, runtime stats, bucket counts, per-case table, and **recommended cases for visual review**
+
+**Bucket categories:**
+- Status: `clean_auto_accept`, `needs_review`, `reject`, `replay_failed`
+- Runtime: `fast_under_10s`, `medium_10_to_15s`, `slow_over_15s`
+- Structural/story: `weak_whole_roof_story`, `high_uncertainty`, `contradiction_present`, `weak_pair_coverage`, `fragmented_main_body`
+- Ground/realism: `ground_suppression_triggered`, `heavy_suppression`, `likely_ground_issue`
+- Fallback/correction: `p8_corrected`, `p9_unmatched`, `p9_low_match_fraction`, `p9_low_match_confidence`
+- Decision-layer: `v2p7_escalation_applied`
 
 **Rules:**
-- Do NOT tune during the audit. Only log findings.
-- Do NOT reopen any banked V2 phase without concrete debug-evidenced proof.
-- Visual audit findings are inputs to later V3 phases (targeted fixes), not to V2 retuning.
-- Pair every "visually wrong" property with its `md.v2p7_decision_integration` debug output so the V2 story can be cross-referenced.
+- Do NOT retune V1/V2 behavior during this phase. Evidence collection only.
+- Do NOT perform manual visual judgment inside the harness.
+- Fail soft per-case; record replay failures explicitly in the audit row.
+- Reuse existing server outputs; no new logic beyond normalization/bucketing/reporting.
 
-**Bank criteria:** A complete per-property visual record exists for the reference set; recurring failure classes are enumerated with frequency counts; zero V2 retuning happened during the audit.
+**Bank criteria:** A complete 10–20 case batch runs end-to-end with zero silent failures; outputs clearly identify which cases deserve visual review next; no roof logic retuned; the harness is reusable for future batches.
 
-**Status:** NEXT. Begins now that V2P8 is banked.
+**Validation (first batch, 2026-04-20, 12 cases):** 12/12 success, zero replay failures. Status distribution: 1 `auto_accept`, 10 `needs_review`, 1 `reject`. Runtime min=3.3s, median=4.6s, max=6.0s (V2P6 optimization holding). Top visual-review candidates surfaced: 254 Foster St (priority 13 — contradiction+weak_story+high_uncertainty), 42 Tanager St (reject confirmed), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (likely_ground_issue — unexpected drift from clean baseline worth visual check).
+
+**Status:** ACTIVE. First batch complete. Harness is reusable — run `node tools/v3p0_replay.js` against a running CRM (3001) + ML (5001) pair to regenerate outputs. Next V3 phase will consume `replay_results.md` recommendations for visual review.
+
+**Reopen trigger:** Replay harness silently loses cases; output schema breaks downstream tooling; a new bucket category proves needed after visual review.
 
 ---
 
@@ -766,6 +790,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-20 | V3P0 Replay Harness / Server-Driven Audit — active. Added `tools/v3p0_replay.js` and `tools/v3p0_replay_cases.json` (12 cases covering clean_gable, clean_simple, improved_simple, complex_corrected, steep_real, improved_complex, complex_coherent, single_ground, target_strip, borderline_soft_gate, reject_too_strict, wrong_pitch_resolved). Harness logs in, fetches LiDAR via `/api/lidar/points`, calls `/api/ml/auto-build`, normalizes response into ~50 flat audit fields (replay health + outcome + runtime + V1/P8/P9 + V2P0–V2P8), auto-buckets into 5 category families, computes visual_review_priority, writes JSON + CSV + Markdown to `tools/v3p0_replay_output/`. First batch: 12/12 success, 0 replay failures — 1 auto_accept, 10 needs_review, 1 reject. Runtimes: min=3.3s, median=4.6s, max=6.0s. Top visual-review candidates: 254 Foster St (priority 13: contradiction+weak_story+high_uncertainty), 42 Tanager St (reject), Lawrence (contradiction), 20 Meadow (ground_suppression), 726 School St (unexpected likely_ground_issue). Zero V1/V2 phases reopened; evidence-collection only. Harness reusable for future batches via `node tools/v3p0_replay.js`. |
 | 2026-04-20 | V2P8 closeout / stabilization — banked. V2 track locked. Final regression sweep on 11 property states (11/11 pass, zero drift vs V2P7). Stability/coupling check with 8 degraded-metadata scenarios (all 8 pass — V2P4 missing, V2P3 missing, V2P2 missing, V2P1 missing, V2P0 missing, V2P4-only, all-metadata missing, zero-faces). Every V2 phase degrades gracefully via null-safe upstream fallbacks; V2P7 sets `v2_decision_integration_applied=false` and preserves prior status when V2P4 is absent. Added non-behavioral `md.v2p8_closeout` marker with `v2_phase_status:'banked'`, `v2_phases_banked[]`, `next_track:'V3'` — gives downstream tooling a runtime signal that V2 is locked. Zero bugs found. Zero banked phase reopens. Debug surface final. PROJECT_HANDOFF.md + ML_AUTO_BUILD_TRIAGE_STATUS.md §20 updated to reflect V2 complete / V3P0 next. |
 | 2026-04-20 | V2P7 polish pass — banked. Refactored decision logic into four clearly separated parts: `v2p7ScoreSupport` (pure positive — weighted average of V2P4 sub-scores with no penalties baked in), `v2p7ScoreRisk` (pure negative — tagged drivers summing to 0–1), `v2p7ComputeDampener` (small risk-only reduction up to 0.15 on complex-but-coherent roofs), `v2p7BuildTriggers` (6 named escalation detectors: low_consistency_with_uncertainty, contradictions_with_weak_pairing, fragmented_main_with_weak_relationships, external_risk_with_weak_story, main_body_weak, aggregate_risk_elevated). Contradiction/uncertainty penalties split out as their own line items. Migrated reason names to short machine-readable form (`v2_low_consistency`, `v2_fragmented_main_body`, `v2_high_uncertainty`, `v2_weak_pair_coverage`, `v2_relationships_uncertain`, `v2_structural_contradiction`, `v2_ground_suppression_material`, `v2_clean_structural_story`). Legacy reason labels preserved in client `_REVIEW_REASON_LABELS`. Debug object rewritten for one-glance readability: `support_score`, `risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `complexity_dampener`, `effective_risk_score`, `final_v2_decision_score`, `explicit_escalation_triggers[]` (with id/detail/reason per trigger). Validation on 11 cases (9 original + 726 School as clean_simple + 583 Westford as complex_coherent): 11/11 pass. Key outcomes: 15 Veteran score=0.98 (dampener applied), 583 Westford score=0.85 (complex but coherent — dampener protects from escalation), 175 Warwick score=0.91 (steep but coherent — dampener 0.14), 13 Richardson T4 external_risk_with_weak_story trigger fires readably, hypothetical fragmented escalates with 5 explicit triggers + 6 clean reason names. See triage §19. |
 | 2026-04-20 | V2P7 Decision-Layer Integration. Banked V2P0–V2P4 signals now lightly influence `auto_build_status` via a conservative scoring model. Confidence support score = `whole_roof × 0.6 + dominant_story × 0.4 − 0.1 × min(contradictions, 3)`. Aggregate risk score from explicit drivers (whole_roof<0.50, main_body<0.40, relationships<0.40, uncertainty>0.60, contradictions≥2, warnings≥2, ground suppression, fragmented main roof). Escalation fires when any of 6 triggers hit; reject requires multi-signal agreement (`risk≥0.70 AND whole_roof<0.20 AND story<0.15 AND contradictions≥2 AND prior needs_review with ≥3 reasons AND (ground/single_face)`) — capability reserved, no current properties trigger it. Added `md.v2p7_decision_integration` debug with support/risk breakdown, thresholds, and decision_reasons. 7 new client reason labels (`v2_low_whole_roof_consistency`, `v2_fragmented_main_roof`, etc.). Validation on 7 banked properties + 2 hypothetical cases (9/9 pass): 15 Veteran score=0.99 reinforces auto_accept, 175 Warwick score=0.92 NOT demoted, 13 Richardson / 11 Ash reinforced with `v2_low_whole_roof_consistency`, synthetic fragmented multi-face correctly escalates auto_accept→needs_review with 6 V2 reasons. No geometry mutation. See triage §19. |

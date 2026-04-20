@@ -1,0 +1,17 @@
+{
+  "__comment": "V3P0 replay harness case list. Covers the known validation spectrum: clean_gable, clean_simple, improved_simple, complex_corrected, steep_real, improved_complex, complex_coherent, single_ground, target_strip, borderline_soft_gate, reject_too_strict, wrong_pitch_resolved.",
+  "cases": [
+    { "projectId": "mo4dqkup65m", "label": "15 Veteran Rd",      "address": "15 Veteran Rd, Woburn MA",       "lat": 42.4701184, "lng": -71.1510708,  "bucket_expected": "clean_gable" },
+    { "projectId": "mo39gat1ykm", "label": "726 School St",      "address": "726 School St, Lowell MA",       "lat": 42.6307954, "lng": -71.3251194,  "bucket_expected": "clean_simple" },
+    { "projectId": "mn9805q0ddm", "label": "20 Meadow Dr",       "address": "20 Meadow Dr, Lowell MA",        "lat": 42.6462749, "lng": -71.3545337,  "bucket_expected": "improved_simple" },
+    { "projectId": "mnc01zdwiub", "label": "225 Gibson St",      "address": "225 Gibson St, Lowell MA",       "lat": 42.6324421, "lng": -71.3391508,  "bucket_expected": "complex_corrected" },
+    { "projectId": "mo39e58vsao", "label": "175 Warwick",        "address": "175 Warwick St, Lowell MA",      "lat": 42.6290016, "lng": -71.3290496,  "bucket_expected": "steep_real" },
+    { "projectId": "mo22ewvgze7", "label": "Lawrence",           "address": "183 Sanborn St, Lawrence MA",    "lat": 42.6926061, "lng": -71.1677099,  "bucket_expected": "improved_complex" },
+    { "projectId": "mngtq3e4skj", "label": "583 Westford St",    "address": "583 Westford St, Lowell MA",     "lat": 42.6339402, "lng": -71.3369430,  "bucket_expected": "complex_coherent" },
+    { "projectId": "mo4dq9hwv8i", "label": "13 Richardson St",   "address": "13 Richardson St, Woburn MA",    "lat": 42.4707403, "lng": -71.1511159,  "bucket_expected": "single_ground" },
+    { "projectId": "mo4drfnho9i", "label": "11 Ash Road",        "address": "11 Ash St, Woburn MA",           "lat": 42.4697017, "lng": -71.1502378,  "bucket_expected": "target_strip" },
+    { "projectId": "mnb6yh8q3v2", "label": "254 Foster St",      "address": "254 Foster St, Lowell MA",       "lat": 42.6322265, "lng": -71.3377793,  "bucket_expected": "borderline_soft_gate" },
+    { "projectId": "mno1jikqx5x", "label": "42 Tanager St",      "address": "42 Tanager St, Arlington MA",    "lat": 42.4227407, "lng": -71.1873932,  "bucket_expected": "reject_too_strict" },
+    { "projectId": "mo4ds3p992l", "label": "21 Stoddard",        "address": "21 Stoddard St, Woburn MA",      "lat": 42.4681236, "lng": -71.1498183,  "bucket_expected": "wrong_pitch_resolved" }
+  ]
+}
