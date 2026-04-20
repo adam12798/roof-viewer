@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-19 (V2P0.1 ground suppression hardening)
+**Last updated:** 2026-04-20 (V2P7 decision-layer integration)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -1489,7 +1489,141 @@ Passed via `_cache` kwarg to `_compute_edge_features()`. No accuracy change — 
 
 ---
 
-## 19. Related resources
+## 19. V2P7 — Decision-Layer Integration
+
+**Date:** 2026-04-20
+**Phase:** V2 Phase 7 (after V2P0/V2P0.1/V2P1/V2P2/V2P3/V2P4/V2P5/V2P6)
+**Pipeline placement:** After V2P4 in `/api/ml/auto-build` proxy route, before V2P5 timing metadata.
+**Code location:** `server.js` — `v2p7DecisionIntegration()`, `v2p7CollectInputs()`, `v2p7ScoreSupport()`, `v2p7ScoreRisk()`, `v2p7DeriveReasons()`, `v2p7IntegrateFinalStatus()`, `v2p7ApplyDecision()`.
+**Debug location:** `crm_result.metadata.v2p7_decision_integration`.
+
+### 19.1 Purpose
+
+Let the banked V2P0–V2P4 structural-intelligence signals begin to influence final `auto_build_status` decisioning in a controlled, conservative, explainable way. V2P0–V2P4 built diagnostic and structural logic; V2P7 is the first phase that lets those signals do meaningful product work. The hard rule is that V2 must not become an opaque veto engine: all decisions must be debuggable, the thresholds must be explicit and centralized, and reject must remain rare and evidence-heavy.
+
+### 19.2 Method
+
+**Five helper functions:**
+1. `v2p7CollectInputs(envelope)` — reads V2P0/V2P1/V2P2/V2P3/V2P4 metadata and prior `auto_build_status` / `review_policy_reasons` into a single input object.
+2. `v2p7ScoreSupport(inp)` — computes `support = whole_roof_consistency × 0.6 + dominant_story_strength × 0.4 − 0.10 × min(contradictions, 3)`, clamped 0–1.
+3. `v2p7ScoreRisk(inp)` — sums explicit risk drivers with transparent weights, clamped 0–1. Also returns a `risk_drivers[]` array for debug.
+4. `v2p7DeriveReasons(inp)` — emits canonical V2P7 reason codes and detects `clean_structural_story` support case.
+5. `v2p7IntegrateFinalStatus(inp, support, risk, derived)` — applies the escalation/support/reject decision rules and returns the final status + change flags.
+
+Plus a wrapper `v2p7DecisionIntegration(envelope)` that returns the full debug object and `v2p7ApplyDecision(envelope, decision)` that mutates the envelope (only when the decision CHANGES the status).
+
+### 19.3 Scoring model
+
+| Signal | Source | Weight / threshold | Effect |
+|---|---|---|---|
+| whole_roof_consistency | V2P4 | base×0.6 in support; <0.50 = +0.30 risk | Primary driver |
+| dominant_story_strength | V2P4 | ×0.4 in support | Primary driver |
+| main_roof_coherence | V2P2/V2P4 | <0.40 with ≥2 faces = +0.20 risk | Escalation trigger |
+| relationship_coherence | V2P3/V2P4 | <0.40 with ≥2 main rels = +0.15 risk | Contributes to risk |
+| structural_coherence | V2P1/V2P4 | <0.40 with ≥2 main planes = +0.10 risk | Contributes to risk |
+| uncertainty_ratio | V2P4 | >0.60 = +0.10 risk | Contributes to risk |
+| contradiction_flags | V2P4 | ≥2 = +0.15 risk + escalation trigger | Contributes to risk |
+| whole_roof_warnings | V2P4 | ≥2 = +0.10 risk | Contributes to risk |
+| hard_ground_suppressed | V2P0 | >0 = +0.10 risk | Contributes to risk |
+| ground_like_count | V2P0 | >0 = +0.10 risk | Contributes to risk |
+| fragmented_main_roof | V2P2 | true = +0.05 risk | Small contribution |
+
+Reported score: `v2_decision_score = clamp01(0.5 + 0.5 × (support − risk))`.
+
+### 19.4 Decision behavior
+
+**Escalation (auto_accept → needs_review):** fires when ANY trigger hits:
+- `whole_roof_consistency < 0.50`
+- `contradiction_flags.length >= 2`
+- `main_body < 0.40` AND `face_count >= 2`
+- `uncertainty > 0.60` AND `whole_roof < 0.70`
+- `relationship < 0.40` AND `main_relationship_count >= 3`
+- aggregate `risk >= 0.45`
+
+**Support (no status change, informational note only):** `whole_roof >= 0.85 AND 0 contradictions AND 0 warnings AND main_body >= 0.75 AND dominant_story >= 0.75` → records `v2_clean_structural_story` in `v2_decision_notes`.
+
+**Reject (needs_review → reject — extremely rare; requires ALL conditions):**
+- `risk >= 0.70`
+- `whole_roof < 0.20`
+- `dominant_story < 0.15`
+- `contradiction_flags.length >= 2`
+- `prior_status == 'needs_review'`
+- `prior_review_reasons.length >= 3`
+- `ground_like > 0 OR hard_ground_suppressed > 0 OR face_count <= 1`
+
+No property in the current validation set triggers reject. The capability exists only for pathological multi-signal failures. V2P7 never creates reject from `auto_accept` directly.
+
+### 19.5 Reason codes
+
+Added to `review_policy_reasons` only when the decision CHANGES the status (escalation or reject). Always present in `v2p7_decision_integration.v2_decision_reasons[]` when applicable:
+
+| Code | Triggered when |
+|---|---|
+| `v2_low_whole_roof_consistency` | whole_roof < 0.50 |
+| `v2_fragmented_main_roof` | main_body < 0.40 with ≥2 faces OR V2P2 fragmented flag |
+| `v2_high_main_face_uncertainty` | uncertainty_ratio > 0.60 |
+| `v2_weak_structural_pairing` | structural < 0.40 with ≥2 main planes |
+| `v2_relationships_mostly_uncertain` | relationship < 0.40 with ≥3 main relationships |
+| `v2_ground_suppression_material` | hard_ground_suppressed_count > 0 |
+| `v2_contradictory_structural_story` | contradiction_flags ≥ 2 |
+| `v2_clean_structural_story` (note only) | all-healthy support case |
+
+All 7 status-changing reasons have human-readable labels in `_REVIEW_REASON_LABELS` on the design page.
+
+### 19.6 Debug object
+
+`crm_result.metadata.v2p7_decision_integration` — required fields: `v2_decision_integration_applied`, `prior_status`, `final_status`, `v2_decision_score`, `v2_decision_reasons[]`, `v2_decision_notes[]`, `v2_supporting_signals{}`, `v2_risk_signals{}`, `decision_change_applied`. Recommended fields: `confidence_support_score`, `structural_risk_score`, `whole_roof_risk_score`, `contradiction_penalty`, `uncertainty_penalty`, `escalation_applied`, `deescalation_applied`, `reject_applied`, `thresholds{}`, `scoring_weights{}`.
+
+Timing field `v2p7_decision_ms` added to `performance_timing` and `hotspot_ranked_summary`.
+
+### 19.7 Validation (offline harness, 9 cases)
+
+Run: `node tools/v2p7_validate.js` — constructs synthetic envelopes from the banked V2P0–V2P4 validation numbers (§12–§16) and runs `v2p7DecisionIntegration()`.
+
+| Property | Bucket | Prior | Final | Changed | Decision score | Support | Risk | Key V2 reasons |
+|---|---|---|---|---|---:|---:|---:|---|
+| 15 Veteran Rd | clean_gable | auto_accept | auto_accept | no | 0.99 | 0.97 | 0.00 | clean_structural_story |
+| 20 Meadow Dr | improved_simple | needs_review | needs_review | no | 0.85 | 0.79 | 0.10 | v2_ground_suppression_material (debug only) |
+| 225 Gibson St | complex_corrected | needs_review | needs_review | no | 0.86 | 0.72 | 0.00 | — |
+| 175 Warwick | steep_real | needs_review | needs_review | no | 0.92 | 0.83 | 0.00 | — |
+| Lawrence | improved_complex | needs_review | needs_review | no | 0.82 | 0.63 | 0.00 | — |
+| 13 Richardson St | single_ground | needs_review | needs_review | no | 0.37 | 0.14 | 0.40 | v2_low_whole_roof_consistency (reinforces) |
+| 11 Ash Road | target_strip | needs_review | needs_review | no | 0.59 | 0.48 | 0.30 | v2_low_whole_roof_consistency (reinforces) |
+| Hypothetical fragmented (escalation test) | synthetic | auto_accept | needs_review | **yes** | 0.11 | 0.22 | 1.00 | v2_low_whole_roof_consistency, v2_fragmented_main_roof, v2_high_main_face_uncertainty, v2_weak_structural_pairing, v2_relationships_mostly_uncertain, v2_contradictory_structural_story |
+| Hypothetical extreme pathological (reject test) | synthetic | needs_review | needs_review | no | 0.28 | 0.12 | 0.55 | v2_low_whole_roof_consistency, v2_high_main_face_uncertainty (did NOT reject — contradictions below threshold) |
+
+**All 9 cases pass.** 0 clean escalations, 0 false rejects, reject path is effectively unreachable on known properties.
+
+### 19.8 Key findings
+
+1. **Clean roofs stay clean.** 15 Veteran (clean gable) scores 0.99 and is marked `v2_clean_structural_story`. Zero V2 reasons added to envelope. Status unchanged.
+
+2. **Steep-but-real roofs NOT unfairly demoted.** 175 Warwick (steep 47–55° roof, Google Solar agrees) scores 0.92 and V2 adds nothing. The scoring correctly rewards a coherent structural story regardless of pitch.
+
+3. **Already-flagged weak roofs get honest V2 reinforcement.** 13 Richardson (whole_roof=0.20, single ground face) gets `v2_low_whole_roof_consistency` in debug, reinforcing the existing `p9_build_unmatched` / `crm_soft_gate_applied` / `v2p0_ground_surface_detected` reasons. No status change because prior was already `needs_review`.
+
+4. **Escalation works when evidence warrants it.** The hypothetical fragmented multi-face case (whole_roof=0.40, contradictions=2, fragmented_main_roof=true, uncertainty=0.70) correctly escalates `auto_accept → needs_review` with 6 distinct V2 reasons merged into `review_policy_reasons`.
+
+5. **Reject remains extremely rare.** The hypothetical extreme pathological case (whole_roof=0.15, story=0.08, risk=0.55, 3 prior reasons, face_count=1) does NOT reject because contradiction_flags=0 fails the reject gate. By design, only truly pathological builds with multi-source evidence can reach reject.
+
+6. **No clean regressions.** All 4 clean/improved properties keep prior status; V2 does not add noise. The "reasons merged only when status changes" rule prevents debug clutter on already-flagged or clean builds.
+
+7. **Debug is interpretable.** Every decision includes `v2_decision_score`, `support`, `risk`, `risk_drivers[]`, `thresholds{}`, and `notes[]`. The reader can reproduce the decision from the debug object alone.
+
+### 19.9 Verdict
+
+**KEEP (ACTIVE).** V2P7 gives the product a conservative, explainable, reversible way to act on banked V2 structural intelligence without becoming an opaque veto engine. Escalation fires only on multi-signal evidence; reject is effectively unreachable on current known properties but remains available for pathological cases. Clean roofs stay clean, weak roofs get honest reinforcement, steep-but-real roofs are protected from unfair demotion. The phase adds zero new persistent UI and merges cleanly into the existing `needs_review` banner flow via 7 new reason labels.
+
+### 19.10 Reopen triggers
+
+- False positive escalation on a clean property
+- False reject on any property
+- A V2P7 reason appearing on a build where the user perceives the review as unexplained
+- Any banked V2 phase score found misleading enough to distort V2P7 decisions (would reopen that phase, not V2P7)
+
+---
+
+## 20. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

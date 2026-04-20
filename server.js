@@ -16395,7 +16395,14 @@ app.get("/design", (req, res) => {
           p9_low_match_fraction: 'Most ML faces could not be matched to Google Solar',
           p9_low_match_confidence: 'ML faces match Google Solar with low confidence',
           v2p0_ground_surface_detected: 'Ground-like surface detected (low elevation, flat, large area)',
-          v2p0_ground_surface_suppressed: 'Ground-like elongated surface removed from build'
+          v2p0_ground_surface_suppressed: 'Ground-like elongated surface removed from build',
+          v2_low_whole_roof_consistency: 'Overall roof structure assessment is weak',
+          v2_fragmented_main_roof: 'Main roof body is fragmented or unclear',
+          v2_high_main_face_uncertainty: 'High structural uncertainty on main roof faces',
+          v2_weak_structural_pairing: 'Main roof planes do not form strong mirrored pairs',
+          v2_relationships_mostly_uncertain: 'Roof edge relationships (ridge/hip/valley) are mostly uncertain',
+          v2_ground_suppression_material: 'Material ground-level surface removed from build',
+          v2_contradictory_structural_story: 'Structural signals disagree about roof interpretation'
         };
         var _faceSummary = 'ML detected ' + faces.length + ' roof face' + (faces.length > 1 ? 's' : '');
         if (_mlBuildStatus === 'needs_review') {
@@ -26096,6 +26103,311 @@ function wholeRoofConsistencyAssessment(faces, v2p0, v2p1, v2p2, v2p3) {
   };
 }
 
+// ── V2P7: Decision-layer integration ───────────────────────────────────────
+// Lets banked V2P0–V2P4 signals influence final auto_build_status in a
+// conservative, explainable, reversible way. Debug-heavy; thresholds centralized.
+const V2P7_WHOLE_ROOF_LOW = 0.50;
+const V2P7_WHOLE_ROOF_STRONG = 0.85;
+const V2P7_WHOLE_ROOF_REJECT_FLOOR = 0.20;
+const V2P7_MAIN_COHERENCE_LOW = 0.40;
+const V2P7_MAIN_COHERENCE_STRONG = 0.75;
+const V2P7_REL_COHERENCE_LOW = 0.40;
+const V2P7_STRUCT_COHERENCE_LOW = 0.40;
+const V2P7_UNCERTAINTY_HIGH = 0.60;
+const V2P7_DOMINANT_STORY_STRONG = 0.75;
+const V2P7_DOMINANT_STORY_REJECT_FLOOR = 0.15;
+const V2P7_CONTRADICTION_ESCALATE_COUNT = 2;
+const V2P7_CONTRADICTION_REJECT_COUNT = 2;
+const V2P7_SUPPORT_W_CONSISTENCY = 0.6;
+const V2P7_SUPPORT_W_STORY = 0.4;
+const V2P7_SUPPORT_PENALTY_PER_CONTRADICTION = 0.10;
+const V2P7_RISK_ESCALATE_THRESHOLD = 0.45;
+const V2P7_RISK_REJECT_THRESHOLD = 0.70;
+const V2P7_REJECT_MIN_PRIOR_REASONS = 3;
+
+function v2p7CollectInputs(envelope) {
+  const cr = (envelope && envelope.crm_result) || {};
+  const md = cr.metadata || {};
+  const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces : [];
+  const v2p0 = md.v2p0_ground_structure || null;
+  const v2p1 = md.v2p1_structural_coherence || null;
+  const v2p2 = md.v2p2_main_roof_coherence || null;
+  const v2p3 = md.v2p3_roof_relationships || null;
+  const v2p4 = md.v2p4_whole_roof_consistency || null;
+
+  return {
+    faceCount: faces.length,
+    priorStatus: envelope.auto_build_status || 'unknown',
+    priorReasons: Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons.slice() : [],
+    wholeRoof: v2p4 ? (v2p4.whole_roof_consistency_score || 0) : null,
+    story: v2p4 ? (v2p4.dominant_story_strength || 0) : null,
+    mainBody: v2p4 ? (v2p4.main_body_score || 0) : (v2p2 ? (v2p2.main_roof_coherence_score || 0) : null),
+    structural: v2p4 ? (v2p4.structural_pairing_score || 0) : (v2p1 ? (v2p1.structural_coherence_score || 0) : null),
+    relationship: v2p4 ? (v2p4.relationship_score || 0) : (v2p3 ? (v2p3.roof_relationship_coherence_score || 0) : null),
+    realism: v2p4 ? (v2p4.realism_factor || 0) : null,
+    uncertainty: v2p4 ? (v2p4.uncertainty_ratio || 0) : 0,
+    contradictionFlags: (v2p4 && Array.isArray(v2p4.contradiction_flags)) ? v2p4.contradiction_flags.slice() : [],
+    wholeRoofWarnings: (v2p4 && Array.isArray(v2p4.whole_roof_warnings)) ? v2p4.whole_roof_warnings.slice() : [],
+    mainRelCount: v2p3 ? (v2p3.main_relationship_count || 0) : 0,
+    mainPlaneCount: v2p1 ? (v2p1.main_plane_count || 0) : 0,
+    mainCandidateCount: v2p2 ? (v2p2.main_roof_candidate_count || 0) : 0,
+    fragmentedMainRoof: v2p2 ? !!v2p2.fragmented_main_roof : false,
+    groundLikeCount: v2p0 ? (v2p0.ground_like_count || 0) : 0,
+    hardSuppressedCount: v2p0 ? (v2p0.hard_ground_suppressed_count || 0) : 0,
+    structuralWarningCount: v2p1 && Array.isArray(v2p1.structural_warnings) ? v2p1.structural_warnings.length : 0,
+    mainWarningCount: v2p2 && Array.isArray(v2p2.main_roof_warnings) ? v2p2.main_roof_warnings.length : 0,
+    relWarningCount: v2p3 && Array.isArray(v2p3.relationship_warnings) ? v2p3.relationship_warnings.length : 0,
+    hasV2p4: !!v2p4,
+    hasV2p2: !!v2p2,
+    hasV2p3: !!v2p3,
+    hasV2p1: !!v2p1,
+  };
+}
+
+function v2p7ScoreSupport(inp) {
+  if (!inp.hasV2p4 || inp.faceCount === 0) return 0;
+  const whole = inp.wholeRoof || 0;
+  const story = inp.story || 0;
+  const penalty = V2P7_SUPPORT_PENALTY_PER_CONTRADICTION * Math.min(inp.contradictionFlags.length, 3);
+  const raw = whole * V2P7_SUPPORT_W_CONSISTENCY + story * V2P7_SUPPORT_W_STORY - penalty;
+  return _r2(Math.max(0, Math.min(1, raw)));
+}
+
+function v2p7ScoreRisk(inp) {
+  if (!inp.hasV2p4 || inp.faceCount === 0) return { risk: 0, drivers: [] };
+  let risk = 0;
+  const drivers = [];
+
+  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) {
+    risk += 0.30; drivers.push('whole_roof_below_' + V2P7_WHOLE_ROOF_LOW);
+  }
+  if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) {
+    risk += 0.20; drivers.push('main_body_below_' + V2P7_MAIN_COHERENCE_LOW);
+  }
+  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 2) {
+    risk += 0.15; drivers.push('relationship_below_' + V2P7_REL_COHERENCE_LOW);
+  }
+  if ((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) {
+    risk += 0.10; drivers.push('structural_below_' + V2P7_STRUCT_COHERENCE_LOW);
+  }
+  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH) {
+    risk += 0.10; drivers.push('uncertainty_above_' + V2P7_UNCERTAINTY_HIGH);
+  }
+  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) {
+    risk += 0.15; drivers.push('contradictions_' + inp.contradictionFlags.length);
+  }
+  if (inp.wholeRoofWarnings.length >= 2) {
+    risk += 0.10; drivers.push('whole_roof_warnings_' + inp.wholeRoofWarnings.length);
+  }
+  if (inp.hardSuppressedCount > 0) {
+    risk += 0.10; drivers.push('ground_suppression_material');
+  }
+  if (inp.groundLikeCount > 0) {
+    risk += 0.10; drivers.push('ground_like_faces_' + inp.groundLikeCount);
+  }
+  if (inp.fragmentedMainRoof) {
+    risk += 0.05; drivers.push('fragmented_main_roof');
+  }
+
+  return { risk: _r2(Math.max(0, Math.min(1, risk))), drivers };
+}
+
+function v2p7DeriveReasons(inp) {
+  const reasons = [];
+  const notes = [];
+
+  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) {
+    reasons.push('v2_low_whole_roof_consistency');
+  }
+  if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) {
+    reasons.push('v2_fragmented_main_roof');
+  } else if (inp.fragmentedMainRoof && inp.faceCount >= 2) {
+    reasons.push('v2_fragmented_main_roof');
+  }
+  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH) {
+    reasons.push('v2_high_main_face_uncertainty');
+  }
+  if ((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) {
+    reasons.push('v2_weak_structural_pairing');
+  }
+  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 3) {
+    reasons.push('v2_relationships_mostly_uncertain');
+  }
+  if (inp.hardSuppressedCount > 0) {
+    reasons.push('v2_ground_suppression_material');
+  }
+  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) {
+    reasons.push('v2_contradictory_structural_story');
+  }
+
+  const cleanStory = inp.hasV2p4
+    && (inp.wholeRoof || 0) >= V2P7_WHOLE_ROOF_STRONG
+    && inp.contradictionFlags.length === 0
+    && inp.wholeRoofWarnings.length === 0
+    && (inp.mainBody || 0) >= V2P7_MAIN_COHERENCE_STRONG
+    && (inp.story || 0) >= V2P7_DOMINANT_STORY_STRONG;
+
+  if (cleanStory) {
+    notes.push('v2_clean_structural_story');
+  }
+
+  return { reasons: Array.from(new Set(reasons)), notes, cleanStory };
+}
+
+function v2p7IntegrateFinalStatus(inp, support, riskObj, derived) {
+  const prior = inp.priorStatus;
+  let final = prior;
+  let escalationApplied = false;
+  let deescalationApplied = false;
+  let rejectApplied = false;
+  const decisionNotes = [];
+
+  if (!inp.hasV2p4 || inp.faceCount === 0) {
+    decisionNotes.push('v2p7_no_v2p4_signal_available_decision_unchanged');
+    return { finalStatus: final, escalationApplied, deescalationApplied, rejectApplied, decisionNotes };
+  }
+
+  const escalateTriggers = [];
+  if ((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW) escalateTriggers.push('whole_roof_consistency_low');
+  if (inp.contradictionFlags.length >= V2P7_CONTRADICTION_ESCALATE_COUNT) escalateTriggers.push('contradictions_multi');
+  if ((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) escalateTriggers.push('main_body_weak');
+  if ((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH && (inp.wholeRoof || 0) < 0.70) escalateTriggers.push('main_face_uncertainty_high');
+  if ((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 3) escalateTriggers.push('relationships_uncertain');
+  if (riskObj.risk >= V2P7_RISK_ESCALATE_THRESHOLD) escalateTriggers.push('aggregate_risk_high');
+
+  const rejectConditions =
+    riskObj.risk >= V2P7_RISK_REJECT_THRESHOLD
+    && (inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_REJECT_FLOOR
+    && (inp.story || 0) < V2P7_DOMINANT_STORY_REJECT_FLOOR
+    && inp.contradictionFlags.length >= V2P7_CONTRADICTION_REJECT_COUNT
+    && inp.priorReasons.length >= V2P7_REJECT_MIN_PRIOR_REASONS
+    && prior === 'needs_review'
+    && (inp.groundLikeCount > 0 || inp.hardSuppressedCount > 0 || inp.faceCount <= 1);
+
+  if (rejectConditions) {
+    final = 'reject';
+    rejectApplied = true;
+    decisionNotes.push('v2p7_reject_multi_signal_agreement');
+  } else if (escalateTriggers.length > 0 && prior === 'auto_accept') {
+    final = 'needs_review';
+    escalationApplied = true;
+    decisionNotes.push('v2p7_escalated_to_needs_review:' + escalateTriggers.join(','));
+  } else if (escalateTriggers.length > 0 && prior === 'needs_review') {
+    decisionNotes.push('v2p7_reinforces_needs_review:' + escalateTriggers.join(','));
+  } else if (derived.cleanStory && prior === 'auto_accept') {
+    decisionNotes.push('v2p7_reinforces_auto_accept');
+    deescalationApplied = false;
+  } else if (derived.cleanStory && prior === 'needs_review') {
+    decisionNotes.push('v2p7_clean_story_but_prior_risk_preserved');
+  } else {
+    decisionNotes.push('v2p7_no_change');
+  }
+
+  return { finalStatus: final, escalationApplied, deescalationApplied, rejectApplied, decisionNotes };
+}
+
+function v2p7DecisionIntegration(envelope) {
+  const inp = v2p7CollectInputs(envelope);
+  if (inp.faceCount === 0) {
+    return {
+      v2_decision_integration_applied: false,
+      prior_status: inp.priorStatus,
+      final_status: inp.priorStatus,
+      v2_decision_score: 0,
+      v2_decision_reasons: [],
+      v2_decision_notes: ['v2p7_skipped_zero_faces'],
+      v2_supporting_signals: {},
+      v2_risk_signals: {},
+      decision_change_applied: false,
+    };
+  }
+
+  const support = v2p7ScoreSupport(inp);
+  const riskObj = v2p7ScoreRisk(inp);
+  const derived = v2p7DeriveReasons(inp);
+  const integrated = v2p7IntegrateFinalStatus(inp, support, riskObj, derived);
+
+  const decisionScore = _r2(Math.max(0, Math.min(1, 0.5 + 0.5 * (support - riskObj.risk))));
+  const contradictionPenalty = _r2(Math.min(0.3, V2P7_SUPPORT_PENALTY_PER_CONTRADICTION * Math.min(inp.contradictionFlags.length, 3)));
+  const uncertaintyPenalty = _r2((inp.uncertainty || 0) > V2P7_UNCERTAINTY_HIGH ? 0.10 : 0);
+
+  return {
+    v2_decision_integration_applied: inp.hasV2p4,
+    prior_status: inp.priorStatus,
+    final_status: integrated.finalStatus,
+    v2_decision_score: decisionScore,
+    confidence_support_score: support,
+    structural_risk_score: _r2(
+      (((inp.mainBody || 0) < V2P7_MAIN_COHERENCE_LOW && inp.faceCount >= 2) ? 0.4 : 0)
+      + (((inp.structural || 0) < V2P7_STRUCT_COHERENCE_LOW && inp.mainPlaneCount >= 2) ? 0.3 : 0)
+      + (((inp.relationship || 0) < V2P7_REL_COHERENCE_LOW && inp.mainRelCount >= 2) ? 0.3 : 0)
+    ),
+    whole_roof_risk_score: _r2((inp.wholeRoof || 0) < V2P7_WHOLE_ROOF_LOW ? (V2P7_WHOLE_ROOF_LOW - (inp.wholeRoof || 0)) / V2P7_WHOLE_ROOF_LOW : 0),
+    contradiction_penalty: contradictionPenalty,
+    uncertainty_penalty: uncertaintyPenalty,
+    escalation_applied: integrated.escalationApplied,
+    deescalation_applied: integrated.deescalationApplied,
+    reject_applied: integrated.rejectApplied,
+    decision_change_applied: integrated.finalStatus !== inp.priorStatus,
+    v2_decision_reasons: derived.reasons,
+    v2_decision_notes: integrated.decisionNotes.concat(derived.notes),
+    v2_supporting_signals: {
+      whole_roof_consistency: inp.wholeRoof,
+      dominant_story_strength: inp.story,
+      main_body_score: inp.mainBody,
+      structural_pairing_score: inp.structural,
+      relationship_score: inp.relationship,
+      realism_factor: inp.realism,
+      clean_structural_story: derived.cleanStory,
+    },
+    v2_risk_signals: {
+      contradiction_flags: inp.contradictionFlags,
+      whole_roof_warnings: inp.wholeRoofWarnings,
+      uncertainty_ratio: inp.uncertainty,
+      main_relationship_count: inp.mainRelCount,
+      main_plane_count: inp.mainPlaneCount,
+      ground_like_count: inp.groundLikeCount,
+      hard_ground_suppressed_count: inp.hardSuppressedCount,
+      fragmented_main_roof: inp.fragmentedMainRoof,
+      risk_drivers: riskObj.drivers,
+      aggregate_risk_score: riskObj.risk,
+    },
+    thresholds: {
+      whole_roof_low: V2P7_WHOLE_ROOF_LOW,
+      whole_roof_strong: V2P7_WHOLE_ROOF_STRONG,
+      whole_roof_reject_floor: V2P7_WHOLE_ROOF_REJECT_FLOOR,
+      main_coherence_low: V2P7_MAIN_COHERENCE_LOW,
+      main_coherence_strong: V2P7_MAIN_COHERENCE_STRONG,
+      rel_coherence_low: V2P7_REL_COHERENCE_LOW,
+      struct_coherence_low: V2P7_STRUCT_COHERENCE_LOW,
+      uncertainty_high: V2P7_UNCERTAINTY_HIGH,
+      dominant_story_strong: V2P7_DOMINANT_STORY_STRONG,
+      risk_escalate: V2P7_RISK_ESCALATE_THRESHOLD,
+      risk_reject: V2P7_RISK_REJECT_THRESHOLD,
+      contradiction_escalate: V2P7_CONTRADICTION_ESCALATE_COUNT,
+      reject_min_prior_reasons: V2P7_REJECT_MIN_PRIOR_REASONS,
+    },
+    scoring_weights: {
+      support_w_consistency: V2P7_SUPPORT_W_CONSISTENCY,
+      support_w_story: V2P7_SUPPORT_W_STORY,
+      support_penalty_per_contradiction: V2P7_SUPPORT_PENALTY_PER_CONTRADICTION,
+    },
+  };
+}
+
+function v2p7ApplyDecision(envelope, decision) {
+  if (!decision || !decision.decision_change_applied) return;
+  const prior = decision.prior_status;
+  const finalS = decision.final_status;
+  if (finalS === prior) return;
+  envelope.auto_build_status = finalS;
+  const reasons = Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons : [];
+  for (const r of decision.v2_decision_reasons) {
+    if (!reasons.includes(r)) reasons.push(r);
+  }
+  envelope.review_policy_reasons = reasons;
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -26370,6 +26682,29 @@ app.post("/api/ml/auto-build", async (req, res) => {
   }
   _t.v2p4_ms = Date.now() - _t0_v2p4;
 
+  // V2P7: Decision-layer integration (reads V2P0–V2P4 + prior status; may escalate)
+  const _t0_v2p7 = Date.now();
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 1) {
+      const decision = v2p7DecisionIntegration(envelope);
+      if (decision) {
+        const md = cr.metadata || (cr.metadata = {});
+        md.v2p7_decision_integration = decision;
+        v2p7ApplyDecision(envelope, decision);
+        if (decision.decision_change_applied) {
+          console.log(`[v2p7_decision] ${decision.prior_status}→${decision.final_status} score=${decision.v2_decision_score} reasons=[${decision.v2_decision_reasons.join(',')}] support=${decision.confidence_support_score} risk=${decision.v2_risk_signals.aggregate_risk_score}`);
+        } else {
+          console.log(`[v2p7_decision] unchanged=${decision.final_status} score=${decision.v2_decision_score} support=${decision.confidence_support_score} risk=${decision.v2_risk_signals.aggregate_risk_score} notes=[${decision.v2_decision_notes.join('|')}]`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p7_decision] skipped: ${e.message}`);
+  }
+  _t.v2p7_ms = Date.now() - _t0_v2p7;
+
   // V2P5: Performance timing metadata
   _t.crm_post_ml_total_ms = Date.now() - _t0_total;
   try {
@@ -26384,6 +26719,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       { name: 'v2p2', ms: _t.v2p2_ms },
       { name: 'v2p3', ms: _t.v2p3_ms },
       { name: 'v2p4', ms: _t.v2p4_ms },
+      { name: 'v2p7', ms: _t.v2p7_ms },
     ];
     stages.sort((a, b) => b.ms - a.ms);
     md.performance_timing = {
@@ -26397,6 +26733,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       v2p2_main_roof_ms: _t.v2p2_ms,
       v2p3_relationships_ms: _t.v2p3_ms,
       v2p4_consistency_ms: _t.v2p4_ms,
+      v2p7_decision_ms: _t.v2p7_ms,
       face_count: _cacheDebug.face_count,
       proximity_pairs_computed: _cacheDebug.proximity_pairs,
       bbox_pruned_pairs: _cacheDebug.bbox_pruned,
