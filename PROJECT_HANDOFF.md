@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (V2P5 performance optimization + instrumentation)
+**Last updated:** 2026-04-19 (V2P6 ML core runtime optimization)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -575,6 +575,31 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
+### V2P6 — ML Core Runtime Optimization [BANKED]
+
+**Purpose:** Instrument and optimize the ML Python server (`ml_ui_server.py` + `ml_engine/`), which V2P5 proved is 92-98% of total runtime.
+
+**Rules:** Instrument first. Separate network vs compute vs post-processing. Bias toward caching before touching accuracy-sensitive model behavior. No accuracy regressions.
+
+**What shipped:**
+1. **Python-side timing instrumentation** — `metadata.v2p6_timing` in every response with outer stage breakdown (fetch, crop, dsm, ml_inference, coord_transform, target_isolation, geometry_cleanup, phase_assembly) + per-ML-stage timing (usable_gate, outline, planes, orientation, semantic_edges, keepout) + network vs compute split + hotspot ranking.
+2. **Semantic edges Shapely cache** — Pre-compute `unary_union(plane_boundaries).buffer(COV_PIX)`, `outline_poly.boundary`, and `plane_boundaries` once per inference call. Previously recomputed O(edges) times, causing 544ms→18377ms scaling. Now O(1) for shared objects.
+3. **Crop rendering optimization** — Pre-convert image to numpy array once, use numpy slicing instead of PIL.crop per edge.
+4. **Stage results passthrough** — `stage_results` (per-stage `duration_s`) now threaded through CRM adapter into response metadata.
+
+**Results (8 properties, accuracy 100% preserved):**
+- Lawrence: 24.8s → 3.5-10.2s (2.4-7.1x), semantic_edges 18377ms → 2741ms
+- 225 Gibson: 12.1s → 3.8-4.3s (2.8-3.2x)
+- 175 Warwick: 13.6s → 3.1-5.6s (2.4-4.4x)
+- 15 Veteran: 7.2s → 2.3-4.2s (1.7-3.1x)
+- 20 Meadow: 6.2s → 2.5-3.8s (1.6-2.5x)
+- Remaining bottleneck: model inference (ResNet-18 per edge on CPU) — irreducible without GPU.
+- Variance: CPU thermal throttling on local hardware causes 2-3x runtime variance on sustained workloads.
+
+**Status:** BANKED. The V2P5 target of <15s is now met for most properties under warm conditions. Remaining performance is bounded by CPU model inference. See triage §18.
+
+---
+
 ### V3P0 — Full Visual Validation & Replay Audit [DEFERRED TO V3]
 
 **Purpose:** Rerun the full property set, inspect screenshots / design-mode outputs visually, log recurring failure classes.
@@ -600,6 +625,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P6 ML Core Runtime Optimization. Python-side timing instrumentation (metadata.v2p6_timing: outer stages + ML pipeline stages + network vs compute + hotspot ranking). Semantic edges Shapely cache: pre-compute unary_union(plane_boundaries).buffer(COV_PIX) once instead of O(edges) times — Lawrence semantic_edges 18377ms→2741ms (6.7x). Crop rendering: numpy array pre-conversion. Stage results passthrough via CRM adapter. 8-property validation: all faces+V2P4 scores unchanged. Overall speedup 1.6-7.1x depending on property complexity. Lawrence 24.8s→3.5-10.2s. Remaining bottleneck: CPU model inference (ResNet-18 per edge). See triage §18. |
 | 2026-04-19 | V2P5 Performance Optimization + Instrumentation. Added comprehensive timing instrumentation (ml_request_ms, p3_p8_p9_crossval_ms, v2p0_ground_structure_ms, v2p1-v2p4_ms, v2p5_cache_build_ms) exposed via crm_result.metadata.performance_timing. Shared geometry cache (v2BuildFaceCache: area, centroid, edgeSamples, bbox computed once) + shared proximity matrix (v2BuildProximityMatrix: edge-gap + meeting-point computed once with bbox pruning). V2P1/V2P2/V2P3 refactored to consume shared cache — eliminates 3× redundant area/centroid computation and 2× redundant O(N²) edge-gap computation. Timing reveals ML request is 92-98% of total runtime (1-24s); CRM post-ML overhead is 230-470ms; V2P1-V2P4 combined <3ms. P3 Google Solar API is the CRM-side hotspot (200-400ms). All V2P4 accuracy scores unchanged. Next bottleneck is ML Python server (image fetch + model inference). See triage §17. |
 | 2026-04-19 | V2P4 Whole-Roof Consistency Warnings. Synthesizes V2P0–V2P3 outputs into a single consistency assessment with contradiction detection and actionable warnings. 5 weighted factors: main body coherence from V2P2 (0.30), structural pairing from V2P1 (0.25), relationship coherence from V2P3 (0.25), realism from V2P0 (0.10), contradiction penalty (0.10). Explicit contradiction detection: 6 cross-phase contradiction flags (e.g., strong_main_body_but_weak_relationships, high_uncertainty_on_main_faces). Single-face edge case uses separate formula (mainBody×0.5 + realism×0.3 + contradiction×0.2). Validated on 8 properties: 15 Veteran consistency=0.96 (clean gable, 0 contradictions), 175 Warwick consistency=0.80 (steep roof not unfairly demoted), Lawrence consistency=0.69 (correctly flags high_uncertainty_on_main_faces), 13 Richardson consistency=0.20 (single ground face, correctly very low), 583 Westford skipped (0 faces). No geometry mutation, no status changes. See triage §16. |
 | 2026-04-19 | V2P3 Ridge / Hip / Valley Relationship Logic. Classifies structural relationships between adjacent face pairs using 6 signal families: azimuth relationship, pitch compatibility, edge gap, meeting point geometry, convex/concave hint from downslope vectors, and V2P2 main-roof relevance. 6 relationship types: ridge_like, hip_like, valley_like, seam_like, step_like, uncertain. Convexity detection uses dot product of downslope direction with centroid-to-meeting-point vector to differentiate hip (convex) from valley (concave). Validated on 8 properties: 15 Veteran coherence=0.99 (2 ridge+1 seam, dominant=ridge_like), 225 Gibson coherence=0.59 (2 ridge+1 hip+2 step+4 uncertain), Lawrence coherence=0.55 (2 ridge+2 hip+6 uncertain — conservative). No geometry mutation, no status changes. See triage §15. |
