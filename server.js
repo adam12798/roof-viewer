@@ -25266,6 +25266,300 @@ function structuralCoherenceAssessment(faces) {
   return v2p1SummarizeStructuralPairing(pairs, annotated);
 }
 
+// ── V2 Phase 2: Main Roof Coherence / Main-vs-Secondary Plane Logic ──────
+const V2P2_ADJACENCY_GAP_M = 3.0;
+const V2P2_STRONG_ADJACENCY_GAP_M = 1.0;
+const V2P2_MAIN_SCORE_THRESHOLD = 0.55;
+const V2P2_SECONDARY_SCORE_THRESHOLD = 0.30;
+const V2P2_W_AREA = 0.30;
+const V2P2_W_STRUCTURAL = 0.25;
+const V2P2_W_ADJACENCY = 0.20;
+const V2P2_W_CENTRALITY = 0.10;
+const V2P2_W_REALISM = 0.15;
+
+function v2p2ComputeAdjacency(faceData) {
+  const n = faceData.length;
+  const adj = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (faceData[i].vertices.length < 3 || faceData[j].vertices.length < 3) continue;
+      const gap = v2p1MinEdgeGap(faceData[i].vertices, faceData[j].vertices);
+      if (gap < V2P2_ADJACENCY_GAP_M) {
+        const strong = gap < V2P2_STRONG_ADJACENCY_GAP_M;
+        adj[i].push({ idx: j, gap: _r2(gap), strong });
+        adj[j].push({ idx: i, gap: _r2(gap), strong });
+      }
+    }
+  }
+  return adj;
+}
+
+function v2p2ScoreFaces(faceData, adj, totalArea, maxArea, meanCx, meanCz, extent, v2p1Data, v2p0Assessments) {
+  return faceData.map((fd, fi) => {
+    const areaRatioToMax = maxArea > 0 ? fd.area / maxArea : 0;
+    const areaShareOfTotal = totalArea > 0 ? fd.area / totalArea : 0;
+    const areaScore = Math.min(1, areaRatioToMax * 0.6 + Math.min(1, areaShareOfTotal * 3) * 0.4);
+
+    let structuralPairConf = 0;
+    let isInStrongPair = false;
+    if (v2p1Data && v2p1Data.pair_details) {
+      const myPairs = v2p1Data.pair_details.filter(
+        p => p.face_a_idx === fi || p.face_b_idx === fi
+      );
+      if (myPairs.length > 0) {
+        structuralPairConf = Math.max(...myPairs.map(p => p.pair_confidence));
+        isInStrongPair = myPairs.some(p => p.pair_confidence >= V2P1_STRONG_PAIR_CONFIDENCE);
+      }
+    }
+    const structuralScore = v2p1Data ? structuralPairConf : 0.3;
+
+    const neighbors = adj[fi] || [];
+    const adjCount = neighbors.length;
+    const strongAdjCount = neighbors.filter(nb => nb.strong).length;
+    const adjStrength = adjCount > 0
+      ? neighbors.reduce((s, nb) => s + Math.max(0, 1 - nb.gap / V2P2_ADJACENCY_GAP_M), 0) / adjCount
+      : 0;
+    const adjScore = Math.min(1, (Math.min(adjCount, 4) / 4) * 0.5 + adjStrength * 0.5);
+
+    const distFromCenter = Math.sqrt((fd.centroid.x - meanCx) ** 2 + (fd.centroid.z - meanCz) ** 2);
+    const centralityScore = Math.max(0, 1 - distFromCenter / (extent * 0.5));
+
+    let realismScore = 0.5;
+    if (v2p0Assessments) {
+      const v2p0Face = v2p0Assessments[fi];
+      if (v2p0Face) {
+        const cls = v2p0Face.classification;
+        if (cls === 'structure_like') realismScore = 1.0;
+        else if (cls === 'uncertain') realismScore = 0.5;
+        else if (cls === 'ground_like') realismScore = 0.2;
+      }
+    }
+
+    const mainRoofScore = _r2(
+      areaScore * V2P2_W_AREA +
+      structuralScore * V2P2_W_STRUCTURAL +
+      adjScore * V2P2_W_ADJACENCY +
+      centralityScore * V2P2_W_CENTRALITY +
+      realismScore * V2P2_W_REALISM
+    );
+    const secondaryRoofScore = _r2(1 - mainRoofScore);
+
+    let classification;
+    if (mainRoofScore >= V2P2_MAIN_SCORE_THRESHOLD) classification = 'main_roof_candidate';
+    else if (mainRoofScore >= V2P2_SECONDARY_SCORE_THRESHOLD) classification = 'uncertain';
+    else classification = 'secondary_roof_candidate';
+
+    return {
+      face_idx: fi,
+      area_m2: _r2(fd.area),
+      area_ratio_to_max: _r2(areaRatioToMax),
+      area_share_of_total: _r2(areaShareOfTotal),
+      structural_pair_confidence: _r2(structuralPairConf),
+      is_in_strong_pair: isInStrongPair,
+      adjacency_count: adjCount,
+      strong_adjacency_count: strongAdjCount,
+      adjacency_strength: _r2(adjStrength),
+      centrality_score: _r2(centralityScore),
+      realism_score: _r2(realismScore),
+      signal_scores: {
+        area: _r2(areaScore),
+        structural: _r2(structuralScore),
+        adjacency: _r2(adjScore),
+        centrality: _r2(centralityScore),
+        realism: _r2(realismScore),
+      },
+      main_roof_score: mainRoofScore,
+      secondary_roof_score: secondaryRoofScore,
+      main_roof_classification: classification,
+    };
+  });
+}
+
+function v2p2BuildComponents(n, adj) {
+  const visited = new Set();
+  const components = [];
+  for (let i = 0; i < n; i++) {
+    if (visited.has(i)) continue;
+    const stack = [i];
+    const comp = [];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      comp.push(cur);
+      for (const nb of (adj[cur] || [])) {
+        if (!visited.has(nb.idx)) stack.push(nb.idx);
+      }
+    }
+    components.push(comp);
+  }
+  const compIds = new Array(n);
+  for (let ci = 0; ci < components.length; ci++) {
+    for (const fi of components[ci]) compIds[fi] = ci;
+  }
+  return { components, compIds };
+}
+
+function v2p2SummarizeMainRoof(faceAssessments, components, compIds, totalArea, v2p1Data) {
+  const n = faceAssessments.length;
+  const mainCandidates = faceAssessments.filter(f => f.main_roof_classification === 'main_roof_candidate');
+  const secondaryCandidates = faceAssessments.filter(f => f.main_roof_classification === 'secondary_roof_candidate');
+  const uncertainFaces = faceAssessments.filter(f => f.main_roof_classification === 'uncertain');
+
+  const mainArea = mainCandidates.reduce((s, f) => s + f.area_m2, 0);
+  const mainAreaShare = totalArea > 0 ? _r2(mainArea / totalArea) : 0;
+
+  const compMainArea = {};
+  for (const fa of mainCandidates) {
+    const cid = fa.connected_component_id;
+    compMainArea[cid] = (compMainArea[cid] || 0) + fa.area_m2;
+  }
+  let dominantCompId = null, dominantCompArea = 0;
+  for (const [cid, area] of Object.entries(compMainArea)) {
+    if (area > dominantCompArea) { dominantCompArea = area; dominantCompId = parseInt(cid); }
+  }
+  const dominantCompFaces = dominantCompId !== null ? components[dominantCompId].length : 0;
+  const largestMainCompAreaShare = totalArea > 0 ? _r2(dominantCompArea / totalArea) : 0;
+
+  let domCompPairCount = 0;
+  if (v2p1Data && v2p1Data.pair_details && dominantCompId !== null) {
+    const domSet = new Set(components[dominantCompId]);
+    domCompPairCount = v2p1Data.pair_details.filter(
+      p => p.pair_confidence >= V2P1_MODERATE_PAIR_CONFIDENCE && (domSet.has(p.face_a_idx) || domSet.has(p.face_b_idx))
+    ).length;
+  }
+
+  let coherenceScore;
+  if (mainCandidates.length === 0) {
+    coherenceScore = 0;
+  } else if (n === 1) {
+    coherenceScore = faceAssessments[0].main_roof_score;
+  } else {
+    const areaConcentration = mainAreaShare;
+    const dominanceConcentration = mainAreaShare > 0
+      ? Math.min(1, largestMainCompAreaShare / mainAreaShare) : 0;
+    const avgMainScore = mainCandidates.reduce((s, f) => s + f.main_roof_score, 0) / mainCandidates.length;
+    const mainStructuralCoverage = mainCandidates.filter(f => f.is_in_strong_pair).length / Math.max(1, mainCandidates.length);
+    coherenceScore = _r2(
+      areaConcentration * 0.30 +
+      dominanceConcentration * 0.25 +
+      avgMainScore * 0.25 +
+      mainStructuralCoverage * 0.20
+    );
+  }
+
+  const warnings = [];
+  if (mainCandidates.length === 0 && n > 0) warnings.push('no_clear_dominant_roof_body');
+  if (mainCandidates.length >= 5) warnings.push('too_many_competing_main_faces');
+  if (mainAreaShare < 0.5 && n >= 3) warnings.push('main_roof_area_too_diffuse');
+  if (mainCandidates.length >= 2) {
+    const mainCompIds = new Set(mainCandidates.map(f => f.connected_component_id));
+    if (mainCompIds.size >= 3) warnings.push('fragmented_main_roof_body');
+  }
+  if (mainCandidates.length > 0 && mainCandidates.every(f => !f.is_in_strong_pair) && v2p1Data) {
+    warnings.push('dominant_face_unpaired');
+  }
+  if (n >= 3 && mainCandidates.length > 0) {
+    const avgMainAdj = mainCandidates.reduce((s, f) => s + f.adjacency_count, 0) / mainCandidates.length;
+    if (avgMainAdj < 1) warnings.push('weak_main_roof_connectivity');
+  }
+
+  return {
+    v2_main_roof_logic_applied: true,
+    total_surviving_faces: n,
+    main_roof_candidate_count: mainCandidates.length,
+    secondary_roof_candidate_count: secondaryCandidates.length,
+    uncertain_face_count: uncertainFaces.length,
+    main_roof_area_share: mainAreaShare,
+    largest_main_component_area_share: largestMainCompAreaShare,
+    dominant_component_face_count: dominantCompFaces,
+    dominant_component_pair_count: domCompPairCount,
+    main_roof_coherence_score: coherenceScore,
+    fragmented_main_roof: warnings.includes('fragmented_main_roof_body'),
+    main_roof_warnings: warnings,
+    scoring_weights: {
+      area: V2P2_W_AREA, structural: V2P2_W_STRUCTURAL,
+      adjacency: V2P2_W_ADJACENCY, centrality: V2P2_W_CENTRALITY,
+      realism: V2P2_W_REALISM,
+    },
+    classification_thresholds: { main: V2P2_MAIN_SCORE_THRESHOLD, secondary: V2P2_SECONDARY_SCORE_THRESHOLD },
+    face_classification_summary: faceAssessments.map(f => ({
+      face_idx: f.face_idx, classification: f.main_roof_classification,
+      score: f.main_roof_score, area_m2: f.area_m2,
+    })),
+    main_roof_phase_notes: [],
+    face_assessments: faceAssessments,
+  };
+}
+
+function mainRoofCoherenceAssessment(faces, v2p1Data, v2p0Data, suppressedIndices) {
+  if (!faces || faces.length === 0) return null;
+
+  const n = faces.length;
+  const faceData = faces.map((f, i) => {
+    const verts = f.vertices || [];
+    return {
+      idx: i,
+      area: v2p0PolygonArea(verts),
+      centroid: verts.length >= 3 ? v2p1Centroid(verts) : { x: 0, z: 0 },
+      pitch: f.pitch || 0, azimuth: f.azimuth || 0, vertices: verts,
+    };
+  });
+
+  const areas = faceData.map(f => f.area);
+  const maxArea = Math.max(...areas);
+  const totalArea = areas.reduce((a, b) => a + b, 0);
+
+  let meanCx = 0, meanCz = 0;
+  for (const f of faceData) { meanCx += f.centroid.x; meanCz += f.centroid.z; }
+  meanCx /= n; meanCz /= n;
+
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const f of faceData) {
+    for (const v of f.vertices) {
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+    }
+  }
+  const extent = Math.max(maxX - minX, maxZ - minZ, 1);
+
+  // Map surviving face indices back to original V2P0 face assessments
+  let v2p0Mapped = null;
+  if (v2p0Data && v2p0Data.face_assessments) {
+    const totalOrig = v2p0Data.total_faces || v2p0Data.face_assessments.length;
+    const suppSet = new Set(suppressedIndices || []);
+    const origIdxMap = [];
+    for (let i = 0; i < totalOrig; i++) {
+      if (!suppSet.has(i)) origIdxMap.push(i);
+    }
+    v2p0Mapped = [];
+    for (let j = 0; j < n; j++) {
+      const origIdx = j < origIdxMap.length ? origIdxMap[j] : j;
+      v2p0Mapped.push(v2p0Data.face_assessments.find(a => a.face_idx === origIdx) || null);
+    }
+  }
+
+  const adj = v2p2ComputeAdjacency(faceData);
+  const scored = v2p2ScoreFaces(faceData, adj, totalArea, maxArea, meanCx, meanCz, extent, v2p1Data, v2p0Mapped);
+
+  const { components, compIds } = v2p2BuildComponents(n, adj);
+  for (const fa of scored) fa.connected_component_id = compIds[fa.face_idx];
+
+  // Second pass: strongest neighbor
+  for (const fa of scored) {
+    const neighbors = adj[fa.face_idx] || [];
+    let bestIdx = null, bestScore = -1;
+    for (const nb of neighbors) {
+      const ns = scored[nb.idx].main_roof_score;
+      if (ns > bestScore) { bestScore = ns; bestIdx = nb.idx; }
+    }
+    fa.strongest_neighbor_idx = bestIdx;
+    fa.strongest_neighbor_score = bestIdx !== null ? _r2(bestScore) : null;
+  }
+
+  return v2p2SummarizeMainRoof(scored, components, compIds, totalArea, v2p1Data);
+}
+
 const ML_ENGINE_URL_DEFAULT = "http://127.0.0.1:5001";
 const ML_AUTO_BUILD_PATH_DEFAULT = "/api/crm/auto-build";
 
@@ -25427,6 +25721,29 @@ app.post("/api/ml/auto-build", async (req, res) => {
     }
   } catch (e) {
     console.log(`[v2p1_structural] skipped: ${e.message}`);
+  }
+
+  // V2P2: Main Roof Coherence / Main-vs-Secondary (non-blocking, debug-only)
+  try {
+    const cr = envelope.crm_result || {};
+    const roofFaces = cr.roof_faces || [];
+    if (roofFaces.length >= 1) {
+      const md = cr.metadata || (cr.metadata = {});
+      const v2p1 = md.v2p1_structural_coherence || null;
+      const v2p0 = md.v2p0_ground_structure || null;
+      const suppressed = v2p0 && v2p0.v2p0_hard_suppression_applied ? v2p0.hard_ground_suppressed_faces : [];
+      const v2p2 = mainRoofCoherenceAssessment(roofFaces, v2p1, v2p0, suppressed);
+      if (v2p2) {
+        md.v2p2_main_roof_coherence = v2p2;
+        if (v2p2.main_roof_warnings.length > 0) {
+          console.log(`[v2p2_main_roof] warnings=[${v2p2.main_roof_warnings.join(',')}] coherence=${v2p2.main_roof_coherence_score} main=${v2p2.main_roof_candidate_count}/${v2p2.total_surviving_faces}`);
+        } else {
+          console.log(`[v2p2_main_roof] OK: coherence=${v2p2.main_roof_coherence_score} main=${v2p2.main_roof_candidate_count} secondary=${v2p2.secondary_roof_candidate_count} uncertain=${v2p2.uncertain_face_count}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[v2p2_main_roof] skipped: ${e.message}`);
   }
 
   // Normalize the handler's snake_case envelope to the CRM's camelCase shape.

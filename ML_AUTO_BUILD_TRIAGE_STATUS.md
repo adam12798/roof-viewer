@@ -1100,7 +1100,82 @@ Evaluate whether surviving roof faces form plausible mirrored/ridge-paired relat
 
 ---
 
-## 14. Related resources
+## 14. V2P2 — Main Roof Coherence / Main-vs-Secondary Plane Logic
+
+**Date:** 2026-04-19
+**Phase:** V2 Phase 2 (after V2P0/V2P0.1/V2P1)
+**Pipeline placement:** After V2P1 in proxy route. Classification/debug only — no geometry mutation.
+
+### 14.1 Method
+
+Classify each surviving roof face as `main_roof_candidate`, `secondary_roof_candidate`, or `uncertain` using a weighted composite of 5 signal families:
+
+| Signal | Weight | What it measures |
+|---|---|---|
+| A. Area importance | 0.30 | Face area relative to largest face (0.6) + area share of total (0.4, scaled 3×) |
+| B. Structural participation | 0.25 | Best V2P1 pair confidence for this face; defaults to 0.3 if no V2P1 data |
+| C. Adjacency/connectivity | 0.20 | Neighbor count (edge gap < 3m, strong < 1m) + mean adjacency strength |
+| D. Centrality | 0.10 | Distance from face centroid to mean centroid, normalized by roof extent |
+| E. Realism confirmation | 0.15 | V2P0 classification: structure_like=1.0, uncertain=0.5, ground_like=0.2 |
+
+**Classification thresholds:** main_roof_score >= 0.55 → main_roof_candidate, >= 0.30 → uncertain, < 0.30 → secondary_roof_candidate.
+
+**Connected components:** Faces within 3m edge gap are connected. Dominant component = component with the most main_roof_candidate area.
+
+**Build-level coherence score:** area_concentration × 0.30 + dominance_concentration × 0.25 + avg_main_score × 0.25 + main_structural_coverage × 0.20.
+
+### 14.2 Constants
+
+`V2P2_ADJACENCY_GAP_M=3.0`, `V2P2_STRONG_ADJACENCY_GAP_M=1.0`, `V2P2_MAIN_SCORE_THRESHOLD=0.55`, `V2P2_SECONDARY_SCORE_THRESHOLD=0.30`, `V2P2_W_AREA=0.30`, `V2P2_W_STRUCTURAL=0.25`, `V2P2_W_ADJACENCY=0.20`, `V2P2_W_CENTRALITY=0.10`, `V2P2_W_REALISM=0.15`.
+
+### 14.3 Per-face debug fields
+
+`face_idx`, `area_m2`, `area_ratio_to_max`, `area_share_of_total`, `structural_pair_confidence`, `is_in_strong_pair`, `adjacency_count`, `strong_adjacency_count`, `adjacency_strength`, `centrality_score`, `realism_score`, `signal_scores{area,structural,adjacency,centrality,realism}`, `main_roof_score`, `secondary_roof_score`, `main_roof_classification`, `connected_component_id`, `strongest_neighbor_idx`, `strongest_neighbor_score`.
+
+### 14.4 Build-level debug fields
+
+`v2_main_roof_logic_applied`, `total_surviving_faces`, `main_roof_candidate_count`, `secondary_roof_candidate_count`, `uncertain_face_count`, `main_roof_area_share`, `largest_main_component_area_share`, `dominant_component_face_count`, `dominant_component_pair_count`, `main_roof_coherence_score`, `fragmented_main_roof`, `main_roof_warnings[]`, `scoring_weights`, `classification_thresholds`, `face_classification_summary[]`, `main_roof_phase_notes[]`, `face_assessments[]`.
+
+### 14.5 Warnings emitted
+
+`no_clear_dominant_roof_body`, `too_many_competing_main_faces`, `main_roof_area_too_diffuse`, `fragmented_main_roof_body`, `dominant_face_unpaired`, `weak_main_roof_connectivity`.
+
+### 14.6 Validation results (8 properties)
+
+| Property | Bucket | Faces | Main | Sec | Unc | Area share | Coherence | Warnings |
+|---|---|---|---|---|---|---|---|---|
+| 15 Veteran Rd | clean_gable | 3 | 3 | 0 | 0 | 1.00 | 0.94 | none |
+| 20 Meadow Dr | improved_simple | 3 | 2 | 0 | 1 | 0.89 | 0.88 | none |
+| 225 Gibson St | complex_corrected | 6 | 4 | 1 | 1 | 0.84 | 0.77 | none |
+| Lawrence | improved_complex | 6 | 4 | 0 | 2 | 0.75 | 0.80 | none |
+| 175 Warwick | steep_real | 3 | 3 | 0 | 0 | 1.00 | 0.84 | none |
+| 11 Ash Road | target_strip | 1 | 1 | 0 | 0 | 1.00 | 0.55 | none |
+| 13 Richardson St | single_ground | 1 | 0 | 0 | 1 | 0.00 | 0.00 | no_clear_dominant_roof_body |
+| 583 Westford St | rejected | 0 | — | — | — | — | — | (skipped, 0 faces) |
+
+### 14.7 Key findings
+
+1. **Simple roofs produce clear dominant bodies.** 15 Veteran (clean gable): coherence=0.94, all 3 faces main. 20 Meadow: coherence=0.88, 2 main faces cover 89% of area.
+
+2. **Complex roofs differentiate main vs secondary.** 225 Gibson: face[3] (89.6m², score=0.90) is clearly dominant. Face[4] (15.4m², centrality=0, no structural pair) correctly classified as secondary. Lawrence: face[1] (89.2m², score=0.90) dominates, face[4] (50.7m², no pair) correctly uncertain.
+
+3. **Steep roof not unfairly demoted.** 175 Warwick: coherence=0.84, all 3 faces main. Realism score 1.0 (structure_like from V2P0) compensates for the largest face having no structural pair.
+
+4. **Ground-like face correctly flagged.** 13 Richardson: single face with realism=0.2 (ground_like from V2P0), score=0.51 → uncertain, coherence=0, warns no_clear_dominant_roof_body.
+
+5. **Multi-signal prevents single-metric false classification.** 225 Gibson face[1] (9.85m², tiny) still classified as main because it has structural pair confidence=0.56, 3 adjacencies, and centrality=0.77. Area alone would have demoted it.
+
+6. **No geometry mutation, no status changes.** V2P2 is classification/debug only. All prior phase outputs preserved.
+
+7. **Prior phases stable.** V2P0 ground detection, V2P0.1 suppression, V2P1 pair analysis all produce identical results.
+
+### 14.8 Verdict
+
+**KEEP.** V2P2 produces a useful, interpretable main-vs-secondary distinction across all validation property types. Simple roofs get clear dominant bodies (coherence 0.88-0.94), complex roofs get meaningful differentiation with secondary/uncertain classifications, and problem roofs surface useful warnings. The 5-signal weighted model prevents single-metric false classification while keeping the scoring readable and tunable. Zero production risk (debug-only, no geometry mutation, no status changes).
+
+---
+
+## 15. Related resources
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

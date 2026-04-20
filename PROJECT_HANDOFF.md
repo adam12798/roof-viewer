@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-19 (V2P1 structural coherence / mirrored-pair logic)
+**Last updated:** 2026-04-19 (V2P2 main roof coherence / main-vs-secondary plane logic)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -485,6 +485,34 @@ Targeted bugfix: removes obviously ground-like elongated faces from `roof_faces`
 
 ---
 
+### V2P2 — Main Roof Coherence / Main-vs-Secondary Plane Logic [BANKED]
+
+**Purpose:** Classify surviving faces into main_roof_candidate / secondary_roof_candidate / uncertain using 5 weighted signal families, compute build-level main_roof_coherence_score.
+
+**Inputs:** Final post-suppression roof faces, V2P1 pair data, V2P0 face assessments.
+
+**Outputs:** Per-face: area ratios, structural pair confidence, adjacency count/strength, centrality score, realism score, composite main_roof_score, classification. Build-level: main_roof_coherence_score, candidate counts, dominant component stats, warnings.
+
+**Pipeline placement:** After V2P1 in proxy route. Classification/debug only — no geometry mutation, no face deletion, no status changes.
+
+**Signal families (5 weights):** Area importance (0.30), structural participation from V2P1 pairs (0.25), adjacency/connectivity via edge gap (0.20), centrality/peripheral soft factor (0.10), V2P0 realism confirmation (0.15).
+
+**Classification:** main_roof_score >= 0.55 → main_roof_candidate, >= 0.30 → uncertain, < 0.30 → secondary_roof_candidate.
+
+**Coherence score formula:** area_concentration × 0.30 + dominance_concentration × 0.25 + avg_main_score × 0.25 + main_structural_coverage × 0.20.
+
+**Constants:** `V2P2_ADJACENCY_GAP_M=3.0`, `V2P2_STRONG_ADJACENCY_GAP_M=1.0`, `V2P2_MAIN_SCORE_THRESHOLD=0.55`, `V2P2_SECONDARY_SCORE_THRESHOLD=0.30`.
+
+**Warnings emitted:** `no_clear_dominant_roof_body`, `too_many_competing_main_faces`, `main_roof_area_too_diffuse`, `fragmented_main_roof_body`, `dominant_face_unpaired`, `weak_main_roof_connectivity`.
+
+**Bank criteria:** Simple roofs produce clear dominant main body (coherence ≥ 0.85); complex roofs differentiate main vs secondary; problem roofs surface useful warnings; no geometry rewritten; no status changes.
+
+**Status:** BANKED. 15 Veteran (clean gable): coherence=0.94, all 3 main, 0 warnings. 20 Meadow: coherence=0.88, 2 main + 1 uncertain, main area share=0.89. 225 Gibson (complex): coherence=0.77, 4 main + 1 secondary + 1 uncertain. Lawrence (complex): coherence=0.80, 4 main + 2 uncertain. 175 Warwick (steep): coherence=0.84, all 3 main (not unfairly demoted). 13 Richardson (ground-like): coherence=0, correctly warns no_clear_dominant_roof_body. 0 geometry changes, 0 status flips. See triage §14.
+
+**Reopen trigger:** V2P2 classification proven misleading on a new property class, or main_roof_coherence_score found to be useless in downstream phases.
+
+---
+
 ### Backlog (not phase-gated)
 
 These items are tracked but not tied to the active phase:
@@ -500,6 +528,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-19 | V2P2 Main Roof Coherence / Main-vs-Secondary Plane Logic. Classifies surviving faces as main_roof_candidate / secondary_roof_candidate / uncertain using 5 weighted signal families: area importance (0.30), structural participation from V2P1 pairs (0.25), adjacency via edge gap (0.20), centrality (0.10), V2P0 realism (0.15). Build-level main_roof_coherence_score rewards area concentration, dominance, and structural coverage. Validated on 8 properties: 15 Veteran coherence=0.94 (all main), 20 Meadow coherence=0.88 (2 main+1 uncertain), 225 Gibson coherence=0.77 (4 main+1 secondary+1 uncertain), Lawrence coherence=0.80 (4 main+2 uncertain), 175 Warwick coherence=0.84 (steep, all main). 13 Richardson correctly warns no_clear_dominant_roof_body. No geometry mutation, no status changes. See triage §14. |
 | 2026-04-19 | V2P0.1 Ground suppression hardening. 4-way conjunction rule removes obviously ground-like elongated faces: height<1.5m AND elongation>4.0 AND pitch<15° AND not structure_like. Uses eigenvalue-based elongation ratio. Validated on 8 properties: 20 Meadow face[3] suppressed (elong=7.61, removed from roof_faces), 0 false positives on clean/steep/complex/improved roofs. Adds `v2p0_ground_surface_suppressed` review reason and per-face elongation debug. See triage §12. |
 | 2026-04-19 | V2P1 Structural Coherence / Mirrored-Pair Logic. Debug-first evaluation of whether surviving roof faces form plausible mirrored/ridge-paired relationships. 4 signal families (azimuth opposition, pitch similarity, spatial edge gap, area ratio), 5 pair types, 6 warning codes. Validated on 8 properties: 15 Veteran coherence=0.92 (2 gable pairs, 0 warnings), Lawrence coherence=0.81 (2 gable pairs), 225 Gibson coherence=0.44 (correct poor coverage warning), 175 Warwick coherence=0.5 (steep roof not catastrophically scored). No status changes (debug-only). No V1/V2P0 interference. See triage §13. |
 | 2026-04-19 | V2P0 Ground/Structure Separation. Uses LiDAR/DSM elevation to classify each ML roof face as structure_like (height>2.5m), ground_like (height<1m AND pitch<10° AND area>15m²), or uncertain. Reconstructs 281×281 DSM grid from raw LiDAR points, per-face local ground reference via ring sampling (3-12m, p25). Validated on 8 properties: 20 Meadow face[3] correctly flagged ground-like (h=0.07m, auto_accept→needs_review), 13 Richardson face[0] flagged ground-like (h=0.37m, double-flagged with p9), 15 Veteran (clean) all structure-like (h=4.2-4.6m, no regression), 175 Warwick all structure-like (h=4-7.7m). 5 helper functions, 15 per-face metrics, 13 build-level debug fields. See triage §12. |
