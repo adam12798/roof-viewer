@@ -26754,29 +26754,58 @@ function v3p1SlopeAgreementError(n1, n2) {
 }
 
 function v3p1DetectRidgeConflict(samples) {
-  // Split samples by their X median into two halves; fit each half; compare
-  // horizontal downslope directions. Strong opposing horizontal slope components
-  // (dot < threshold) suggest the plane straddles a ridge.
+  // V3P4.3 (GEOM-004): multi-axis ridge conflict search.
+  // Previous behavior split samples by X-median only, which silently missed
+  // E-W-oriented ridges (and any ridge whose normal-to-direction was close to
+  // the X axis). The test now splits by four axes — X, Z, and the two 45°
+  // diagonals — fits each half-plane, and picks the axis producing the
+  // STRONGEST opposition (lowest dot). The legacy X-axis behavior is preserved
+  // as the first axis for backward comparison.
   const n = samples.length;
-  if (n < V3P1_RIDGE_MIN_SAMPLES_PER_HALF * 2) return { conflict: false, dot: null };
-  const xs = samples.map(p => p.x).sort((a, b) => a - b);
-  const xMed = xs[Math.floor(xs.length / 2)];
-  const lo = [], hi = [];
-  for (const p of samples) (p.x <= xMed ? lo : hi).push(p);
-  if (lo.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF || hi.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF) {
-    return { conflict: false, dot: null };
+  if (n < V3P1_RIDGE_MIN_SAMPLES_PER_HALF * 2) return { conflict: false, dot: null, axis: null, axes_tested: [] };
+  const s1 = Math.SQRT1_2;
+  const axes = [
+    { name: 'x', dx: 1, dz: 0 },
+    { name: 'z', dx: 0, dz: 1 },
+    { name: 'xz_pos', dx: s1, dz: s1 },
+    { name: 'xz_neg', dx: s1, dz: -s1 },
+  ];
+  let bestDot = 1.0;
+  let bestAxis = null;
+  const axesTested = [];
+  for (const axis of axes) {
+    const projs = samples.map(p => p.x * axis.dx + p.z * axis.dz).slice().sort((a, b) => a - b);
+    const med = projs[Math.floor(projs.length / 2)];
+    const lo = [], hi = [];
+    for (const p of samples) {
+      const proj = p.x * axis.dx + p.z * axis.dz;
+      (proj <= med ? lo : hi).push(p);
+    }
+    if (lo.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF || hi.length < V3P1_RIDGE_MIN_SAMPLES_PER_HALF) {
+      axesTested.push({ axis: axis.name, dot: null, reason: 'insufficient_half' });
+      continue;
+    }
+    const fitLo = v3p1FitLocalPlane(lo);
+    const fitHi = v3p1FitLocalPlane(hi);
+    if (!fitLo || !fitHi) {
+      axesTested.push({ axis: axis.name, dot: null, reason: 'fit_failed' });
+      continue;
+    }
+    // Horizontal downslope vectors (in x-z plane): -∇h = (-a, -b). For ridge
+    // conflict, these should be near-opposite.
+    const vLo = { x: -fitLo.a, z: -fitLo.b };
+    const vHi = { x: -fitHi.a, z: -fitHi.b };
+    const magLo = Math.hypot(vLo.x, vLo.z) || 1e-9;
+    const magHi = Math.hypot(vHi.x, vHi.z) || 1e-9;
+    const dot = (vLo.x * vHi.x + vLo.z * vHi.z) / (magLo * magHi);
+    axesTested.push({ axis: axis.name, dot: _r2(dot) });
+    if (dot < bestDot) {
+      bestDot = dot;
+      bestAxis = axis.name;
+    }
   }
-  const fitLo = v3p1FitLocalPlane(lo);
-  const fitHi = v3p1FitLocalPlane(hi);
-  if (!fitLo || !fitHi) return { conflict: false, dot: null };
-  // Horizontal downslope vectors (in x-z plane): -∇h = (-a, -b). For ridge
-  // conflict, these should be near-opposite.
-  const vLo = { x: -fitLo.a, z: -fitLo.b };
-  const vHi = { x: -fitHi.a, z: -fitHi.b };
-  const magLo = Math.hypot(vLo.x, vLo.z) || 1e-9;
-  const magHi = Math.hypot(vHi.x, vHi.z) || 1e-9;
-  const dot = (vLo.x * vHi.x + vLo.z * vHi.z) / (magLo * magHi);
-  return { conflict: dot < V3P1_RIDGE_CONFLICT_DOT_THRESHOLD, dot: _r2(dot) };
+  if (bestAxis == null) return { conflict: false, dot: null, axis: null, axes_tested: axesTested };
+  return { conflict: bestDot < V3P1_RIDGE_CONFLICT_DOT_THRESHOLD, dot: _r2(bestDot), axis: bestAxis, axes_tested: axesTested };
 }
 
 function v3p1ScoreMlSupport(face) {
@@ -26948,6 +26977,11 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
       v2p0_classification: classification,
       ridge_conflict_flag: ridge.conflict,
       ridge_dot: ridge.dot,
+      // V3P4.3 (GEOM-004): record which axis produced the strongest ridge
+      // opposition. `x` matches legacy behavior; `z`, `xz_pos`, `xz_neg` are
+      // the new axes that catch previously-missed E-W / oblique ridges.
+      ridge_axis: ridge.axis || null,
+      ridge_axes_tested: ridge.axes_tested || [],
       ground_veto_flag: groundVetoFlag,
       ml_support_score: _r2(mlSupport),
       lidar_support_score: lidarSupportObj.score,
@@ -27463,6 +27497,94 @@ const V3P4_1_ANTICOLLAPSE_DIVERSITY_LOSS_MAX = 0.50;
 const V3P4_1_RIDGE_MIN_AZ_OPPOSITION_DEG = 90;
 const V3P4_1_RIDGE_SANITY_PENALTY = 0.25;
 
+// ── V3P4.3 Geometry Stabilization thresholds ───────────────────────────────
+// GEOM-001 / GEOM-008: safe merge. The shared-vertex threshold is slightly
+// larger than V3P2_SHARED_BOUNDARY_SNAP_M (0.30 m) so polygons that are truly
+// adjacent — even if not yet snapped — still qualify. Hull inflation cap is
+// conservative: 15% of source area growth is the maximum tolerated for a
+// legitimate shared-edge merge. Larger jumps mean the hull filled non-roof.
+const V3P4_3_MERGE_SHARED_VERTEX_M = 0.40;
+const V3P4_3_MERGE_MAX_HULL_INFLATION = 0.15;
+// GEOM-006: hip-signature anchor exemption. A polygon whose 4 quadrants have
+// similar pitch and roughly 4-way-symmetric azimuths is almost certainly an
+// unsplit hip roof rather than a garbage refit. When that signature is
+// present we keep the ML orientation silently instead of emitting the
+// alarming "variance" review warning.
+const V3P4_3_HIP_PITCH_VARIANCE_DEG = 10.0;
+const V3P4_3_HIP_GAP_TOLERANCE_DEG = 30.0;
+const V3P4_3_HIP_MIN_SAMPLES = 40;
+
+// V3P4.3 (GEOM-006): hip-roof signature detector.
+// Quadrant-fits a polygon and decides whether the 4 sub-slopes are consistent
+// with a real hip — i.e. four roughly symmetric azimuths (each pair ≈ 90°
+// apart) with similar pitch. When this signature is present, the high
+// internal azimuth variance that would normally trigger anchor-block is
+// actually the correct signature of an unsplit hip face; we keep ML
+// orientation silently instead of emitting an alarming review warning.
+// Only returns true when ALL four quadrants have enough samples and produce
+// valid fits — this prevents garbage refits from being mistaken for hips.
+function v3p4_3HasHipSignature(polygonVerts, grid) {
+  if (!grid || !polygonVerts || polygonVerts.length < 3) {
+    return { isHip: false, reason: 'no_grid_or_verts' };
+  }
+  const samples = v3p1CollectFootprintSamples(grid, polygonVerts);
+  if (samples.length < V3P4_3_HIP_MIN_SAMPLES) {
+    return { isHip: false, reason: 'too_few_samples', sample_count: samples.length };
+  }
+  const cx = v3p2PolygonCentroid(polygonVerts);
+  const quadrants = [[], [], [], []];
+  for (const s of samples) {
+    const qx = s.x >= cx.x ? 1 : 0;
+    const qz = s.z >= cx.z ? 2 : 0;
+    quadrants[qx + qz].push(s);
+  }
+  const quadCounts = quadrants.map(q => q.length);
+  if (quadrants.some(q => q.length < V3P3_INTERNAL_QUADRANT_MIN_SAMPLES)) {
+    return { isHip: false, reason: 'quadrant_gap', quad_counts: quadCounts };
+  }
+  const fits = quadrants.map(q => v3p1FitLocalPlane(q));
+  if (fits.some(f => !f)) {
+    return { isHip: false, reason: 'quadrant_fit_failed', quad_counts: quadCounts };
+  }
+  const azimuths = fits.map(fit => {
+    const dsX = -fit.normal.nx, dsZ = -fit.normal.nz;
+    const mag = Math.hypot(dsX, dsZ) || 1e-9;
+    let az = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
+    if (az < 0) az += 360;
+    return az;
+  });
+  const pitches = fits.map(fit => {
+    const horizMag = Math.hypot(fit.normal.nx, fit.normal.nz);
+    return Math.atan2(horizMag, Math.max(fit.normal.ny, 1e-9)) * 180 / Math.PI;
+  });
+  const minP = Math.min.apply(null, pitches);
+  const maxP = Math.max.apply(null, pitches);
+  if (maxP - minP > V3P4_3_HIP_PITCH_VARIANCE_DEG) {
+    return { isHip: false, reason: 'pitch_variance', pitches: pitches.map(_r2), pitch_range: _r2(maxP - minP) };
+  }
+  const sorted = azimuths.slice().sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 0; i < 4; i++) {
+    gaps.push(((sorted[(i + 1) % 4] - sorted[i]) + 360) % 360);
+  }
+  const hipLike = gaps.every(g => Math.abs(g - 90) <= V3P4_3_HIP_GAP_TOLERANCE_DEG);
+  if (hipLike) {
+    return {
+      isHip: true,
+      reason: 'hip_signature_detected',
+      azimuths: azimuths.map(_r2),
+      pitches: pitches.map(_r2),
+      az_gaps: gaps.map(_r2),
+    };
+  }
+  return {
+    isHip: false,
+    reason: 'az_not_4way_symmetric',
+    azimuths: azimuths.map(_r2),
+    az_gaps: gaps.map(_r2),
+  };
+}
+
 function v3p4_1GetInternalAzVariance(polygonVerts, grid) {
   if (!grid || !polygonVerts || polygonVerts.length < 3) return 0;
   const samples = v3p1CollectFootprintSamples(grid, polygonVerts);
@@ -27546,6 +27668,20 @@ function v3p4_1ScoreDominantPlane(poly, allPolygons, lidarSupport) {
 function v3p4_1IsDominantPlane(poly, allPolygons) {
   const s = v3p4_1ScoreDominantPlane(poly, allPolygons, null);
   return s.isDominant;
+}
+
+// V3P4.2 (AUD-001): authoritative dominant check that prefers the inherited
+// V3P1 lineage flag and falls back to geometry rescore as a safety net.
+// Use this for all PROTECTION decisions (suppression skip, merge guard,
+// rollback). Geometry-only rescoring stays available as a secondary
+// diagnostic via v3p4_1ScoreDominantPlane.
+function v3p4_2HasDominantLineage(poly) {
+  return !!(poly && poly.dominant_plane_flag === true);
+}
+
+function v3p4_2IsProtectedDominant(poly, allPolygons) {
+  if (v3p4_2HasDominantLineage(poly)) return true;
+  return v3p4_1IsDominantPlane(poly, allPolygons);
 }
 
 function v3p4_1AnchorChildRefit(childRefit, parentPitch, parentAz) {
@@ -27857,11 +27993,80 @@ function v3p2SplitFaceAlongRidge(face) {
 }
 
 function v3p2MergePair(faceA, faceB) {
+  // Legacy unconditional hull merge — retained only for call sites that want
+  // the raw hull with no safety check. V3P4.3 routes the real merge path
+  // through v3p2SafeMergePair which applies shared-vertex + hull-inflation
+  // guards against GEOM-001 / GEOM-008.
   const allPts = [];
   for (const v of (faceA.vertices || [])) allPts.push({ x: v.x, z: v.z });
   for (const v of (faceB.vertices || [])) allPts.push({ x: v.x, z: v.z });
   if (allPts.length < 4) return null;
   return v3p2ConvexHull2D(allPts);
+}
+
+// V3P4.3 (GEOM-001 + GEOM-008): safe merge policy.
+// The naïve convex hull of two polygons can include regions that were never
+// roof (over-extension) or replace a legitimate concave joint with a convex
+// fill (concavity loss). Both outcomes produce physically-impossible roof
+// shapes. Guard the merge two ways:
+//   1. Require at least one near-shared vertex pair (distance <=
+//      V3P4_3_MERGE_SHARED_VERTEX_M). Two polygons that are not geometrically
+//      adjacent should NOT be merged no matter how similar their fits look.
+//   2. Reject merges whose hull area exceeds the sum of source areas by more
+//      than V3P4_3_MERGE_MAX_HULL_INFLATION.
+// Returns { hull, safe, reason, ... diagnostics }. Callers must not consume
+// `hull` unless `safe === true`.
+function v3p2SafeMergePair(faceA, faceB) {
+  const vertsA = (faceA && faceA.vertices) || [];
+  const vertsB = (faceB && faceB.vertices) || [];
+  if (vertsA.length < 3 || vertsB.length < 3) {
+    return { hull: null, safe: false, reason: 'insufficient_vertices' };
+  }
+
+  // Guard 1 — shared vertex proof.
+  let minPairDist = Infinity;
+  let sharedCount = 0;
+  for (const a of vertsA) {
+    for (const b of vertsB) {
+      const d = Math.hypot(a.x - b.x, a.z - b.z);
+      if (d < minPairDist) minPairDist = d;
+      if (d <= V3P4_3_MERGE_SHARED_VERTEX_M) sharedCount++;
+    }
+  }
+  if (sharedCount === 0) {
+    return {
+      hull: null, safe: false, reason: 'no_shared_vertex',
+      min_pair_dist_m: _r2(minPairDist),
+      shared_vertex_threshold_m: V3P4_3_MERGE_SHARED_VERTEX_M,
+    };
+  }
+
+  const allPts = [];
+  for (const v of vertsA) allPts.push({ x: v.x, z: v.z });
+  for (const v of vertsB) allPts.push({ x: v.x, z: v.z });
+  const hull = v3p2ConvexHull2D(allPts);
+  if (!hull || hull.length < 4) {
+    return { hull: null, safe: false, reason: 'invalid_hull' };
+  }
+
+  // Guard 2 — hull area inflation.
+  const areaA = v3p2_1ApproxArea(vertsA);
+  const areaB = v3p2_1ApproxArea(vertsB);
+  const hullArea = v3p2_1ApproxArea(hull);
+  const sourceArea = areaA + areaB;
+  const inflation = sourceArea > 0 ? (hullArea - sourceArea) / sourceArea : 0;
+  const diag = {
+    hull_area_m2: _r2(hullArea),
+    source_area_m2: _r2(sourceArea),
+    inflation: _r2(inflation),
+    max_allowed_inflation: V3P4_3_MERGE_MAX_HULL_INFLATION,
+    shared_vertex_count: sharedCount,
+    min_pair_dist_m: _r2(minPairDist),
+  };
+  if (inflation > V3P4_3_MERGE_MAX_HULL_INFLATION) {
+    return { hull: null, safe: false, reason: 'hull_overextends', ...diag };
+  }
+  return { hull, safe: true, reason: 'safe_merge', ...diag };
 }
 
 function v3p2RefitPlaneInPolygon(polygonVerts, grid) {
@@ -28321,6 +28526,17 @@ function v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid) {
 // ── V3P4: Structural Enforcement Engine ─────────────────────────────────────
 // Turns structural understanding into controlled geometric action.
 
+// V3P4.3 (GEOM-005): detect the V3P2.2 X-median fallback so enforcement can
+// refuse it. X-median cuts have confidence 0.15 and are usually unrelated to
+// the actual roof break (hip roofs suffer the most). Enforcement must prefer
+// "no split" over "bad split".
+function v3p4_3IsFallbackSplit(splitResult) {
+  if (!splitResult) return false;
+  if (splitResult.fallbackUsed === true) return true;
+  if (splitResult.splitLine && (splitResult.splitLine.fallback === true || splitResult.splitLine.type === 'x_median_fallback')) return true;
+  return false;
+}
+
 function v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal) {
   const actions = [];
   if (!grid || !v3p3Internal) return actions;
@@ -28355,6 +28571,21 @@ function v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal
     const splitResult = v3p2_2ApplyEdgeAlignedSplit(fakeFace, grid, null, fakeEdge, []);
 
     if (splitResult && splitResult.success) {
+      // V3P4.3 (GEOM-005): refuse enforcement splits that fell back to the
+      // X-median axis. Hip roofs and oblique multi-slope polygons produce
+      // valid-looking X-median cuts that do not correspond to the actual roof
+      // break. "No split" is strictly safer than "bad split" for enforcement.
+      if (v3p4_3IsFallbackSplit(splitResult)) {
+        actions.push({
+          polygon_idx: pi,
+          action: 'split_blocked',
+          reason: 'v3p4_3_enforcement_split_blocked_x_median_fallback',
+          enforcement_split_block_reason: 'x_median_fallback',
+          blocked_split_type: splitResult.splitLine ? splitResult.splitLine.type : 'unknown',
+          az_variance: flag.max_azimuth_variance,
+        });
+        continue;
+      }
       const refitA = splitResult.refits[0];
       const refitB = splitResult.refits[1];
       const azDiff = v3p2AngularDistance(refitA.azimuth, refitB.azimuth);
@@ -28432,6 +28663,23 @@ function v3p4EnforceStructuralBoundaries(polygons, edges, grid) {
     const splitResult = v3p2_2ApplyEdgeAlignedSplit(fakeFace, grid, null, edge, []);
 
     if (splitResult && splitResult.success && splitResult.improvement && splitResult.improvement.score >= V3P4_ENFORCEMENT_IMPROVEMENT_MIN) {
+      // V3P4.3 (GEOM-005): reject X-median fallback even when a real edge
+      // was supplied — Strategy A / B might silently fail and fall back. We
+      // require a genuine directional cut, not an axis-aligned default.
+      if (v3p4_3IsFallbackSplit(splitResult)) {
+        actions.push({
+          polygon_idx: targetPolyIdx,
+          action: 'split_blocked',
+          reason: 'v3p4_3_enforcement_split_blocked_x_median_fallback',
+          enforcement_split_block_reason: 'x_median_fallback',
+          blocked_split_type: splitResult.splitLine ? splitResult.splitLine.type : 'unknown',
+          edge_idx: edge.edge_idx,
+          edge_type: edge.edge_type_v3p3,
+          edge_fused: edge.fused_edge_score,
+          original_reason: splitReason,
+        });
+        continue;
+      }
       alreadySplit.add(targetPolyIdx);
       actions.push({
         polygon_idx: targetPolyIdx,
@@ -28545,15 +28793,28 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
     global_cleanup_actions: 0,
     enforcement_warnings: [],
     per_polygon: [],
+    // V3P4.3 (GEOM-005): enforcement splits that we refused because their
+    // direction fell back to X-median. "No split" beats "bad split".
+    v3p4_3_blocked_x_median_splits: [],
   };
 
   // 1. Internal plane consistency enforcement
   const internalActions = v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal);
-  debug.invalid_single_plane_count = internalActions.length;
+  debug.invalid_single_plane_count = internalActions.filter(a => a.action === 'split').length;
+  for (const a of internalActions) {
+    if (a.action === 'split_blocked') {
+      debug.v3p4_3_blocked_x_median_splits.push({ stage: 'internal_consistency', ...a });
+    }
+  }
 
   // 2. Structural boundary enforcement
   const boundaryActions = v3p4EnforceStructuralBoundaries(polygons, edges, grid);
-  debug.ridge_forced_split_count = boundaryActions.length;
+  debug.ridge_forced_split_count = boundaryActions.filter(a => a.action === 'split').length;
+  for (const a of boundaryActions) {
+    if (a.action === 'split_blocked') {
+      debug.v3p4_3_blocked_x_median_splits.push({ stage: 'structural_boundary', ...a });
+    }
+  }
 
   // 3. Ground suppression enforcement
   const groundActions = v3p4SuppressInvalidGroundPolygons(polygons, edges);
@@ -28587,9 +28848,18 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
     const ancB = v3p4_1AnchorChildRefit(rawRefitB, parentP, parentA);
     const refitA = ancA.refit;
     const refitB = ancB.refit;
+    // V3P4.2 (AUD-001): enforcement-split children inherit dominant lineage
+    // from the parent polygon, same rule as V3P2 splits.
+    const enfChildDom = !!origPoly.dominant_plane_flag;
+    const enfChildDomScore = origPoly.dominant_plane_score || 0;
+    const enfChildLineage = enfChildDom
+      ? 'v3p1_inherited_via_v3p4_split'
+      : (origPoly.dominant_lineage_source || 'none');
+    const enfChildV3p1Indices = (origPoly.v3p1_face_indices || []).slice();
     const childA = {
       polygon_idx: -1,
       source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
+      v3p1_face_indices: enfChildV3p1Indices.slice(),
       vertices: split.parts[0],
       pitch: refitA.pitch, azimuth: refitA.azimuth,
       height: origPoly.height,
@@ -28602,11 +28872,15 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'v3p4_enforced_split_a',
       validation_reasons: ['v3p4_' + split.reason],
+      dominant_plane_flag: enfChildDom,
+      dominant_plane_score: enfChildDomScore,
+      dominant_lineage_source: enfChildLineage,
     };
     if (ancA.anchored) childA.validation_reasons.push('v3p4_1_child_anchored_' + ancA.reason);
     const childB = {
       polygon_idx: -1,
       source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
+      v3p1_face_indices: enfChildV3p1Indices.slice(),
       vertices: split.parts[1],
       pitch: refitB.pitch, azimuth: refitB.azimuth,
       height: origPoly.height,
@@ -28619,6 +28893,9 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'v3p4_enforced_split_b',
       validation_reasons: ['v3p4_' + split.reason],
+      dominant_plane_flag: enfChildDom,
+      dominant_plane_score: enfChildDomScore,
+      dominant_lineage_source: enfChildLineage,
     };
     if (ancB.anchored) childB.validation_reasons.push('v3p4_1_child_anchored_' + ancB.reason);
     polygons.splice(pi, 1, childA, childB);
@@ -28642,10 +28919,14 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
     if (targetIdx >= polygons.length) continue;
     const poly = polygons[targetIdx];
     if (!poly || poly.validation_decision === 'suppress') continue;
-    // V3P4.1: Dominant plane protection — don't suppress the largest/best-fit plane
-    if (v3p4_1IsDominantPlane(poly, polygons)) {
+    // V3P4.1 + V3P4.2 (AUD-001): Dominant plane protection. Prefer the inherited
+    // V3P1 lineage flag; fall back to geometry rescore. Either signal protects.
+    if (v3p4_2IsProtectedDominant(poly, polygons)) {
       poly.validation_reasons = poly.validation_reasons || [];
-      poly.validation_reasons.push('v3p4_1_dominant_protected_from_suppress');
+      const lineageInherited = v3p4_2HasDominantLineage(poly);
+      poly.validation_reasons.push(lineageInherited
+        ? 'v3p4_2_dominant_lineage_protected_from_suppress'
+        : 'v3p4_1_dominant_protected_from_suppress');
       debug.enforcement_warnings.push('dominant_plane_protected_idx_' + targetIdx);
       continue;
     }
@@ -28929,6 +29210,9 @@ function v3p5DetectRescuePlanes(lidarPoints, centerLat, centerLng) {
         central_fraction: candidate.central_fraction,
         origin: rescuePlanes.length === 0 ? 'main_mass' : 'secondary_cluster',
         lidar_support_score: _r2(Math.min(1.0, (1.0 - fit.rmse / V3P5_MAX_FIT_RESIDUAL_M) * centralFraction * 2)),
+        // V3P4.2 (AUD-004): capture sample_count so downstream phases can treat
+        // rescue planes as valid-but-rescue-derived, not assumption-free.
+        sample_count: cluster.length,
       },
     });
   }
@@ -28955,12 +29239,36 @@ function v3p5ApplyPartialRescue(envelope, rescueResult, body) {
   const cr = envelope.crm_result || (envelope.crm_result = {});
   const md = cr.metadata || (cr.metadata = {});
 
-  cr.roof_faces = rescueResult.planes.map(p => ({
-    vertices: p.vertices,
-    pitch: p.pitch,
-    azimuth: p.azimuth,
-    height: p.height,
-  }));
+  // V3P4.2 (AUD-004): rescue planes now carry the full geometry metadata
+  // contract (normal, fit_rmse, sample_count, provenance). Missing values fall
+  // back to safe explicit defaults and are flagged rescue-derived so downstream
+  // phases can recognize them as valid-but-rescue, not fabricated.
+  cr.roof_faces = rescueResult.planes.map((p, i) => {
+    const rescueMeta = p._rescue || {};
+    const normal = v3p4_1OrientationToNormal(p.pitch || 0, p.azimuth || 0);
+    const face = {
+      vertices: p.vertices,
+      pitch: p.pitch,
+      azimuth: p.azimuth,
+      height: p.height,
+      normal,
+      fit_rmse: (typeof rescueMeta.rmse === 'number') ? rescueMeta.rmse : null,
+      sample_count: (typeof rescueMeta.sample_count === 'number') ? rescueMeta.sample_count : 0,
+      rescue_derived: true,
+      rescue_source: 'v3p5_partial_rescue',
+      rescue_origin: rescueMeta.origin || (i === 0 ? 'main_mass' : 'secondary_cluster'),
+      rescue_support_score: (typeof rescueMeta.lidar_support_score === 'number') ? rescueMeta.lidar_support_score : null,
+      // V3P4.2: rescue planes are NOT dominant lineage — they have no V3P1 source.
+      dominant_plane_flag: false,
+      dominant_lineage_source: 'none',
+      rescue_metadata_complete: (
+        !!normal && typeof normal.ny === 'number' &&
+        typeof rescueMeta.rmse === 'number' &&
+        typeof rescueMeta.sample_count === 'number'
+      ),
+    };
+    return face;
+  });
 
   envelope.auto_build_status = 'needs_review';
   envelope.disposition = 'needs_review';
@@ -28984,7 +29292,12 @@ function v3p5ApplyPartialRescue(envelope, rescueResult, body) {
     rescue_origin: p._rescue.origin,
     area_m2: p._rescue.area_m2,
     central_fraction: p._rescue.central_fraction,
+    // V3P4.2 (AUD-004): rescue metadata completeness per plane.
+    sample_count: p._rescue.sample_count || 0,
+    rescue_metadata_complete: !!cr.roof_faces[i] && cr.roof_faces[i].rescue_metadata_complete === true,
   }));
+  md.v3p5_partial_rescue.v3p4_2_rescue_metadata_complete_count = (md.v3p5_partial_rescue.per_plane || [])
+    .filter(pl => pl.rescue_metadata_complete).length;
 
   return true;
 }
@@ -29234,6 +29547,8 @@ function v3p6DetectHardCaseRescue(lidarPoints, centerLat, centerLng, v3p5Debug) 
         centrality_score: centralityScore,
         origin: rescuePlanes.length === 0 ? 'central_mass' : 'secondary_cluster',
         lidar_support_score: _r2(Math.min(1.0, (1.0 - fit.rmse / V3P6_MAX_FIT_RESIDUAL_M) * centralityScore * 2)),
+        // V3P4.2 (AUD-004): capture sample_count for downstream completeness.
+        sample_count: cluster.length,
       },
     });
   }
@@ -29260,12 +29575,32 @@ function v3p6ApplyHardCaseRescue(envelope, rescueResult) {
   const cr = envelope.crm_result || (envelope.crm_result = {});
   const md = cr.metadata || (cr.metadata = {});
 
-  cr.roof_faces = rescueResult.planes.map(p => ({
-    vertices: p.vertices,
-    pitch: p.pitch,
-    azimuth: p.azimuth,
-    height: p.height,
-  }));
+  // V3P4.2 (AUD-004): parity with v3p5ApplyPartialRescue — full geometry
+  // metadata contract on rescue planes.
+  cr.roof_faces = rescueResult.planes.map((p, i) => {
+    const rescueMeta = p._rescue || {};
+    const normal = v3p4_1OrientationToNormal(p.pitch || 0, p.azimuth || 0);
+    return {
+      vertices: p.vertices,
+      pitch: p.pitch,
+      azimuth: p.azimuth,
+      height: p.height,
+      normal,
+      fit_rmse: (typeof rescueMeta.rmse === 'number') ? rescueMeta.rmse : null,
+      sample_count: (typeof rescueMeta.sample_count === 'number') ? rescueMeta.sample_count : 0,
+      rescue_derived: true,
+      rescue_source: 'v3p6_hard_case_rescue',
+      rescue_origin: rescueMeta.origin || (i === 0 ? 'central_mass' : 'secondary_cluster'),
+      rescue_support_score: (typeof rescueMeta.lidar_support_score === 'number') ? rescueMeta.lidar_support_score : null,
+      dominant_plane_flag: false,
+      dominant_lineage_source: 'none',
+      rescue_metadata_complete: (
+        !!normal && typeof normal.ny === 'number' &&
+        typeof rescueMeta.rmse === 'number' &&
+        typeof rescueMeta.sample_count === 'number'
+      ),
+    };
+  });
 
   envelope.auto_build_status = 'needs_review';
   envelope.disposition = 'needs_review';
@@ -29286,19 +29621,30 @@ function v3p6ApplyHardCaseRescue(envelope, rescueResult) {
     rescue_origin: p._rescue.origin,
     area_m2: p._rescue.area_m2,
     centrality_score: p._rescue.centrality_score,
+    // V3P4.2 (AUD-004): rescue metadata completeness per plane.
+    sample_count: p._rescue.sample_count || 0,
+    rescue_metadata_complete: !!cr.roof_faces[i] && cr.roof_faces[i].rescue_metadata_complete === true,
   }));
+  md.v3p6_hard_case_rescue.v3p4_2_rescue_metadata_complete_count = (md.v3p6_hard_case_rescue.per_plane || [])
+    .filter(pl => pl.rescue_metadata_complete).length;
 
   return true;
 }
 
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
   const cr = (envelope && envelope.crm_result) || {};
+  // V3P4.2 (AUD-001): carry V3P1 lineage signals onto the local face copies so
+  // polygon construction can inherit dominant_plane_flag explicitly.
   const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map((f, idx) => ({
     vertices: (f.vertices || []).map(v => ({ x: v.x, z: v.z })),
     pitch: f.pitch || 0,
     azimuth: f.azimuth || 0,
     height: f.height || 0,
     _origIdx: idx,
+    v3p1_face_idx: (typeof f.v3p1_face_idx === 'number') ? f.v3p1_face_idx : null,
+    dominant_plane_flag: !!f.dominant_plane_flag,
+    dominant_plane_score: f.dominant_plane_score || 0,
+    lidar_support_score: f.lidar_support_score || 0,
   })) : [];
   const n = faces.length;
   if (n === 0) {
@@ -29400,9 +29746,14 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   }
 
   // Start polygons as a copy of face polygons; each polygon keeps a source_faces list.
+  // V3P4.2 (AUD-001): inherit dominant_plane_flag from the V3P1 source face.
+  // dominant_plane_flag here is a PRESERVED LINEAGE SIGNAL — not recomputed from
+  // geometry. Geometry-based scoring (v3p4_1ScoreDominantPlane) remains a
+  // secondary diagnostic only.
   const polygons = faces.map((f, idx) => ({
     polygon_idx: idx,
     source_face_indices: [idx],
+    v3p1_face_indices: (typeof f.v3p1_face_idx === 'number') ? [f.v3p1_face_idx] : [],
     vertices: f.vertices.map(v => ({ x: v.x, z: v.z })),
     pitch: f.pitch,
     azimuth: f.azimuth,
@@ -29415,6 +29766,9 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     ground_veto_flag: false,
     validation_decision: 'keep',
     validation_reasons: [],
+    dominant_plane_flag: !!f.dominant_plane_flag,
+    dominant_plane_score: f.dominant_plane_score || 0,
+    dominant_lineage_source: f.dominant_plane_flag ? 'v3p1_inherited' : 'none',
   }));
 
   let splitCount = 0;
@@ -29557,9 +29911,17 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       v3p4_1_anchor_b: anchorB.anchored ? anchorB.reason : null,
     });
 
+    // V3P4.2 (AUD-001): split children inherit dominant lineage from the parent
+    // polygon. If the parent descended from a dominant V3P1 face, both children
+    // descended from the same source — preserve the lineage signal.
+    const childDom = !!poly.dominant_plane_flag;
+    const childDomScore = poly.dominant_plane_score || 0;
+    const childLineage = childDom ? 'v3p1_inherited_via_split' : (poly.dominant_lineage_source || 'none');
+    const childV3p1FaceIndices = (poly.v3p1_face_indices || []).slice();
     const polyLo = {
       polygon_idx: polygons.length + toReplace.length,
       source_face_indices: poly.source_face_indices.slice(),
+      v3p1_face_indices: childV3p1FaceIndices.slice(),
       vertices: parts[0],
       pitch: refitA.pitch, azimuth: refitA.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
@@ -29570,11 +29932,15 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_a',
       validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
+      dominant_plane_flag: childDom,
+      dominant_plane_score: childDomScore,
+      dominant_lineage_source: childLineage,
     };
     if (anchorA.anchored) polyLo.validation_reasons.push('v3p4_1_child_anchored_' + anchorA.reason);
     const polyHi = {
       polygon_idx: polygons.length + toReplace.length + 1,
       source_face_indices: poly.source_face_indices.slice(),
+      v3p1_face_indices: childV3p1FaceIndices.slice(),
       vertices: parts[1],
       pitch: refitB.pitch, azimuth: refitB.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
@@ -29585,6 +29951,9 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_b',
       validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
+      dominant_plane_flag: childDom,
+      dominant_plane_score: childDomScore,
+      dominant_lineage_source: childLineage,
     };
     if (anchorB.anchored) polyHi.validation_reasons.push('v3p4_1_child_anchored_' + anchorB.reason);
     toReplace.push({ idx: i, replacements: [polyLo, polyHi] });
@@ -29602,6 +29971,15 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   // V3P4.1: Full stabilization with normal consistency, orientation anchoring, per-polygon debug.
   let v3p4_1_normalFlipCount = 0;
   let v3p4_1_anchoredRefitCount = 0;
+  let v3p4_3_hipAnchorExemptions = 0;
+  let v3p4_3_ridgeSanityCorrections = 0;
+  let v3p4_3_safeMergeSkips = 0;
+  let v3p4_3_mergeOverextensionBlocks = 0;
+  let v3p4_3_blockedXMedianEnforcementSplits = 0;
+  const v3p4_3_safeMergeSkipDetails = [];
+  const v3p4_3_mergeOverextensionDetails = [];
+  const v3p4_3_ridgeSanityCorrectionDetails = [];
+  const v3p4_3_blockedEnforcementSplitDetails = [];
   const v3p4_1_perPolygon = [];
   if (grid) {
     for (const poly of polygons) {
@@ -29640,10 +30018,29 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
         polyDebug.az_drift = _r2(refitAzDrift);
         let anchorBlocked = false;
         let blockReason = null;
+        let hipSignatureDetected = false;
         if (internalAzVar > V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG) {
-          anchorBlocked = true;
-          blockReason = 'internal_variance_' + Math.round(internalAzVar);
-          poly.validation_reasons.push('v3p4_1_refit_blocked_internal_variance_' + Math.round(internalAzVar));
+          // V3P4.3 (GEOM-006): before emitting the alarming variance warning,
+          // check whether this polygon is actually a hip roof. A hip's four
+          // sub-slopes naturally produce high az variance — that's the correct
+          // geometric signature, not a garbage refit. For hips we still block
+          // the averaging refit (adopting it would replace a valid 4-slope
+          // structure with a single averaged plane), but we keep ML
+          // orientation silently without pushing a misleading review flag.
+          const hip = v3p4_3HasHipSignature(poly.vertices, grid);
+          hipSignatureDetected = !!hip.isHip;
+          polyDebug.hip_signature = hip;
+          if (hip.isHip) {
+            anchorBlocked = true;
+            blockReason = 'hip_signature_retained_ml_orientation';
+            poly.validation_reasons.push('v3p4_3_hip_signature_anchor_exempt');
+            polyDebug.anchor_block_overridden = true;
+            v3p4_3_hipAnchorExemptions++;
+          } else {
+            anchorBlocked = true;
+            blockReason = 'internal_variance_' + Math.round(internalAzVar);
+            poly.validation_reasons.push('v3p4_1_refit_blocked_internal_variance_' + Math.round(internalAzVar));
+          }
         } else if (refitPitchDrift > V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG && refit.pitch < 12) {
           anchorBlocked = true;
           blockReason = 'pitch_drift_to_flat';
@@ -29688,40 +30085,14 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     }
   }
 
-  // V3P4.1: Ridge sanity pass — validate ridge-adjacent polygon pairs after refits.
-  // Conservative: only flag, don't revert, unless edge has very high fused score AND
-  // the polygon pair is clearly same-direction across a ridge.
+  // V3P4.3 (GEOM-002 + GEOM-003): Ridge sanity is deferred until after V3P3
+  // edge classification so the loop can consult `edge.edge_type_v3p3` (the
+  // refined definitive type) instead of the stale `edge.edge_type_guess` set
+  // by V3P2's initial heuristic. The relocated loop lives below the V3P3
+  // classify + validate calls. Declare the counters here so they are in scope
+  // for the debug block at the bottom of this function.
   let v3p4_1_ridgeSanityRejections = 0;
   const v3p4_1_ridgeSanityDebug = [];
-  for (const edge of edges) {
-    if (!edge.edge_type_guess || (!edge.edge_type_guess.includes('ridge'))) continue;
-    if (!edge.fused_edge_score || edge.fused_edge_score < 0.75) continue;
-    const fA = faces[edge.face_a_idx];
-    const fB = faces[edge.face_b_idx];
-    if (!fA || !fB) continue;
-    let polyAIdx = -1, polyBIdx = -1;
-    for (let pi = 0; pi < polygons.length; pi++) {
-      const src = polygons[pi].source_face_indices || [];
-      if (src.includes(edge.face_a_idx) && polyAIdx < 0) polyAIdx = pi;
-      if (src.includes(edge.face_b_idx) && polyBIdx < 0) polyBIdx = pi;
-    }
-    if (polyAIdx < 0 || polyBIdx < 0 || polyAIdx === polyBIdx) continue;
-    const polyA = polygons[polyAIdx];
-    const polyB = polygons[polyBIdx];
-    if (!polyA || !polyB) continue;
-    const sanity = v3p4_1ValidateRidgeSanity(polyA, polyB, edge.edge_type_guess);
-    if (!sanity.valid) {
-      v3p4_1_ridgeSanityRejections++;
-      v3p4_1_ridgeSanityDebug.push({
-        edge_idx: edge.edge_idx,
-        poly_a: polyAIdx, poly_b: polyBIdx,
-        reason: sanity.reason,
-        az_same: sanity.az_same, az_opp: sanity.az_opp,
-      });
-      polyA.validation_reasons.push('v3p4_1_ridge_sanity_warning');
-      polyB.validation_reasons.push('v3p4_1_ridge_sanity_warning');
-    }
-  }
 
   // 3) Merge candidates: pairs of polygons (from the CURRENT polygon list) that
   // are adjacent + highly compatible. V3P2.1: respect edge scores — do NOT merge
@@ -29767,17 +30138,54 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       }
 
       mergeAttempts++;
-      const hull = v3p2MergePair(pi, pj);
-      if (!hull || hull.length < 4) continue;
+      // V3P4.3 (GEOM-001 + GEOM-008): safe merge. Reject the merge outright
+      // when there is no shared-vertex proof of adjacency or when the hull
+      // would over-extend beyond the combined source areas. Both conditions
+      // indicate a geometrically unsafe merge (would fill non-roof space or
+      // destroy a legitimate concavity). Keeping two valid polygons is
+      // strictly better than producing one physically-wrong polygon.
+      const safeMerge = v3p2SafeMergePair(pi, pj);
+      if (!safeMerge.safe) {
+        if (safeMerge.reason === 'hull_overextends') {
+          pi.validation_reasons.push('v3p4_3_merge_blocked_hull_overextends');
+          v3p4_3_mergeOverextensionBlocks++;
+          v3p4_3_mergeOverextensionDetails.push({
+            polygon_a_idx: i, polygon_b_idx: j,
+            inflation: safeMerge.inflation,
+            hull_area_m2: safeMerge.hull_area_m2,
+            source_area_m2: safeMerge.source_area_m2,
+          });
+        } else if (safeMerge.reason === 'no_shared_vertex') {
+          pi.validation_reasons.push('v3p4_3_merge_blocked_no_shared_vertex');
+          v3p4_3_safeMergeSkips++;
+          v3p4_3_safeMergeSkipDetails.push({
+            polygon_a_idx: i, polygon_b_idx: j,
+            min_pair_dist_m: safeMerge.min_pair_dist_m,
+            reason: safeMerge.reason,
+          });
+        } else {
+          pi.validation_reasons.push('v3p4_3_merge_blocked_' + safeMerge.reason);
+          v3p4_3_safeMergeSkips++;
+          v3p4_3_safeMergeSkipDetails.push({
+            polygon_a_idx: i, polygon_b_idx: j,
+            reason: safeMerge.reason,
+          });
+        }
+        continue;
+      }
+      const hull = safeMerge.hull;
       const refit = grid ? v3p2RefitPlaneInPolygon(hull, grid) : null;
       const baselineRmse = Math.max(pi.fit_rmse || 0, pj.fit_rmse || 0);
       if (!refit || refit.rmse > Math.max(V3P2_REFIT_MAX_RMSE_M, baselineRmse * V3P2_FALLBACK_REFIT_MULT)) {
         pi.validation_reasons.push('merge_rejected_refit_worse');
         continue;
       }
-      // V3P4.1: Anti-collapse merge guard — don't merge away a dominant plane.
-      if (v3p4_1IsDominantPlane(pj, polygons)) {
-        pi.validation_reasons.push('v3p4_1_merge_blocked_dominant_target');
+      // V3P4.1 + V3P4.2 (AUD-001): Anti-collapse merge guard — don't merge away a
+      // dominant plane. Prefer inherited lineage; fall back to geometry rescore.
+      if (v3p4_2IsProtectedDominant(pj, polygons)) {
+        pi.validation_reasons.push(v3p4_2HasDominantLineage(pj)
+          ? 'v3p4_2_merge_blocked_dominant_lineage_target'
+          : 'v3p4_1_merge_blocked_dominant_target');
         continue;
       }
       // V3P2.1: mark the shared edge as used for merge.
@@ -29794,6 +30202,20 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       pi.validation_decision = 'merge';
       pi.validation_reasons.push('merged_with_polygon_' + j);
       pi.source_face_indices = pi.source_face_indices.concat(pj.source_face_indices);
+      // V3P4.2 (AUD-001): conservative dominant inheritance — merged polygon
+      // keeps dominant_plane_flag if EITHER source was dominant. Lineage signal
+      // is preserved through merges, never lost.
+      pi.v3p1_face_indices = (pi.v3p1_face_indices || []).concat(pj.v3p1_face_indices || []);
+      const piDom = !!pi.dominant_plane_flag;
+      const pjDom = !!pj.dominant_plane_flag;
+      if (piDom || pjDom) {
+        pi.dominant_plane_flag = true;
+        pi.dominant_plane_score = Math.max(pi.dominant_plane_score || 0, pj.dominant_plane_score || 0);
+        pi.dominant_lineage_source = (piDom && pjDom)
+          ? 'v3p1_inherited_via_merge_both'
+          : 'v3p1_inherited_via_merge_one';
+        pi.validation_reasons.push('v3p4_2_dominant_lineage_preserved_via_merge');
+      }
       merged.add(j);
       mergeCount++;
     }
@@ -29848,6 +30270,63 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   // ── V3P3: Edge Relationship + Global Roof Constraint System ───────────────
   const v3p3Classify = v3p3ClassifyEdgeTypes(edges, finalPolygons, faces, grid);
   const v3p3Validate = v3p3ValidatePlaneRelationships(edges, finalPolygons, faces);
+
+  // ── V3P4.3 (GEOM-002 + GEOM-003): Ridge sanity corrective pass ────────────
+  // This runs AFTER v3p3ClassifyEdgeTypes and v3p3ValidatePlaneRelationships
+  // so `edge.edge_type_v3p3` is definitive. If the refined type says "ridge"
+  // but the sanity test finds same-direction slopes, we demote the edge to
+  // `seam` — consistent with V3P3's own correction vocabulary. The polygon
+  // pair also receives a validation_reason so downstream review can see the
+  // demotion. A same-direction "ridge" is a physically-impossible relationship
+  // and must not survive into the final output as a ridge.
+  for (const edge of edges) {
+    const refinedType = edge.edge_type_v3p3 || edge.edge_type_guess || null;
+    const fieldUsed = edge.edge_type_v3p3 ? 'edge_type_v3p3' : 'edge_type_guess_fallback';
+    if (!refinedType || !refinedType.includes('ridge')) continue;
+    if (!edge.fused_edge_score || edge.fused_edge_score < 0.75) continue;
+    const fA = faces[edge.face_a_idx];
+    const fB = faces[edge.face_b_idx];
+    if (!fA || !fB) continue;
+    let polyAIdx = -1, polyBIdx = -1;
+    for (let pi = 0; pi < finalPolygons.length; pi++) {
+      const src = finalPolygons[pi].source_face_indices || [];
+      if (src.includes(edge.face_a_idx) && polyAIdx < 0) polyAIdx = pi;
+      if (src.includes(edge.face_b_idx) && polyBIdx < 0) polyBIdx = pi;
+    }
+    if (polyAIdx < 0 || polyBIdx < 0 || polyAIdx === polyBIdx) continue;
+    const polyA = finalPolygons[polyAIdx];
+    const polyB = finalPolygons[polyBIdx];
+    if (!polyA || !polyB) continue;
+    const sanity = v3p4_1ValidateRidgeSanity(polyA, polyB, refinedType);
+    if (sanity.valid) continue;
+    v3p4_1_ridgeSanityRejections++;
+    const priorType = edge.edge_type_v3p3 || edge.edge_type_guess || null;
+    edge.edge_type_v3p3 = 'seam';
+    edge.v3p3_classification_reason = 'v3p4_3_reclassified_from_ridge_same_direction';
+    edge.v3p4_3_ridge_sanity_field_used = fieldUsed;
+    edge.v3p4_3_ridge_sanity_action = 'reclassified_to_seam';
+    v3p4_3_ridgeSanityCorrections++;
+    v3p4_3_ridgeSanityCorrectionDetails.push({
+      edge_idx: edge.edge_idx,
+      poly_a: polyAIdx, poly_b: polyBIdx,
+      prior_type: priorType,
+      new_type: 'seam',
+      reason: sanity.reason,
+      az_same: sanity.az_same, az_opp: sanity.az_opp,
+      field_used: fieldUsed,
+    });
+    v3p4_1_ridgeSanityDebug.push({
+      edge_idx: edge.edge_idx,
+      poly_a: polyAIdx, poly_b: polyBIdx,
+      reason: sanity.reason,
+      az_same: sanity.az_same, az_opp: sanity.az_opp,
+      field_used: fieldUsed,
+      action: 'reclassified_to_seam',
+    });
+    polyA.validation_reasons.push('v3p4_3_ridge_sanity_corrected');
+    polyB.validation_reasons.push('v3p4_3_ridge_sanity_corrected');
+  }
+
   const v3p3Internal = v3p3EnforceInternalConsistency(finalPolygons, grid);
   const v3p3Global = v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid);
 
@@ -29899,7 +30378,10 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   }
 
   // ── V3P4: Structural Enforcement Engine ───────────────────────────────────
-  // V3P4.1: Snapshot pre-enforcement quality for regression guard
+  // V3P4.1: Snapshot pre-enforcement quality for regression guard.
+  // V3P4.2 (AUD-002): snapshot now includes dominant_plane_flag and the V3P1
+  // lineage anchor (v3p1_face_indices) so rollback can detect dominant lineage
+  // loss — not just geometric degradation.
   const preEnforcementSnapshot = v3p3FinalPolygons.map(p => ({
     polygon_idx: p.polygon_idx,
     vertices: p.vertices ? p.vertices.map(v => ({ x: v.x, z: v.z })) : [],
@@ -29910,12 +30392,20 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     validation_decision: p.validation_decision,
     validation_reasons: (p.validation_reasons || []).slice(),
     source_face_indices: (p.source_face_indices || []).slice(),
+    v3p1_face_indices: (p.v3p1_face_indices || []).slice(),
+    dominant_plane_flag: !!p.dominant_plane_flag,
+    dominant_plane_score: p.dominant_plane_score || 0,
+    dominant_lineage_source: p.dominant_lineage_source || 'none',
     original_pitch: p.original_pitch,
     original_azimuth: p.original_azimuth,
   }));
   const preScore = v3p4_1ScorePolygonSet(v3p3FinalPolygons);
 
   const v3p4Debug = v3p4RunEnforcement(v3p3FinalPolygons, edges, grid, v3p3Internal);
+  v3p4_3_blockedXMedianEnforcementSplits = (v3p4Debug.v3p4_3_blocked_x_median_splits || []).length;
+  for (const blocked of (v3p4Debug.v3p4_3_blocked_x_median_splits || [])) {
+    v3p4_3_blockedEnforcementSplitDetails.push(blocked);
+  }
 
   // Apply V3P4 suppressions: remove suppressed polygons
   const v3p4Suppressed = new Set();
@@ -29938,21 +30428,63 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       v3p4_1_rollback = true;
       v3p4_1_rollback_reason = antiCollapse.reason;
     }
-    // Also check dominant plane preservation
+    // Also check dominant plane preservation. V3P4.2 (AUD-002): treat the
+    // inherited V3P1 dominant_plane_flag as the source of truth. Fall back to
+    // the geometry rescore only if no polygon carries lineage information (old
+    // call paths, tests, or envelopes that bypassed V3P1).
     if (!v3p4_1_rollback) {
+      const snapshotSurvivors = preEnforcementSnapshot.filter(s => s.validation_decision !== 'suppress');
+      const anyLineageStamped = snapshotSurvivors.some(s => s.dominant_lineage_source && s.dominant_lineage_source !== 'none');
       for (const snap of preEnforcementSnapshot) {
         if (snap.validation_decision === 'suppress') continue;
-        const dom = v3p4_1ScoreDominantPlane(snap, preEnforcementSnapshot.filter(s => s.validation_decision !== 'suppress'), null);
-        if (dom.isDominant) {
-          const stillPresent = v3p4FinalPolygons.some(p =>
+        let wasDominant;
+        let dominanceSource;
+        if (anyLineageStamped) {
+          wasDominant = !!snap.dominant_plane_flag;
+          dominanceSource = 'v3p1_inherited';
+        } else {
+          const dom = v3p4_1ScoreDominantPlane(snap, snapshotSurvivors, null);
+          wasDominant = dom.isDominant;
+          dominanceSource = 'geometry_rescore_fallback';
+        }
+        if (!wasDominant) continue;
+        // Preferred check: lineage survived via v3p1_face_indices (robust to
+        // splits/merges/enforcement reindexing). Fallback: source_face_indices
+        // overlap, which was the V3P4.1 behavior.
+        let stillPresent = false;
+        if (snap.v3p1_face_indices && snap.v3p1_face_indices.length > 0) {
+          stillPresent = v3p4FinalPolygons.some(p =>
+            p.v3p1_face_indices && p.v3p1_face_indices.some(f => snap.v3p1_face_indices.includes(f))
+          );
+        }
+        if (!stillPresent) {
+          stillPresent = v3p4FinalPolygons.some(p =>
             p.source_face_indices && snap.source_face_indices &&
             p.source_face_indices.some(f => snap.source_face_indices.includes(f))
           );
-          if (!stillPresent) {
-            v3p4_1_rollback = true;
-            v3p4_1_rollback_reason = 'dominant_plane_lost_idx_' + snap.polygon_idx;
-            break;
-          }
+        }
+        // V3P4.2 (AUD-002): even if source_face_indices overlap survives, we
+        // also require that at least one surviving descendant still carries the
+        // dominant_plane_flag. If enforcement stripped the flag while nominally
+        // preserving vertices, that still counts as dominant lineage loss.
+        let lineagePreserved = false;
+        if (stillPresent && anyLineageStamped) {
+          lineagePreserved = v3p4FinalPolygons.some(p => {
+            const matchByV3p1 = snap.v3p1_face_indices && p.v3p1_face_indices &&
+              p.v3p1_face_indices.some(f => snap.v3p1_face_indices.includes(f));
+            const matchBySource = p.source_face_indices && snap.source_face_indices &&
+              p.source_face_indices.some(f => snap.source_face_indices.includes(f));
+            return (matchByV3p1 || matchBySource) && p.dominant_plane_flag === true;
+          });
+        } else {
+          lineagePreserved = stillPresent;
+        }
+        if (!lineagePreserved) {
+          v3p4_1_rollback = true;
+          v3p4_1_rollback_reason = (stillPresent
+            ? 'dominant_lineage_demoted_idx_'
+            : 'dominant_plane_lost_idx_') + snap.polygon_idx + '_source_' + dominanceSource;
+          break;
         }
       }
     }
@@ -29971,6 +30503,7 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
           vertices: snap.vertices.map(v => ({ x: v.x, z: v.z })),
           validation_reasons: snap.validation_reasons.slice(),
           source_face_indices: snap.source_face_indices.slice(),
+          v3p1_face_indices: (snap.v3p1_face_indices || []).slice(),
         });
       }
       v3p4FinalPolygons = v3p3FinalPolygons.filter(p => p.validation_decision !== 'suppress');
@@ -30082,11 +30615,76 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       ],
       per_polygon: v3p4_1_perPolygon,
     },
+    // V3P4.3: Geometry stabilization visibility. Separate from V3P4.1 so
+    // the stabilization packet's activity is inspectable independently.
+    v3p4_3_stabilization: {
+      v3p4_3_applied: true,
+      // A. Ridge sanity
+      ridge_sanity_corrections: v3p4_3_ridgeSanityCorrections,
+      ridge_sanity_correction_details: v3p4_3_ridgeSanityCorrectionDetails,
+      // B. Safe merge
+      safe_merge_skips: v3p4_3_safeMergeSkips,
+      merge_overextension_blocks: v3p4_3_mergeOverextensionBlocks,
+      safe_merge_skip_details: v3p4_3_safeMergeSkipDetails,
+      merge_overextension_details: v3p4_3_mergeOverextensionDetails,
+      // C. Blocked X-median enforcement splits
+      blocked_x_median_enforcement_splits: v3p4_3_blockedXMedianEnforcementSplits,
+      blocked_enforcement_split_details: v3p4_3_blockedEnforcementSplitDetails,
+      // D. V3P1 ridge detection
+      ridge_detection_direction_mode: 'multi_axis_x_z_diag',
+      ridge_detection_axes: ['x', 'z', 'xz_pos', 'xz_neg'],
+      // E. Hip-signature exemption
+      hip_anchor_exemptions: v3p4_3_hipAnchorExemptions,
+      // Thresholds
+      thresholds: {
+        merge_shared_vertex_m: V3P4_3_MERGE_SHARED_VERTEX_M,
+        merge_max_hull_inflation: V3P4_3_MERGE_MAX_HULL_INFLATION,
+        hip_pitch_variance_deg: V3P4_3_HIP_PITCH_VARIANCE_DEG,
+        hip_gap_tolerance_deg: V3P4_3_HIP_GAP_TOLERANCE_DEG,
+        hip_min_samples: V3P4_3_HIP_MIN_SAMPLES,
+      },
+      v3p4_3_warnings: [
+        ...(v3p4_3_ridgeSanityCorrections > 0 ? ['ridge_sanity_corrected_' + v3p4_3_ridgeSanityCorrections] : []),
+        ...(v3p4_3_safeMergeSkips > 0 ? ['safe_merge_skipped_' + v3p4_3_safeMergeSkips] : []),
+        ...(v3p4_3_mergeOverextensionBlocks > 0 ? ['merge_overextension_blocked_' + v3p4_3_mergeOverextensionBlocks] : []),
+        ...(v3p4_3_blockedXMedianEnforcementSplits > 0 ? ['enforcement_x_median_blocked_' + v3p4_3_blockedXMedianEnforcementSplits] : []),
+        ...(v3p4_3_hipAnchorExemptions > 0 ? ['hip_anchor_exempt_' + v3p4_3_hipAnchorExemptions] : []),
+      ],
+    },
+    // V3P4.2: dominant-lineage + rescue-metadata visibility (non-behavioral).
+    v3p4_2_lineage: {
+      pre_dominant_flag_count: preEnforcementSnapshot.filter(s => s.dominant_plane_flag && s.validation_decision !== 'suppress').length,
+      post_dominant_flag_count: v3p4FinalPolygons.filter(p => !!p.dominant_plane_flag).length,
+      pre_lineage_sources: preEnforcementSnapshot
+        .filter(s => s.validation_decision !== 'suppress')
+        .map(s => ({ polygon_idx: s.polygon_idx, v3p1_face_indices: s.v3p1_face_indices || [], dominant_plane_flag: !!s.dominant_plane_flag, dominant_lineage_source: s.dominant_lineage_source || 'none' })),
+      post_lineage_sources: v3p4FinalPolygons.map(p => ({
+        polygon_idx: p.polygon_idx,
+        v3p1_face_indices: p.v3p1_face_indices || [],
+        source_face_indices: p.source_face_indices || [],
+        dominant_plane_flag: !!p.dominant_plane_flag,
+        dominant_lineage_source: p.dominant_lineage_source || 'none',
+      })),
+      rollback_reason_lineage_related: !!(v3p4_1_rollback_reason && (v3p4_1_rollback_reason.startsWith('dominant_plane_lost_') || v3p4_1_rollback_reason.startsWith('dominant_lineage_demoted_'))),
+    },
     edges,
+    // V3P4.2 (AUD-001): do NOT overwrite the inherited dominant_plane_flag
+    // with geometry-only rescoring. Compute geometry rescore and expose it as
+    // `dominant_plane_score_geom` / `dominant_plane_is_dominant_geom` for
+    // diagnostics. If the polygon has no inherited lineage (no V3P1 data), use
+    // the geometry rescore as a conservative fallback.
     polygons: v3p4FinalPolygons.map(p => {
       const dom = v3p4_1ScoreDominantPlane(p, v3p4FinalPolygons, null);
-      p.dominant_plane_flag = dom.isDominant;
-      p.dominant_plane_score = dom.score;
+      p.dominant_plane_score_geom = dom.score;
+      p.dominant_plane_is_dominant_geom = dom.isDominant;
+      if (p.dominant_lineage_source && p.dominant_lineage_source !== 'none') {
+        // Preserve inherited flag — lineage is the source of truth.
+      } else if (p.dominant_plane_flag !== true) {
+        // No lineage: use geometry rescore as a conservative fallback.
+        p.dominant_plane_flag = dom.isDominant;
+        p.dominant_plane_score = dom.score;
+        p.dominant_lineage_source = dom.isDominant ? 'v3p4_geometry_fallback' : 'none';
+      }
       return p;
     }),
   };
@@ -30096,11 +30694,20 @@ function v3p2ApplyConstruction(envelope, result) {
   if (!result || !result.v3_polygon_construction_applied) return { applied: false };
   const cr = envelope.crm_result || (envelope.crm_result = {});
   // Replace roof_faces with the polygon outputs.
+  // V3P4.2 (AUD-001): propagate dominant lineage + fit metadata through to the
+  // final roof_faces so downstream V2 phases and consumers can consult them.
   cr.roof_faces = result.polygons.map(p => ({
     vertices: p.vertices.map(v => ({ x: v.x, z: v.z })),
     pitch: p.pitch,
     azimuth: p.azimuth,
     height: p.height || 0,
+    v3p1_face_indices: (p.v3p1_face_indices || []).slice(),
+    dominant_plane_flag: !!p.dominant_plane_flag,
+    dominant_plane_score: p.dominant_plane_score || 0,
+    dominant_lineage_source: p.dominant_lineage_source || 'none',
+    fit_rmse: (typeof p.fit_rmse === 'number') ? p.fit_rmse : null,
+    sample_count: p.fit_sample_count || 0,
+    normal: p.normal || null,
   }));
   const reasons = Array.isArray(envelope.review_policy_reasons) ? envelope.review_policy_reasons : [];
   if (result.split_polygon_count > 0 && !reasons.includes('v3_polygon_split_applied')) reasons.push('v3_polygon_split_applied');
@@ -30130,6 +30737,21 @@ function v3p1ApplyFusion(envelope, fusion) {
   let groundVetoed = 0;
   let disagreementVetoed = 0;
   let ridgeFlagged = 0;
+  // V3P4.2 (AUD-001): stamp lineage onto roof_faces BEFORE filtering so V3P2
+  // polygon construction can inherit dominant_plane_flag as a preserved signal,
+  // not a recomputed convenience field. v3p1_face_idx is the lineage anchor.
+  let v3p4_2_dominantStamped = 0;
+  for (const p of fusion.per_face) {
+    const i = p.face_idx;
+    if (i >= 0 && i < faces.length && faces[i] && typeof faces[i] === 'object') {
+      faces[i].v3p1_face_idx = i;
+      faces[i].dominant_plane_flag = !!p.dominant_plane_flag;
+      faces[i].dominant_plane_score = p.dominant_plane_score || 0;
+      faces[i].lidar_support_score = p.lidar_support_score || 0;
+      faces[i].dominant_lineage_source = p.dominant_plane_flag ? 'v3p1' : null;
+      if (p.dominant_plane_flag) v3p4_2_dominantStamped++;
+    }
+  }
   for (const p of fusion.per_face) {
     if (p.fusion_decision === 'suppress') {
       toRemove.add(p.face_idx);
@@ -30158,6 +30780,7 @@ function v3p1ApplyFusion(envelope, fusion) {
     disagreement_vetoed: disagreementVetoed,
     ridge_flagged: ridgeFlagged,
     partial_rescue: !!fusion.partial_build_rescue_applied,
+    v3p4_2_dominant_lineage_stamped: v3p4_2_dominantStamped,
   };
 }
 
@@ -31362,10 +31985,38 @@ app.get("/image-analysis", requireAuth, (req, res) => {
 </body></html>`);
 });
 
-app.listen(PORT, () => {
-  console.log(`Solar CRM running at http://localhost:${PORT}`);
-  const _mlUrl  = process.env.ML_ENGINE_URL || ML_ENGINE_URL_DEFAULT;
-  const _mlPath = process.env.ML_AUTO_BUILD_PATH || ML_AUTO_BUILD_PATH_DEFAULT;
-  const _mlSrc  = process.env.ML_ENGINE_URL ? "env" : "default";
-  console.log(`ML Auto Build → ${_mlUrl}${_mlPath} (${_mlSrc})`);
-});
+// V3P4.2: gate app.listen so the module can be `require()`d by test scripts
+// without starting the HTTP server. Running `node server.js` still boots as
+// before.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Solar CRM running at http://localhost:${PORT}`);
+    const _mlUrl  = process.env.ML_ENGINE_URL || ML_ENGINE_URL_DEFAULT;
+    const _mlPath = process.env.ML_AUTO_BUILD_PATH || ML_AUTO_BUILD_PATH_DEFAULT;
+    const _mlSrc  = process.env.ML_ENGINE_URL ? "env" : "default";
+    console.log(`ML Auto Build → ${_mlUrl}${_mlPath} (${_mlSrc})`);
+  });
+}
+
+// V3P4.2: narrow test surface — expose only the helpers needed to assert the
+// invariants documented in tools/v3p4_2_invariants_test.js. Importing the
+// module does not start the server (see gate above).
+module.exports = {
+  v3p1ApplyFusion,
+  polygonConstructionAssessment,
+  v3p2ApplyConstruction,
+  v3p4RunEnforcement,
+  v3p4_1IsDominantPlane,
+  v3p4_1ScoreDominantPlane,
+  v3p4_2HasDominantLineage,
+  v3p4_2IsProtectedDominant,
+  v3p4_1OrientationToNormal,
+  v3p5ApplyPartialRescue,
+  v3p6ApplyHardCaseRescue,
+  // V3P4.3 test surface
+  v3p1DetectRidgeConflict,
+  v3p2SafeMergePair,
+  v3p4_3IsFallbackSplit,
+  v3p4_3HasHipSignature,
+  v3p4_1ValidateRidgeSanity,
+};

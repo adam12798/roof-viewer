@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P6 hard-case rescue hardening banked — reject bucket reduced 6→3)
+**Last updated:** 2026-04-21 (V3P4.3 Geometry Stabilization Packet banked — GEOM-001/002/003/004/005/006 + GEOM-008 addressed. 72/72 invariants pass. Audit items GEOM-007/009/010/011/012/013 remain open for a later packet.)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2404,6 +2404,45 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 **Should further feature work pause?** No. The system is stable for the 21-case batch. Critical findings are latent risks, not active regressions. Recommended: patch AUD-001/002 before adding new enforcement logic.
 
 Full findings in `PROJECT_HANDOFF.md` §V3P4.2.
+
+---
+
+## 31b. V3 Geometry Audit — Report Only
+
+**Date:** 2026-04-21
+**Purpose:** Geometry-only audit of the current V3P1–V3P4.2 pipeline. No code changes. Identifies remaining geometry-correctness gaps not yet covered by V3P4.1 stabilization or the V3P4.2 integrity patch.
+
+**Summary:** 13 findings ranked — 1 CRITICAL (convex-hull merge over-extends into non-roof), 5 HIGH (ridge sanity flags-but-does-not-correct + reads stale `edge_type_guess`; V3P1 ridge detection is X-median only; enforcement internal splits use X-median fallback; orientation anchoring blocks valid hip-roof refits), 5 MEDIUM (cascade vertex snap, convex-hull merge destroys concavity, rescue-plane cell-center hull, post-split pitch allowed 19.9° drift, centroid-angle resort of cut output, no simplicity validation), 1 LOW (rescue rounds pitch/az to int). 10 confirmed-safe geometry areas. 7 watchlist items.
+
+**Recommended next phase:** V3P4.3 Geometry Stabilization — bundled patch for GEOM-001 + GEOM-002 + GEOM-003 + GEOM-004 + GEOM-005 (+ GEOM-008 subsumed). Estimated 3–4 hours combined. Low-risk per-item. Validated through existing `tools/v3p0_replay.js` harness.
+
+**Feature work recommendation:** Pause for one V3P4.3 patch. After V3P4.3 lands, feature work resumes at low risk. Adding new enforcement logic on top of the current geometry risks compounding errors on the 5 HIGH findings.
+
+**Status:** Audit complete. No fixes attempted in this phase. Full findings table and patch order in `PROJECT_HANDOFF.md` §V3 Geometry Audit.
+
+---
+
+## 31c. V3P4.3 Geometry Stabilization Packet
+
+**Date:** 2026-04-21
+**Scope:** Smallest safe patch set for the critical+high audit findings. Not a feature phase. Not a broad bugfix phase.
+
+**Addressed:**
+- GEOM-001 + GEOM-008 — convex-hull merge over-extension / concavity loss → new `v3p2SafeMergePair` requires shared-vertex proof (≤0.40 m) AND hull area inflation ≤15%.
+- GEOM-002 + GEOM-003 — ridge sanity flags-but-never-corrects and reads stale field → loop relocated to AFTER `v3p3ClassifyEdgeTypes`; consults `edge_type_v3p3` with fallback; on failure reclassifies edge to `seam` (not just warn).
+- GEOM-004 — V3P1 ridge detection axis bias → `v3p1DetectRidgeConflict` now multi-axis (x, z, 45°, 135°); picks strongest opposition. Legacy X-axis preserved for backward compat.
+- GEOM-005 — enforcement X-median fallback splits → both `v3p4EnforceInternalPlaneConsistency` and `v3p4EnforceStructuralBoundaries` now call `v3p4_3IsFallbackSplit` and skip with `split_blocked` action + debug.
+- GEOM-006 — orientation anchoring blocks hip refits → `v3p4_3HasHipSignature` detects real 4-quadrant hips; when signature present, anchor still blocks the averaging refit but emits `v3p4_3_hip_signature_anchor_exempt` instead of the alarming variance warning.
+
+**Remaining audit items (not in scope, for later packets):** GEOM-007, GEOM-009, GEOM-010, GEOM-011, GEOM-012, GEOM-013. Watchlist W-1 through W-7 unchanged.
+
+**Testing:** `tools/v3p4_3_invariants_test.js` — 31/31 pass. V3P4.2 regression `tools/v3p4_2_invariants_test.js` — 41/41 pass. Combined 72/72.
+
+**Per-property replay revalidation:** Deferred until ML wrapper running on port 5001. Invariants-level tests alone confirm the patch logic; full replay batch will confirm no regressions on the documented validation set (20 Meadow, 583 Westford, 254 Foster, 225 Gibson, 17 Church, 726 School, Puffer, 74 Gates, 15 Veteran, 175 Warwick).
+
+**Status:** BANKED. No prior phases reopened.
+
+Full section in `PROJECT_HANDOFF.md` §V3P4.3.
 
 ---
 

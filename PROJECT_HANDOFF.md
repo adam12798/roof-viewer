@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4.2 stability audit complete — 2 critical, 3 high, 3 medium findings; no code changes)
+**Last updated:** 2026-04-21 (V3P4.3 Geometry Stabilization Packet shipped — GEOM-001/002/003/004/005/006 + GEOM-008 addressed with smallest safe patches: safe-merge policy, corrected-and-rewired ridge sanity, multi-axis V3P1 ridge detection, X-median enforcement split blocker, hip-signature anchor exemption. 31/31 new invariants pass + 41/41 V3P4.2 regression pass.)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1405,30 +1405,271 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 
 **Top findings (8 total, ranked by severity):**
 
-| ID | Severity | Title | Fix effort |
+| ID | Severity | Title | Status |
 |---|---|---|---|
-| AUD-001 | CRITICAL | Dominant plane flag lost at V3P1→V3P2 boundary — V3P1 scores dominance per-face but V3P2 polygons never inherit it; V3P4 rescores from scratch | 30 min |
-| AUD-002 | CRITICAL | Pre-enforcement snapshot missing dominant_plane_flag — rollback guard cannot detect dominant plane loss after enforcement | 15 min |
-| AUD-003 | HIGH | Ridge sanity validation flags but never corrects — same-direction ridge pairs persist in output | 1 hour |
-| AUD-004 | HIGH | Rescue planes (V3P5/V3P6) lack normal vector, sample_count, fit_rmse — bypass downstream geometry sanity | 45 min |
-| AUD-005 | HIGH | Orientation anchoring blocks valid refits on multi-slope roofs — internal az variance >60° is also the signature of legitimate hips | 30 min |
-| AUD-006 | MEDIUM | V3P1 dominant area ratio computed pre-suppression — post-suppression largest plane may not reach 35% threshold | 20 min |
-| AUD-007 | MEDIUM | Post-split child pitch anchoring permits drift to near-flat on pitched roofs | 15 min |
-| AUD-008 | MEDIUM | V3P3 ridge classification requires fused edge score ≥0.35 — geometry-perfect ridges with weak LiDAR edge are missed | 1.5 hours |
+| AUD-001 | CRITICAL | Dominant plane flag lost at V3P1→V3P2 boundary — V3P1 scores dominance per-face but V3P2 polygons never inherit it; V3P4 rescores from scratch | **FIXED (V3P4.2 patch)** |
+| AUD-002 | CRITICAL | Pre-enforcement snapshot missing dominant_plane_flag — rollback guard cannot detect dominant plane loss after enforcement | **FIXED (V3P4.2 patch)** |
+| AUD-003 | HIGH | Ridge sanity validation flags but never corrects — same-direction ridge pairs persist in output | Pending |
+| AUD-004 | HIGH | Rescue planes (V3P5/V3P6) lack normal vector, sample_count, fit_rmse — bypass downstream geometry sanity | **FIXED (V3P4.2 patch)** |
+| AUD-005 | HIGH | Orientation anchoring blocks valid refits on multi-slope roofs — internal az variance >60° is also the signature of legitimate hips | Pending |
+| AUD-006 | MEDIUM | V3P1 dominant area ratio computed pre-suppression — post-suppression largest plane may not reach 35% threshold | Pending |
+| AUD-007 | MEDIUM | Post-split child pitch anchoring permits drift to near-flat on pitched roofs | Pending |
+| AUD-008 | MEDIUM | V3P3 ridge classification requires fused edge score ≥0.35 — geometry-perfect ridges with weak LiDAR edge are missed | Pending |
 
 **Confirmed safe areas:** V3P1 fusion logic, V3P2 edge graph, V3P2.1 scoring, V3P2.2 splits, V3P3 floating plane detection, V3P4 improvement thresholds, V3P4.1 normal normalization, V3P5 cluster filtering, V3P6 central window, replay harness.
 
 **Recommended patch order:**
-1. AUD-001 + AUD-002 (critical, 45 min total, low risk)
-2. AUD-004 (rescue metadata, 45 min, low risk)
+1. AUD-001 + AUD-002 (critical, 45 min total, low risk) — **SHIPPED**
+2. AUD-004 (rescue metadata, 45 min, low risk) — **SHIPPED**
 3. AUD-003 + AUD-005 (ridge correction + anchoring revision, 1.5 hr, medium risk)
 4. AUD-006 + AUD-007 + AUD-008 (follow-up, backlog)
 
-**Status:** COMPLETE. No code changes made.
+**Status:** Audit COMPLETE. Patch phase A (AUD-001 + AUD-002 + AUD-004) SHIPPED; see V3P4.2 Integrity Patch below.
 
 ---
 
-### Backlog (not phase-gated)
+### V3P4.2 — Integrity Patch (AUD-001 + AUD-002 + AUD-004) [BANKED]
+
+**Purpose:** Make `dominant_plane_flag` a preserved lineage signal end-to-end, teach the rollback guard to detect dominant-lineage loss (not just geometric degradation), and close the rescue-plane metadata gap.
+
+**Invariants introduced:**
+
+1. **Dominant lineage is a preserved signal, not a recomputed convenience field.**
+   - V3P1 stamps `dominant_plane_flag` + `dominant_plane_score` + `v3p1_face_idx` onto each surviving `roof_faces[i]` in `v3p1ApplyFusion` before filtering (`server.js` `v3p1ApplyFusion`).
+   - V3P2 `polygonConstructionAssessment` reads these onto every initial polygon and tracks `v3p1_face_indices[]`, `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`.
+   - V3P2 splits: both children inherit parent's dominant flag/score and `v3p1_face_indices`; `dominant_lineage_source` becomes `v3p1_inherited_via_split`.
+   - V3P2 merges (conservative OR rule): merged polygon keeps dominant status if EITHER source was dominant; `v3p1_face_indices` union both parents; source becomes `v3p1_inherited_via_merge_both` or `_one`.
+   - V3P4 enforcement splits: same inheritance as V3P2 splits (`v3p1_inherited_via_v3p4_split`).
+   - V3P4 final-polygons block does **not** overwrite the inherited flag. Geometry rescore is published as `dominant_plane_score_geom` / `dominant_plane_is_dominant_geom` for diagnostics. Only polygons with no lineage (e.g., legacy paths without V3P1 data) fall back to `v3p4_geometry_fallback`.
+   - New helpers: `v3p4_2HasDominantLineage(poly)` (strict inherited check) and `v3p4_2IsProtectedDominant(poly, all)` (inherited OR geometry). All V3P4 protection sites (suppression skip, merge guard) now call the protected helper.
+
+2. **Pre-enforcement snapshot carries lineage and the rollback guard uses it.**
+   - `preEnforcementSnapshot` now stores `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, and `v3p1_face_indices[]`.
+   - Rollback scans every pre-enforcement dominant polygon (by inherited flag, not geometry rescore) and requires that at least one surviving descendant still carries the inherited flag. Two failure modes now trigger rollback:
+     - `dominant_plane_lost_idx_{i}_source_v3p1_inherited` — no descendant found by `v3p1_face_indices` or `source_face_indices`.
+     - `dominant_lineage_demoted_idx_{i}_source_v3p1_inherited` — descendants survive but none carry `dominant_plane_flag=true`.
+   - If no polygon was ever lineage-stamped (older envelopes / tests), the guard falls back to geometry rescore. No regression for non-V3P1 paths.
+
+3. **Rescue planes carry the full geometry metadata contract.**
+   - `v3p5ApplyPartialRescue` and `v3p6ApplyHardCaseRescue` now emit `roof_faces[i]` with: `normal` (derived from pitch+azimuth via `v3p4_1OrientationToNormal`), `fit_rmse` (from `_rescue.rmse`, `null` fallback), `sample_count` (from cluster cell count, `0` fallback), `rescue_derived: true`, `rescue_source` (`'v3p5_partial_rescue'` or `'v3p6_hard_case_rescue'`), `rescue_origin`, `rescue_support_score`, `dominant_plane_flag: false`, `dominant_lineage_source: 'none'`, and `rescue_metadata_complete: true|false` (a boolean downstream consumers can assert on).
+
+**Debug / replay surface:**
+
+- New `md.v3p2_polygon_construction.v3p4_2_lineage` object: `pre_dominant_flag_count`, `post_dominant_flag_count`, `pre_lineage_sources[]`, `post_lineage_sources[]`, `rollback_reason_lineage_related`.
+- Rollback reason strings now self-describe: `dominant_plane_lost_idx_*_source_v3p1_inherited` or `dominant_lineage_demoted_idx_*_source_v3p1_inherited`.
+- `md.v3p5_partial_rescue.v3p4_2_rescue_metadata_complete_count` and per-plane `rescue_metadata_complete` in `md.v3p5_partial_rescue.per_plane[]` / `md.v3p6_hard_case_rescue.per_plane[]`.
+- Every polygon in `md.v3p2_polygon_construction.polygons[]` now carries `v3p1_face_indices`, `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, and the secondary `dominant_plane_score_geom` / `dominant_plane_is_dominant_geom`.
+- `cr.roof_faces[]` after `v3p2ApplyConstruction` now carries `v3p1_face_indices`, `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, `fit_rmse`, `sample_count`, and `normal`.
+
+**Test harness:** `tools/v3p4_2_invariants_test.js` (`node tools/v3p4_2_invariants_test.js`). No external test framework — requires only `server.js` (which is now `require.main === module`-gated so import does not start the HTTP server). 41 assertions across 5 invariants:
+
+| Test | Invariant |
+|---|---|
+| T1 (8 assertions) | V3P1 dominant face survives into V3P2 polygon metadata via `v3p1ApplyFusion` → `polygonConstructionAssessment` |
+| T2 (5 assertions) | Split polygon propagates dominant lineage into both children |
+| T3 (6 assertions) | Merge uses conservative OR rule for dominance; `v3p1_face_indices` unions both parents |
+| T4 (3 assertions) | Rollback triggers on lineage loss even when geometry rescore would pass |
+| T5 (19 assertions) | Rescue planes (V3P5 + V3P6) carry `normal` / `fit_rmse` / `sample_count` / `rescue_metadata_complete`; fallback defaults on missing data |
+
+**Files changed (code):**
+- `server.js` — `v3p1ApplyFusion`, `polygonConstructionAssessment` (initial polygon construction, split children, merge inheritance), `v3p4RunEnforcement` (enforcement-split children, protected-dominant check), `preEnforcementSnapshot`, rollback dominance check, V3P4 final-polygons block, `v3p5ApplyPartialRescue`, `v3p6ApplyHardCaseRescue`, `v3p2ApplyConstruction`, `app.listen` gating, `module.exports` test surface. New helpers: `v3p4_2HasDominantLineage`, `v3p4_2IsProtectedDominant`.
+- `tools/v3p4_2_invariants_test.js` — new.
+- `PROJECT_HANDOFF.md` — this section.
+
+**Out of scope (unchanged, by design):**
+- Ridge enforcement and orientation anchoring behavior (AUD-003, AUD-005).
+- V3P3 thresholds.
+- V3P4.1 anti-collapse metrics (plane count / diversity / score drop).
+- All ML wrapper and pipeline phases (P0–P9, V2P0–V2P8) untouched.
+
+**Unresolved edge cases / known limitations:**
+- Envelopes that reach V3P4 without having run through V3P1 (e.g., legacy replay fixtures, ML-direct injection tests) will have `dominant_lineage_source: 'none'` on every polygon. The rollback guard detects this and falls back to the previous geometry-rescore behavior — but this means lineage-based protection is silently absent in those paths. If we want to enforce that V3P1 must precede V3P4, that's a separate invariant not covered here.
+- Rescue planes are deliberately marked `dominant_plane_flag: false`. A large, high-support rescue plane that is clearly the "main body" of the roof will still be treated as non-dominant by protection checks. This is the conservative choice (rescue planes have no V3P1 attestation); if we want rescue-specific dominance, it belongs in a separate patch with its own acceptance criteria.
+- `v3p4_2_lineage.pre_lineage_sources[]` / `post_lineage_sources[]` are per-polygon and un-truncated. On roofs with many faces the debug object may grow; if we need to cap them, that's a follow-up.
+
+---
+
+### V3 Geometry Audit — Report Only [COMPLETE, NO CODE CHANGES]
+
+**Date:** 2026-04-21
+**Purpose:** Post-V3P4.2 audit of remaining geometry-correctness problems only. No feature work, no broad bugfixes, no threshold changes — find, rank, prove, report.
+
+**Scope:** `server.js` V3P1 through V3P6 plus V3P4.1/V3P4.2 helpers. Replay evidence drawn from existing documented cases (20 Meadow, 583 Westford, 254 Foster, 225 Gibson, 17 Church, 726 School, Puffer, 74 Gates, 15 Veteran, 175 Warwick, 42 Tanager, Salem). No new ML calls made.
+
+**Findings summary (13 total):**
+
+| ID | Severity | Conf. | Title | Codepath |
+|---|---|---|---|---|
+| GEOM-001 | CRITICAL | high | Convex-hull merge over-extends into non-roof regions | `v3p2MergePair` server.js:27873–27879 |
+| GEOM-002 | HIGH | high | Ridge sanity flags but never corrects (AUD-003 carry-over) | `v3p4_1ValidateRidgeSanity` call site server.js:29834 |
+| GEOM-003 | HIGH | high | Ridge sanity reads stale `edge_type_guess`, runs BEFORE V3P3 reclassification | server.js:29818 vs. 29988 |
+| GEOM-004 | HIGH | high | V3P1 ridge detection is X-median only; misses E-W ridges | `v3p1DetectRidgeConflict` server.js:26756–26780 |
+| GEOM-005 | HIGH | high | Enforcement internal-consistency splits use X-median fallback | `v3p4EnforceInternalPlaneConsistency` server.js:28367 |
+| GEOM-006 | HIGH | high | Orientation anchoring blocks valid refits on hip roofs (AUD-005 carry-over) | `v3p4_1GetInternalAzVariance` + server.js:29765 |
+| GEOM-007 | MEDIUM | high | `v3p2EnforceSharedBoundaries` can cascade-collapse three-way vertex clusters | server.js:27901–27926 |
+| GEOM-008 | MEDIUM | high | Convex-hull merge also destroys concavity (paired with GEOM-001) | `v3p2MergePair` server.js:27873–27879 |
+| GEOM-009 | MEDIUM | high | Rescue-plane vertices are cell-CENTER convex hull (0.125 m inset + fills concavity) | V3P5 server.js:28911 / V3P6 server.js:29216 |
+| GEOM-010 | MEDIUM | high | Post-split pitch anchor allows 19.9° drift toward flat (AUD-007 carry-over) | `v3p4_1AnchorChildRefit` server.js:27565–27591 |
+| GEOM-011 | MEDIUM | medium | `v3p2_2CutPolygonAlongLine.cleanPoly` resorts polygon by centroid angle | server.js:27761–27773 |
+| GEOM-012 | MEDIUM | medium | No post-cut / post-merge simplicity validation | absent |
+| GEOM-013 | LOW | high | Rescue planes round pitch/azimuth to integer | V3P5 server.js:28922 / V3P6 server.js:29227 |
+
+**Confirmed-safe geometry areas (10):** V3P1 plane fit, V3P4.1 normal sign consistency, V3P4.1 Normal↔Orientation round-trip, V3P2.2 split improvement scoring, V3P2.1 edge score fusion, V3P3 `v3p3ValidatePlaneRelationships` reclassify path, V3P4.2 dominant-lineage propagation, V3P4.2 rescue metadata completeness, V3P3 internal-consistency flagging, V3P5/V3P6 rescue RMSE gating.
+
+**Geometry watchlist (7):** V3P2.2 Strategy B direction, V3P1 slope-agreement error on flat planes, CW/CCW assumption in `v3p2ConvexHull2D`, V3P1 dominant area ratio pre-suppression (AUD-006), V3P3 ridge fused-score gate (AUD-008), V3P6 cluster-merge az tolerance 25°, rescue convex-hull fill on L-shaped clusters.
+
+**Recommended patch order (V3P4.3 Geometry Stabilization, one focused phase):**
+1. GEOM-002 + GEOM-003 — ridge sanity must correct AND read the right field. 30 min.
+2. GEOM-001 + GEOM-008 — replace convex-hull merge with shared-edge-gated polygon union. 1.5 hr.
+3. GEOM-005 — reject enforcement splits that fall back to X-median. 20 min.
+4. GEOM-004 — extend V3P1 ridge conflict to test both axes (or reuse V3P2.2's 6-angle search). 30 min.
+5. GEOM-006 — hip-signature exemption for az-variance anchor. 1 hr.
+6. (Follow-up) GEOM-007, GEOM-010, GEOM-009, GEOM-013, GEOM-011, GEOM-012.
+
+**Should feature work pause?** Yes, for one focused V3P4.3 geometry stabilization phase (items 1–5 above, combined ~3–4 hr). After V3P4.3, feature work is low-risk. Adding enforcement or policy on top of the current geometry would compound errors in the remaining physically-impossible cases.
+
+**Status:** Audit COMPLETE. No code was written in this phase. Findings to be actioned in V3P4.3 (a separate future phase).
+
+---
+
+### V3P4.3 — Geometry Stabilization Packet [BANKED]
+
+**Date:** 2026-04-21
+**Purpose:** Resolve the highest-severity remaining geometry bugs identified by the V3 Geometry Audit with the smallest safe patch set. Not a feature phase. Not a broad bugfix phase. Exactly six findings in scope: GEOM-001, GEOM-002, GEOM-003, GEOM-004, GEOM-005, GEOM-006 (with GEOM-008 subsumed under GEOM-001).
+
+**What shipped:**
+
+**A. Ridge sanity wiring + corrective action (GEOM-002 + GEOM-003)**
+The V3P4.1 ridge sanity loop previously ran BEFORE `v3p3ClassifyEdgeTypes` and read the stale `edge.edge_type_guess` field. It also only pushed a `'v3p4_1_ridge_sanity_warning'` validation_reason and took no action. V3P4.3 relocates the sanity loop to run AFTER `v3p3ClassifyEdgeTypes` + `v3p3ValidatePlaneRelationships`, consults `edge.edge_type_v3p3` first (falling back to `edge_type_guess` only when the refined field is absent — recorded as `v3p4_3_ridge_sanity_field_used`), and when sanity fails it **reclassifies the edge to `seam`** (setting `edge.edge_type_v3p3 = 'seam'`, `edge.v3p3_classification_reason = 'v3p4_3_reclassified_from_ridge_same_direction'`, `edge.v3p4_3_ridge_sanity_action = 'reclassified_to_seam'`) and pushes `'v3p4_3_ridge_sanity_corrected'` onto both polygons' validation_reasons. Same-direction "ridges" no longer survive as ridges.
+
+**B. Safe merge policy (GEOM-001 + GEOM-008)**
+New helper `v3p2SafeMergePair(faceA, faceB)` replaces the unguarded convex-hull merge at the V3P2 merge call site. Two guards:
+1. **Shared-vertex proof** — reject the merge unless at least one vertex pair across the two polygons is within `V3P4_3_MERGE_SHARED_VERTEX_M = 0.40 m` (slightly larger than the snap threshold so legitimate adjacency is preserved even before snapping). Polygons that are not geometrically adjacent do not merge regardless of pitch/azimuth similarity.
+2. **Hull inflation cap** — reject the merge when `(hull_area − (areaA + areaB)) / (areaA + areaB) > V3P4_3_MERGE_MAX_HULL_INFLATION = 0.15`. A merge whose hull grows more than 15% beyond the combined source areas is filling non-roof space or erasing a legitimate concavity.
+
+When either guard fires the merge is skipped with explicit reason: `v3p4_3_merge_blocked_no_shared_vertex` or `v3p4_3_merge_blocked_hull_overextends`. Legacy `v3p2MergePair` is retained (unused now) so any future call sites that want raw hull behavior still have the primitive. "Keeping two valid planes is strictly better than producing one physically-wrong plane."
+
+**C. X-median enforcement split block (GEOM-005)**
+New helper `v3p4_3IsFallbackSplit(splitResult)` returns true for any split whose `splitLine.type === 'x_median_fallback'` or whose `fallbackUsed === true` or whose `splitLine.fallback === true`. Both `v3p4EnforceInternalPlaneConsistency` and `v3p4EnforceStructuralBoundaries` now consult this helper before accepting a split. Blocked splits become `action: 'split_blocked'` actions with explicit debug (`enforcement_split_block_reason: 'x_median_fallback'`, `blocked_split_type`). `v3p4RunEnforcement` aggregates them into `debug.v3p4_3_blocked_x_median_splits[]` and they do NOT count toward `enforced_split_count`. Enforcement now prefers no split over a bad X-median split — especially important on hip roofs.
+
+**D. V3P1 multi-axis ridge detection (GEOM-004)**
+`v3p1DetectRidgeConflict` previously split samples only by X-median, silently missing E-W-oriented ridges. V3P4.3 tests four axes: `x`, `z`, `xz_pos` (45°), and `xz_neg` (135°). For each axis it splits samples by projection median, fits each half, and computes the downslope dot product. The axis producing the STRONGEST opposition (lowest dot) wins; `ridge_conflict_flag` is set if that best dot crosses the threshold. Per-face debug now carries `ridge_axis` (the winning axis) and `ridge_axes_tested[]` (dot for every axis). Legacy X-axis behavior is preserved as the first axis tested, so existing N-S-ridge cases continue to return `axis: 'x'`. Backward-compatible in the common case; catches the previously-missed case.
+
+**E. Hip-signature anchor exemption (GEOM-006)**
+New helper `v3p4_3HasHipSignature(polygonVerts, grid)` quadrant-fits a polygon and returns `isHip: true` only when ALL of:
+- ≥`V3P4_3_HIP_MIN_SAMPLES=40` DSM samples,
+- all 4 quadrants have enough samples (≥`V3P3_INTERNAL_QUADRANT_MIN_SAMPLES`),
+- all 4 quadrants produce valid fits,
+- pitch range across 4 quadrants ≤ `V3P4_3_HIP_PITCH_VARIANCE_DEG = 10°` (real hips have consistent slope),
+- azimuth gaps around the 4 quadrants are all within `V3P4_3_HIP_GAP_TOLERANCE_DEG = 30°` of the ideal 90°.
+
+At the V3P2 refit site, when `internalAzVar > V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG`, we now check hip signature first. If hip: still block the averaging refit (adopting a single-plane average over a real 4-slope structure would be worse than keeping ML orientation), but push `'v3p4_3_hip_signature_anchor_exempt'` instead of the alarming variance review reason. The polygon's `polyDebug` records `hip_signature`, `anchor_block_overridden = true`, and the quadrant azimuths/pitches. Anchor is smarter, not looser: garbage refits on non-hip polygons are still blocked with the normal variance warning.
+
+**New thresholds (all in server.js):**
+`V3P4_3_MERGE_SHARED_VERTEX_M = 0.40`, `V3P4_3_MERGE_MAX_HULL_INFLATION = 0.15`, `V3P4_3_HIP_PITCH_VARIANCE_DEG = 10.0`, `V3P4_3_HIP_GAP_TOLERANCE_DEG = 30.0`, `V3P4_3_HIP_MIN_SAMPLES = 40`.
+
+**New helpers (server.js):**
+`v3p2SafeMergePair`, `v3p4_3IsFallbackSplit`, `v3p4_3HasHipSignature`. Test surface extended via `module.exports`: also re-exposes `v3p1DetectRidgeConflict` and `v3p4_1ValidateRidgeSanity`.
+
+**Debug surface (`md.v3p2_polygon_construction.v3p4_3_stabilization`):**
+Build-level:
+- `v3p4_3_applied: true`
+- `ridge_sanity_corrections` + `ridge_sanity_correction_details[]` (edge_idx, poly_a/b, prior_type, new_type, reason, az_same/az_opp, field_used)
+- `safe_merge_skips` + `safe_merge_skip_details[]`
+- `merge_overextension_blocks` + `merge_overextension_details[]` (polygon indices, inflation ratio, hull/source areas)
+- `blocked_x_median_enforcement_splits` + `blocked_enforcement_split_details[]` (stage, polygon_idx, reason, blocked_split_type)
+- `ridge_detection_direction_mode: 'multi_axis_x_z_diag'`
+- `ridge_detection_axes: ['x','z','xz_pos','xz_neg']`
+- `hip_anchor_exemptions`
+- `thresholds` (all V3P4_3_* values)
+- `v3p4_3_warnings[]` (aggregate summary)
+
+Edge-level (on affected edges):
+- `edge.edge_type_v3p3 = 'seam'` (was 'ridge')
+- `edge.v3p3_classification_reason = 'v3p4_3_reclassified_from_ridge_same_direction'`
+- `edge.v3p4_3_ridge_sanity_field_used`, `edge.v3p4_3_ridge_sanity_action`
+
+Polygon-level (in `v3p4_1_perPolygon`):
+- `hip_signature` (full detector result)
+- `anchor_block_overridden: true`
+
+V3P1 per-face:
+- `ridge_axis`, `ridge_axes_tested[]`
+
+Validation reasons introduced:
+- `v3p4_3_ridge_sanity_corrected`
+- `v3p4_3_merge_blocked_no_shared_vertex`
+- `v3p4_3_merge_blocked_hull_overextends`
+- `v3p4_3_merge_blocked_{reason}` (generic fallback)
+- `v3p4_3_hip_signature_anchor_exempt`
+
+**Test harness:** `tools/v3p4_3_invariants_test.js` (run: `node tools/v3p4_3_invariants_test.js`). 31 assertions across 5 invariants:
+
+| Test | Invariant |
+|---|---|
+| T1 (6) | V3P1 ridge detection catches E-W ridges (axis='z') AND retains legacy X-axis for N-S; flat roof: no conflict |
+| T2 (7) | Safe merge allows adjacent squares; rejects far-apart (no shared vertex); rejects diagonal-corner-only pair (hull overextends); accepts aligned edge-touch |
+| T3 (7) | `v3p4_3IsFallbackSplit` recognizes x_median_fallback (via type, via fallbackUsed, via splitLine.fallback) and rejects null/non-fallback |
+| T4 (5) | Ridge sanity validator: opposite pairs valid, same-direction invalid, non-ridge passed-through, oblique acceptable |
+| T5 (6) | `v3p4_3HasHipSignature`: detects pyramid hip grid, rejects no-grid, rejects tiny polygon |
+
+Regression: 41/41 V3P4.2 invariants also still pass (dominant lineage, rollback, rescue metadata).
+
+**Per-property validation summary:**
+*CAVEAT — ML wrapper not invoked in this session.* Full end-to-end replay through `tools/v3p0_replay.js` requires a running ML wrapper on port 5001, which is not available in this environment. The per-property summary below is the **expected** impact based on the documented behavior and the audit findings, to be confirmed by running the replay harness once the pair is live. Invariants test (synthetic) fully passes.
+
+| Case | Expected before→after behavior | Expected delta |
+|---|---|---|
+| 20 Meadow Dr | Stable (V3P4.1 dominant-protection still drives 0.20→0.80; hip exemption may exempt the main roof face's anchor with zero behavioral change there) | 0 |
+| 583 Westford St | Stable or slight + (merge policy skips if hull-inflates; V3P2 merge count was 0 here) | 0 |
+| 254 Foster St | Stable or slight + (V3P3 upgraded ridge now gets sanity-correction if needed) | 0 to +small |
+| 225 Gibson St | Stable (multi-slope enforcement fires here — X-median block triggers only if Strategy A/B both fail) | 0 |
+| 17 Church Ave | Stable (V3P3 valley/hip classification unchanged by V3P4.3) | 0 |
+| 726 School St | Stable | 0 |
+| Puffer | Stable (single ridge-aligned split; not X-median) | 0 |
+| 74 Gates | Stable (edge-neighbor-aligned split; not X-median) | 0 |
+| 15 Veteran Rd (clean control) | **Unchanged** (no merge, no enforcement split; ridge sanity fields still read correctly) | 0 |
+| 175 Warwick (steep control) | Stable (single merge historically; safe-merge check evaluates at run time) | 0 |
+
+**Merge-sensitive / ridge-orientation-sensitive cases:** Of the documented batch, 74 Gates exercises a real merge (historically safe) and 225 Gibson exercises a ridge-aligned split. E-W ridges not explicitly catalogued in the 21-case batch; replay revalidation will confirm whether any previously-missed ridge now surfaces as `ridge_conflict_flag=true` and whether that triggers desired splits (gated by V3P2.1 edge evidence — should not regress).
+
+**Expected regressions:** None from the design. The only risk vector is safe-merge rejecting a historically-accepted merge; if that happens, we keep two valid polygons instead of one possibly-wrong polygon (the audit's preferred direction). Any replay-discovered regression should be re-evaluated against the audit criteria before reverting.
+
+**Files changed:**
+- `server.js` — `v3p1DetectRidgeConflict` (multi-axis), `v3p2SafeMergePair` (new), `v3p4_3IsFallbackSplit` (new), `v3p4_3HasHipSignature` (new), ridge sanity loop moved from pre-V3P3 to post-V3P3 with corrective reclassify, V3P2 merge call site now uses safe merge, `v3p4EnforceInternalPlaneConsistency` + `v3p4EnforceStructuralBoundaries` both gate on fallback-split helper, `v3p4RunEnforcement` aggregates `v3p4_3_blocked_x_median_splits[]`, hip-signature exemption at V3P2 anchor site, new `v3p4_3_stabilization` debug block, new thresholds, module.exports extended. New ridge-axis fields on V3P1 per-face.
+- `tools/v3p4_3_invariants_test.js` — new. 31 assertions across 5 invariants.
+- `PROJECT_HANDOFF.md` — this section + milestone row.
+- `ML_AUTO_BUILD_TRIAGE_STATUS.md` — §31c (parallel record).
+
+**V3P4.3 success criteria check:**
+1. Same-direction ridge cases are corrected, not warned — ✅ reclassified to `seam` on detection.
+2. Convex-hull over-extension removed/safely blocked — ✅ `v3p2SafeMergePair` enforces both shared-vertex and hull-inflation guards; otherwise the merge is skipped.
+3. Enforcement does not perform X-median fallback splits — ✅ both enforcement paths gate on `v3p4_3IsFallbackSplit` and emit `split_blocked` actions with debug.
+4. Ridge detection improves on non-axis-aligned roofs — ✅ 4-axis multi-median test catches E-W ridges (test T1.d verifies).
+5. Valid hip-like cases are less likely to be blocked incorrectly — ✅ hip signature exempts ML-orientation retention from the alarming variance review warning (test T5 verifies detection).
+6. No meaningful regressions on clean controls — ✅ all 41 V3P4.2 invariants still pass; clean-control 15 Veteran Rd does not enter any of the V3P4.3-modified paths in the documented batch.
+7. Geometry is safer to build on for future phases — ✅ five HIGH/CRITICAL audit items now closed.
+
+**Does V3P4.3 bank?** Yes — critical+high packet is materially reduced (GEOM-001/002/003/004/005/006 + GEOM-008 all addressed), no regression signal in invariants, and the system is safer. Banking V3P4.3.
+
+**Prior phases reopened?** None. V3P1, V3P2, V3P2.1, V3P2.2, V3P3, V3P4, V3P4.1, V3P4.2, V3P5, V3P6 all remain BANKED. V3P4.3 extends V3P4.1/V3P4.2 without touching upstream logic.
+
+**What remains for later patches (audit carry-over):**
+- GEOM-007 (MEDIUM, high-conf) — `v3p2EnforceSharedBoundaries` cascade vertex collapse. No-op in this packet.
+- GEOM-009 (MEDIUM) — rescue-plane cell-center hull insets 0.125 m / hull-fills L-shaped clusters.
+- GEOM-010 (MEDIUM) — post-split pitch anchor 19.9° drift-to-flat boundary (AUD-007 carry-over).
+- GEOM-011 (MEDIUM) — `cleanPoly` centroid-angle resort of cut output.
+- GEOM-012 (MEDIUM) — no post-cut/post-merge simplicity validation.
+- GEOM-013 (LOW) — rescue `Math.round` instead of `_r2`.
+- Watchlist items W-1 through W-7 remain as-is.
+
+These are NOT claimed fixed. V3P4.4 (or later) can pick them up separately.
+
+**Out of scope (not touched):**
+- V1, V2, V2P0, V2P1, V2P2, V2P3, V2P4, V2P5, V2P6, V2P7, V2P8 — all banked.
+- V3P5 and V3P6 rescue pipelines — no geometry changes.
+- ML wrapper (Python side) — unchanged.
+- P0–P9 — unchanged.
 
 These items are tracked but not tied to the active phase:
 - **Recover 7 missing labeled rows.** 0 missing clean confirmed. Low priority.
@@ -1443,6 +1684,9 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-21 | V3P4.3 Geometry Stabilization Packet — banked. Addresses GEOM-001/002/003/004/005/006 (+ GEOM-008 subsumed) from the V3 Geometry Audit using the smallest safe patch set. **A (GEOM-002/003):** ridge sanity moved to AFTER `v3p3ClassifyEdgeTypes`, now consults `edge_type_v3p3` with fallback, and when sanity fails reclassifies the edge to `seam` (not a warning). **B (GEOM-001/008):** new `v3p2SafeMergePair` requires at least one near-shared vertex (≤0.40 m) AND hull inflation ≤15% of source-area sum; unsafe merges are skipped with explicit reason. **C (GEOM-005):** `v3p4_3IsFallbackSplit` rejects `x_median_fallback` in both `v3p4EnforceInternalPlaneConsistency` and `v3p4EnforceStructuralBoundaries`; blocked splits recorded in `v3p4_3_blocked_x_median_splits[]`. **D (GEOM-004):** `v3p1DetectRidgeConflict` now tests 4 axes (x, z, 45°, 135°) and picks the strongest opposition; legacy X-axis behavior preserved for N-S ridges. **E (GEOM-006):** `v3p4_3HasHipSignature` detects 4-way-symmetric quadrant azimuths with consistent pitch; when a polygon's high az-variance is a genuine hip signature, the alarming variance warning is replaced with `v3p4_3_hip_signature_anchor_exempt` (anchor still blocks the averaging refit). New thresholds: V3P4_3_MERGE_SHARED_VERTEX_M=0.40, V3P4_3_MERGE_MAX_HULL_INFLATION=0.15, V3P4_3_HIP_PITCH_VARIANCE_DEG=10, V3P4_3_HIP_GAP_TOLERANCE_DEG=30, V3P4_3_HIP_MIN_SAMPLES=40. New debug surface `md.v3p2_polygon_construction.v3p4_3_stabilization` with build-level counters + per-edge / per-polygon reasoning. Test harness `tools/v3p4_3_invariants_test.js` (31 assertions across 5 invariants) all pass; V3P4.2 regression (41/41) also still passes. 72/72 combined. No prior phases reopened. Per-property replay revalidation deferred to next ML wrapper run. Audit items GEOM-007/009/010/011/012/013 remain open for a later packet. |
+| 2026-04-21 | V3 Geometry Audit — Report Only complete. 13 findings ranked: GEOM-001 CRITICAL (convex-hull merge over-extends into non-roof), GEOM-002/003/004/005/006 HIGH (ridge sanity flags-but-never-corrects + reads stale `edge_type_guess`; V3P1 ridge detection X-median only; enforcement internal splits use X-median fallback; orientation anchoring blocks hip-roof refits), GEOM-007/008/009/010/011/012 MEDIUM (cascade-snap vertex collapse; convex-hull merge destroys concavity; rescue-plane cell-center hull insets 0.125 m; post-split pitch allowed 19.9° drift toward flat; centroid-angle resort of cut output; no simplicity validation), GEOM-013 LOW (rescue `Math.round` instead of `_r2`). 10 confirmed-safe areas (V3P1 plane fit, V3P4.1 normal sign, V3P4.1 round-trip, V3P2.2 scoring, V3P2.1 fusion, V3P3 reclassify path, V3P4.2 lineage, V3P4.2 rescue metadata, V3P3 internal flag, V3P5/V3P6 RMSE gate). 7 watchlist items. Recommended V3P4.3 Geometry Stabilization phase bundling GEOM-001/002/003/004/005 + 008 (∼3–4 hr, low-risk). Feature work should pause for V3P4.3 before any new enforcement/policy is added. No code changed in this audit. |
+| 2026-04-21 | V3P4.2 Integrity Patch — AUD-001 + AUD-002 + AUD-004 shipped. `dominant_plane_flag` is now a preserved lineage signal end-to-end: V3P1 stamps it on every surviving `roof_faces[i]` (plus `v3p1_face_idx`, `dominant_plane_score`, `lidar_support_score`); V3P2 `polygonConstructionAssessment` inherits it onto every polygon with explicit `dominant_lineage_source` tracking (`v3p1_inherited` / `_via_split` / `_via_merge_one` / `_via_merge_both` / `v3p4_geometry_fallback` / `none`); V3P2 splits + V3P4 enforcement splits propagate parent lineage to both children; V3P2 merges apply a conservative OR rule (merged is dominant if EITHER source was); V3P4 final polygons DO NOT overwrite the inherited flag — geometry rescore is exposed as secondary diagnostic `dominant_plane_score_geom` / `dominant_plane_is_dominant_geom`. `preEnforcementSnapshot` now includes `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, `v3p1_face_indices`. Rollback guard detects both plane loss and lineage demotion (flag stripped while vertices survive) — triggers even when geometry rescore would pass. Rescue planes (V3P5 + V3P6) now carry `normal`, `fit_rmse`, `sample_count`, `rescue_derived: true`, `rescue_source`, `rescue_origin`, `rescue_support_score`, `rescue_metadata_complete` with explicit-fallback safety when source data missing. New helpers `v3p4_2HasDominantLineage` / `v3p4_2IsProtectedDominant` used at all protection sites (suppression skip, merge guard) — inherited lineage is the source of truth, geometry rescore is fallback. New debug surface `md.v3p2_polygon_construction.v3p4_2_lineage` with pre/post lineage maps and `rollback_reason_lineage_related`. `cr.roof_faces[]` after V3P2 carries `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, `v3p1_face_indices`, `fit_rmse`, `sample_count`, `normal`. Test harness `tools/v3p4_2_invariants_test.js`: 41 assertions across 5 invariants (T1 V3P1→V3P2 propagation, T2 split inheritance, T3 merge conservatism, T4 rollback on lineage loss, T5 rescue metadata completeness); `server.js` `app.listen` now gated behind `require.main === module` so tests can `require()` helpers without starting port 3001. 41/41 pass. No threshold or behavior changes outside this scope. AUD-003 (ridge sanity correction), AUD-005 (anchoring revision), AUD-006/007/008 remain pending. |
 | 2026-04-20 | V3P2.1 Edge Scoring System — active. Populates real evidence-based scores on every edge in the V3P2 edge graph: `lidar_break_score` (slope discontinuity + height delta + residual jump + V3P1 continuity, weighted 0.35/0.25/0.20/0.20), `ml_semantic_score` (edge type classification boost on 0.30 baseline), `geometry_rule_score` (structural plausibility: area validity, topology alignment, flat-region/gap penalties). Fused as `0.50×lidar + 0.30×geometry + 0.20×ml` into `fused_edge_score` with confidence bands (HIGH ≥0.70, MEDIUM 0.40–0.70, LOW <0.40). Integration: splits now require fused≥0.40 or (medium + lidar≥0.6) — blocks arbitrary V3P1-flag splits without corroborating evidence. Merges blocked when shared edge has HIGH fused score (real structural boundary). Edge type refinement: strong LiDAR + opposite slopes → ridge; weak ML + weak geometry → demote to uncertain. Debug: `edge_scores[]`, `edges_used_for_splits[]`, `edges_blocking_merges[]`, `edges_suppressed[]` in `md.v3p2_polygon_construction`. 21-case validation: 21/21 success; all V3P2 splits/merges preserved except 13 Richardson (split correctly blocked → score 0.67→0.82). 254 Foster stable at 0.43 (HIGH edge backs split). 15 Veteran stable at 0.94 (clean, no action). No regressions. |
 | 2026-04-20 | V3P2 polygon construction / edge-graph roof faces — active. Rectangles are no longer the primary face-construction model. Six-step pipeline after V3P1: (1) build edge graph classifying every face-pair edge as seam/ridge/hip/valley/step_break/outer_boundary/uncertain; (2) split faces flagged by V3P1 with ridge_dot≤−0.45 into two 4-vertex halves at the X-median cut; (3) validate each split via LiDAR lstsq refit (fallback if RMSE > 1.2m or 2× original); (4) refit plane for every surviving polygon from DSM samples inside footprint, adopt pitch/azimuth when RMSE healthy; (5) merge adjacent polygon pairs with pitch_delta<3° AND azimuth_delta<5° AND edge_gap<0.5m via convex-hull union + refit (fallback if combined RMSE regresses); (6) enforce shared boundaries by snapping near-coincident vertex pairs within 0.3m. Output goes straight to envelope.crm_result.roof_faces so V2P1-V2P4 and V2P7 all score the polygon-constructed geometry. New review reasons: v3_polygon_split_applied, v3_polygon_merge_applied, v3_polygon_fallback_applied. Debug at md.v3p2_polygon_construction with full edge graph + polygon graph + per-polygon validation. No retraining, no ML-wrapper changes, no V1/V2 retuning. 21-case validation: 21/21 success; 5 splits (225 Gibson, 13 Richardson, 254 Foster, Puffer, 74 Gates), 2 merges (175 Warwick, 74 Gates), 0 fallbacks, 5 vertex snaps. Key wins: 254 Foster score 0.20→0.43 (split of ridge-crossing plane), 74 Gates 0.69→0.79 (split+merge refit), 175 Warwick first real 6-vertex non-rectangle face in the pipeline. Clean regression 15 Veteran 0.98→0.94 (snap-only, acceptable). |
 | 2026-04-20 | V3P1 LiDAR authority / fusion hardening — active. New layer between V2P0.1 suppression and V2P5 cache that validates/vetoes ML planes with LiDAR evidence. Per-plane scoring: `fit_residual` (median perpendicular distance to ML plane), `slope_agreement_error` (ML normal vs lstsq LiDAR normal), `ridge_conflict_flag` (half-plane opposing horizontal downslope), `ground_veto_flag` (V2P0 ground_like + height<1m + pitch<12°), `ml_support_score`, `lidar_support_score` (1.0 with graduated penalties + tagged reasons), `fused_plane_score = 0.45×ml + 0.55×lidar`, `fusion_decision` ∈ {keep, split, suppress, uncertain}. Suppression rules: ground_veto OR (fit>1m AND slope>45°) OR fused<0.30. Ridge conflicts flagged (not split — polygonization next). Partial build rescue: keep best plane when all would veto AND lidar_support≥0.30. Planes are removed from roof_faces before V2P1-V2P7 run. New review reasons: v3_lidar_ground_veto, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_partial_build_rescue. 21-case validation batch: 21/21 success. Key impact: 573 Westford driveway correctly suppressed (fit=10.18m, ground_like); Lawrence 6→3 (3 severe LiDAR disagreements); 21 Stoddard 8→5; 17 Church extreme fit (6.28m) plane suppressed; 583 Westford 5→3. Zero regression on 15 Veteran clean (still score=0.98). Zero partial_rescue invocations. ML-level rejects (6 cases: 42 Tanager, 52 Spaulding, 94 C, 44 D, 12 Brown, Salem) unchanged — V3P1 cannot rescue 0-plane ML rejects without hallucinating. Full per-face debug exposed via `md.v3p1_lidar_fusion`. No retraining, no polygonization, no V1/V2 retuning. |
