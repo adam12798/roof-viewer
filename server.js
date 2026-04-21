@@ -26962,6 +26962,29 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
     perFace.push(plane);
   }
 
+  // V3P4.1: Dominant plane protection — rescue large/central planes from aggressive veto
+  // when veto is based on slope disagreement (not ground). The logic: if a plane has
+  // the largest area share and its suppression comes from LiDAR fit disagreement,
+  // downgrade to 'uncertain' so it survives into polygon construction.
+  let dominantRescueApplied = false;
+  if (perFace.length >= 2) {
+    const areas = perFace.map(p => {
+      const f = faces[p.face_idx];
+      return f ? v3p2_1ApproxArea(f.vertices || []) : 0;
+    });
+    const totalArea = areas.reduce((a, b) => a + b, 0);
+    for (let di = 0; di < perFace.length; di++) {
+      const p = perFace[di];
+      if (p.fusion_decision !== 'suppress') continue;
+      if (p.ground_veto_flag) continue;
+      if (totalArea <= 0 || areas[di] / totalArea < V3P4_1_DOMINANT_AREA_RATIO) continue;
+      if (areas[di] < V3P4_1_DOMINANT_MIN_AREA_M2) continue;
+      p.fusion_decision = 'uncertain';
+      p.fusion_reasons = [...(p.fusion_reasons || []), 'v3p4_1_dominant_plane_protected'];
+      dominantRescueApplied = true;
+    }
+  }
+
   // Partial build rescue: if EVERY surviving plane got 'suppress', keep the one
   // with the highest fused score (as long as its lidar_support >= threshold).
   let partialRescueApplied = false;
@@ -26986,6 +27009,7 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
   if (vetoCount > 0) warnings.push('lidar_veto_applied_count_' + vetoCount);
   if (ridgeCount > 0) warnings.push('ridge_conflict_detected_count_' + ridgeCount);
   if (partialRescueApplied) warnings.push('partial_build_rescue_applied');
+  if (dominantRescueApplied) warnings.push('v3p4_1_dominant_plane_protected');
   if (keptCount === 0) warnings.push('all_planes_suppressed_no_rescue');
 
   return {
@@ -26997,6 +27021,7 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
     ridge_conflict_flag_count: ridgeCount,
     fused_plane_count: keptCount,
     partial_build_rescue_applied: partialRescueApplied,
+    v3p4_1_dominant_rescue_applied: dominantRescueApplied,
     lidar_fusion_warnings: warnings,
     grid: gridDebug,
     thresholds: {
@@ -27411,6 +27436,75 @@ const V3P4_GROUND_SUPPRESS_MAX_PITCH_DEG = 7.0;
 const V3P4_GROUND_SUPPRESS_MIN_AREA_M2 = 4.0;
 const V3P4_INVALID_REL_SUPPRESS_MIN_FUSED = 0.50;
 const V3P4_ENFORCEMENT_IMPROVEMENT_MIN = 0.20;
+
+// ── V3P4.1: Enforcement Stabilization Patch ─────────────────────────────────
+const V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG = 60;    // Don't adopt refit if internal az variance exceeds this
+const V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG = 15;    // Reject refit if pitch drifts more than this from ML
+const V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG = 45;       // Reject refit if azimuth drifts more than this from ML
+const V3P4_1_DOMINANT_MIN_AREA_M2 = 12.0;          // Minimum area to be considered a dominant plane
+const V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M = 1.5;    // Max fit residual for dominant protection
+const V3P4_1_DOMINANT_AREA_RATIO = 0.35;            // Plane must be ≥35% of total roof area
+const V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP = 0.15; // Rollback if quality drops by this much
+const V3P4_1_ANTICOLLAPSE_MIN_PLANES = 1;           // Never suppress below this many planes
+
+function v3p4_1GetInternalAzVariance(polygonVerts, grid) {
+  if (!grid || !polygonVerts || polygonVerts.length < 3) return 0;
+  const samples = v3p1CollectFootprintSamples(grid, polygonVerts);
+  if (samples.length < 20) return 0;
+  const cx = v3p2PolygonCentroid(polygonVerts);
+  const quadrants = [[], [], [], []];
+  for (const s of samples) {
+    const qx = s.x >= cx.x ? 1 : 0;
+    const qz = s.z >= cx.z ? 2 : 0;
+    quadrants[qx + qz].push(s);
+  }
+  const azimuths = [];
+  for (const q of quadrants) {
+    if (q.length < V3P3_INTERNAL_QUADRANT_MIN_SAMPLES) continue;
+    const fit = v3p1FitLocalPlane(q);
+    if (!fit) continue;
+    const dsX = -fit.normal.nx, dsZ = -fit.normal.nz;
+    const mag = Math.hypot(dsX, dsZ) || 1e-9;
+    let qAz = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
+    if (qAz < 0) qAz += 360;
+    azimuths.push(qAz);
+  }
+  if (azimuths.length < 2) return 0;
+  let maxVar = 0;
+  for (let i = 0; i < azimuths.length; i++) {
+    for (let j = i + 1; j < azimuths.length; j++) {
+      const d = v3p2AngularDistance(azimuths[i], azimuths[j]);
+      if (d > maxVar) maxVar = d;
+    }
+  }
+  return maxVar;
+}
+
+function v3p4_1IsDominantPlane(poly, allPolygons) {
+  const area = v3p2_1ApproxArea(poly.vertices || []);
+  if (area < V3P4_1_DOMINANT_MIN_AREA_M2) return false;
+  if ((poly.fit_rmse || 0) > V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M) return false;
+  let totalArea = 0;
+  for (const p of allPolygons) {
+    if (p.validation_decision !== 'suppress') totalArea += v3p2_1ApproxArea(p.vertices || []);
+  }
+  if (totalArea <= 0) return false;
+  return (area / totalArea) >= V3P4_1_DOMINANT_AREA_RATIO;
+}
+
+function v3p4_1ScorePolygonSet(polygons) {
+  let score = 0, count = 0;
+  for (const p of polygons) {
+    if (p.validation_decision === 'suppress') continue;
+    const area = v3p2_1ApproxArea(p.vertices || []);
+    const rmse = p.fit_rmse || 1.0;
+    const pitch = p.pitch || p.original_pitch || 0;
+    const pitchOk = pitch >= 5 && pitch <= 55 ? 1.0 : 0.5;
+    score += area * pitchOk / Math.max(rmse, 0.3);
+    count++;
+  }
+  return { score: _r2(score), count };
+}
 
 function v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces) {
   // Returns { direction: {dx, dz}, point: {x, z}, type, confidence, fallback }
@@ -28411,14 +28505,19 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
   // Reindex after splits
   for (let i = 0; i < polygons.length; i++) polygons[i].polygon_idx = i;
 
-  // Apply suppressions
+  // Apply suppressions (V3P4.1: skip dominant planes)
   for (const sup of validSuppresses) {
-    // Find the polygon by original index (may have shifted after splits)
-    // Use a best-effort match by checking source_face_indices or just iterating
     let targetIdx = sup.polygon_idx;
     if (targetIdx >= polygons.length) continue;
     const poly = polygons[targetIdx];
     if (!poly || poly.validation_decision === 'suppress') continue;
+    // V3P4.1: Dominant plane protection — don't suppress the largest/best-fit plane
+    if (v3p4_1IsDominantPlane(poly, polygons)) {
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p4_1_dominant_protected_from_suppress');
+      debug.enforcement_warnings.push('dominant_plane_protected_idx_' + targetIdx);
+      continue;
+    }
     poly.validation_decision = 'suppress';
     poly.validation_reasons = poly.validation_reasons || [];
     poly.validation_reasons.push('v3p4_' + sup.reason);
@@ -29358,11 +29457,28 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       if (refit) {
         poly.fit_rmse = refit.rmse;
         poly.fit_sample_count = refit.sample_count;
-        // Only adopt refit pitch/azimuth if rmse is healthy.
-        if (refit.rmse <= V3P2_REFIT_MAX_RMSE_M) {
+        // V3P4.1: Orientation anchoring — check internal consistency before adopting refit.
+        const mlPitch = poly.original_pitch || poly.pitch || 0;
+        const mlAz = poly.original_azimuth || poly.azimuth || 0;
+        const refitPitchDrift = Math.abs(refit.pitch - mlPitch);
+        const refitAzDrift = v3p2AngularDistance(refit.azimuth, mlAz);
+        // Check internal azimuth variance from quadrant fits
+        const internalAzVar = v3p4_1GetInternalAzVariance(poly.vertices, grid);
+        let anchorBlocked = false;
+        if (internalAzVar > V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG) {
+          anchorBlocked = true;
+          poly.validation_reasons.push('v3p4_1_refit_blocked_internal_variance_' + Math.round(internalAzVar));
+        } else if (refitPitchDrift > V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG && refit.pitch < 12) {
+          anchorBlocked = true;
+          poly.validation_reasons.push('v3p4_1_refit_blocked_pitch_drift_to_flat');
+        } else if (refitAzDrift > V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG && internalAzVar > 30) {
+          anchorBlocked = true;
+          poly.validation_reasons.push('v3p4_1_refit_blocked_az_drift_' + Math.round(refitAzDrift));
+        }
+        if (!anchorBlocked && refit.rmse <= V3P2_REFIT_MAX_RMSE_M) {
           poly.pitch = refit.pitch;
           poly.azimuth = refit.azimuth;
-        } else {
+        } else if (!anchorBlocked) {
           poly.validation_reasons.push('refit_rmse_high_kept_ml_orientation');
         }
       } else {
@@ -29541,6 +29657,22 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   }
 
   // ── V3P4: Structural Enforcement Engine ───────────────────────────────────
+  // V3P4.1: Snapshot pre-enforcement quality for regression guard
+  const preEnforcementSnapshot = v3p3FinalPolygons.map(p => ({
+    polygon_idx: p.polygon_idx,
+    vertices: p.vertices ? p.vertices.map(v => ({ x: v.x, z: v.z })) : [],
+    pitch: p.pitch,
+    azimuth: p.azimuth,
+    height: p.height,
+    fit_rmse: p.fit_rmse,
+    validation_decision: p.validation_decision,
+    validation_reasons: (p.validation_reasons || []).slice(),
+    source_face_indices: (p.source_face_indices || []).slice(),
+    original_pitch: p.original_pitch,
+    original_azimuth: p.original_azimuth,
+  }));
+  const preScore = v3p4_1ScorePolygonSet(v3p3FinalPolygons);
+
   const v3p4Debug = v3p4RunEnforcement(v3p3FinalPolygons, edges, grid, v3p3Internal);
 
   // Apply V3P4 suppressions: remove suppressed polygons
@@ -29548,14 +29680,44 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   for (let i = 0; i < v3p3FinalPolygons.length; i++) {
     if (v3p3FinalPolygons[i].validation_decision === 'suppress') v3p4Suppressed.add(i);
   }
-  const v3p4FinalPolygons = v3p3FinalPolygons.filter((_, i) => !v3p4Suppressed.has(i));
+  let v3p4FinalPolygons = v3p3FinalPolygons.filter((_, i) => !v3p4Suppressed.has(i));
   for (let i = 0; i < v3p4FinalPolygons.length; i++) v3p4FinalPolygons[i].polygon_idx = i;
 
-  if (v3p4Debug.v3p4_enforcement_applied) {
+  // V3P4.1: Regression guard — rollback if enforcement materially degraded quality
+  let v3p4_1_rollback = false;
+  const postScore = v3p4_1ScorePolygonSet(v3p4FinalPolygons);
+  if (v3p4Debug.v3p4_enforcement_applied && preScore.score > 0) {
+    const scoreDrop = (preScore.score - postScore.score) / preScore.score;
+    // Anti-collapse: never let enforcement reduce below minimum plane count
+    const collapsedTooFar = postScore.count < V3P4_1_ANTICOLLAPSE_MIN_PLANES && preScore.count >= V3P4_1_ANTICOLLAPSE_MIN_PLANES;
+    if (scoreDrop > V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP || collapsedTooFar) {
+      v3p4_1_rollback = true;
+      v3p4Debug.v3p4_1_rollback = true;
+      v3p4Debug.v3p4_1_rollback_reason = collapsedTooFar ? 'anti_collapse' : 'score_regression_' + Math.round(scoreDrop * 100) + 'pct';
+      v3p4Debug.v3p4_1_pre_score = preScore.score;
+      v3p4Debug.v3p4_1_post_score = postScore.score;
+      // Restore pre-enforcement state
+      v3p3FinalPolygons.length = 0;
+      for (const snap of preEnforcementSnapshot) {
+        v3p3FinalPolygons.push({
+          ...snap,
+          vertices: snap.vertices.map(v => ({ x: v.x, z: v.z })),
+          validation_reasons: snap.validation_reasons.slice(),
+          source_face_indices: snap.source_face_indices.slice(),
+        });
+      }
+      v3p4FinalPolygons = v3p3FinalPolygons.filter(p => p.validation_decision !== 'suppress');
+      for (let i = 0; i < v3p4FinalPolygons.length; i++) v3p4FinalPolygons[i].polygon_idx = i;
+      v3p4Suppressed.clear();
+    }
+  }
+
+  if (v3p4Debug.v3p4_enforcement_applied && !v3p4_1_rollback) {
     warnings.push('v3p4_enforcement_applied');
     if (v3p4Debug.enforced_split_count > 0) warnings.push('v3p4_enforced_splits_' + v3p4Debug.enforced_split_count);
     if (v3p4Debug.enforced_suppression_count > 0) warnings.push('v3p4_enforced_suppressions_' + v3p4Debug.enforced_suppression_count);
   }
+  if (v3p4_1_rollback) warnings.push('v3p4_1_enforcement_rolled_back');
 
   const totalSuppressed = v3p3Suppressed.size + v3p4Suppressed.size;
 
@@ -29626,6 +29788,16 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     v3p3_relationships: v3p3Debug,
     // V3P4: structural enforcement
     v3p4_enforcement: v3p4Debug,
+    // V3P4.1: stabilization patch
+    v3p4_1_stabilization: {
+      refit_anchor_applied: true,
+      regression_guard_active: true,
+      rollback_triggered: v3p4_1_rollback,
+      pre_enforcement_score: preScore.score,
+      post_enforcement_score: postScore.score,
+      pre_enforcement_plane_count: preScore.count,
+      post_enforcement_plane_count: postScore.count,
+    },
     edges,
     polygons: v3p4FinalPolygons,
   };

@@ -2361,7 +2361,37 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 
 ---
 
-## 30. Related resources (renumbered from §29)
+## 30. V3P4.1 — Enforcement Stabilization Patch
+
+**Batch date:** 2026-04-21
+**Purpose:** Fix regressions where V3 pipeline damages valid roof geometry (20 Meadow lost main face, 583 Westford slopes corrupted).
+
+**Root cause found:** NOT V3P4 enforcement (it wasn't firing on these cases). The actual problem: V3P2 refit adopts garbage orientations from internally-inconsistent DSM data. When multiple quadrants of a polygon's footprint point in wildly different directions (145° azimuth variance), averaging them produces a near-flat garbage pitch.
+
+**Patch mechanisms:**
+1. Orientation anchoring — block refit adoption when internal az variance >60°
+2. Dominant plane protection — prevent V3P1 veto / V3P4 suppression of large (≥35% area) structural planes
+3. Regression guard — rollback V3P4 if quality drops >15%
+
+**Key results:**
+
+| Case | Before | After | Δ |
+|------|---:|---:|---:|
+| 20 Meadow Dr | 0.20 | **0.80** | +0.60 |
+| 583 Westford St | 0.84 | **0.88** | +0.04 |
+| 17 Church Ave | 0.77 | **0.89** | +0.12 |
+| 74 Gates | 0.75 | **0.86** | +0.11 |
+| 15 Veteran Rd | 0.94 | 0.97 | +0.03 |
+| 11 Ash Road | 0.94 | 0.97 | +0.03 |
+| All 21 cases | — | — | zero regressions |
+
+Mean runtime: 11292ms → 7097ms (−37%). `slow_over_15s`: 7 → 1.
+
+**KEEP (BANKED).** Surgical stabilization — preserves V3P4 structural enforcement while preventing quality loss on valid dominant roof geometry. The single biggest quality improvement across the 21-case set (+0.60 on worst case).
+
+---
+
+## 31. Related resources (renumbered from §30)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

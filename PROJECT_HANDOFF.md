@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P6 hard-case rescue hardening banked — reject bucket reduced 6→3)
+**Last updated:** 2026-04-21 (V3P4.1 enforcement stabilization banked — 20 Meadow 0.20→0.80, runtime -37%)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1340,6 +1340,59 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 **Status:** BANKED.
 
 **Reopen trigger:** V3P6 rescues a neighbor/driveway instead of the target house; central window catches wrong building in tight-lot scenarios; rescue fires when V3P5 already succeeded.
+
+---
+
+### V3P4.1 — Enforcement Stabilization Patch [BANKED]
+
+**Purpose:** Fix regressions where V3 pipeline damages valid roof geometry. Two primary regression cases (20 Meadow Dr: score 0.20, 583 Westford: 0.84 with corrupted slopes) were caused by V3P2 refit adopting garbage orientations from internally-inconsistent DSM data, not by V3P4 enforcement itself.
+
+**Three stabilization mechanisms:**
+
+1. **Orientation anchoring** (V3P2 refit adoption) — Before adopting a refit orientation, checks quadrant-based internal azimuth variance. Blocks refit when:
+   - Internal az variance > 60° (DSM data is self-contradictory)
+   - Pitch drifts >15° toward flat (<12°) (averaging artifact)
+   - Azimuth drifts >45° with moderate internal variance (>30°)
+
+2. **Dominant plane protection** (V3P1 veto + V3P4 suppression) — Planes with ≥35% of total roof area AND area ≥12m² AND fit_residual ≤1.5m are protected from:
+   - V3P1 slope-disagreement suppression (downgraded to 'uncertain' instead)
+   - V3P4 enforcement suppression (skipped entirely)
+
+3. **Regression guard** (V3P4 wrapper) — Scores polygon set quality before/after V3P4 enforcement. Rolls back all enforcement changes if:
+   - Quality drops >15% (score = Σ area × pitchOk / rmse)
+   - Plane count collapses below minimum (1)
+
+**Functions added to server.js:**
+- `v3p4_1GetInternalAzVariance(polygonVerts, grid)` — quadrant-fit az variance for a polygon
+- `v3p4_1IsDominantPlane(poly, allPolygons)` — area/RMSE/ratio check
+- `v3p4_1ScorePolygonSet(polygons)` — quality scoring for regression comparison
+
+**Centralized thresholds:**
+`V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG=60`, `V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG=15`, `V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG=45`, `V3P4_1_DOMINANT_MIN_AREA_M2=12.0`, `V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M=1.5`, `V3P4_1_DOMINANT_AREA_RATIO=0.35`, `V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP=0.15`, `V3P4_1_ANTICOLLAPSE_MIN_PLANES=1`.
+
+**Debug fields in polygon construction return:**
+- `v3p4_1_stabilization.refit_anchor_applied`
+- `v3p4_1_stabilization.regression_guard_active`
+- `v3p4_1_stabilization.rollback_triggered`
+- `v3p4_1_stabilization.pre_enforcement_score` / `post_enforcement_score`
+- `v3p4_1_stabilization.pre_enforcement_plane_count` / `post_enforcement_plane_count`
+
+**Validation (21-case batch, 2026-04-21):** 21/21 success.
+
+| Case | Before Score/Faces | After Score/Faces | Delta | Mechanism |
+|------|---|---|---|---|
+| 20 Meadow Dr | 0.20 / 2 | **0.80 / 3** | **+0.60** | Dominant protection + refit anchoring |
+| 583 Westford St | 0.84 / 3 | **0.88 / 4** | +0.04 | Refit anchoring (slope preserved) |
+| 15 Veteran Rd | 0.94 / 3 | 0.97 / 3 | +0.03 | Refit anchoring |
+| 17 Church Ave | 0.77 / 5 | 0.89 / 5 | +0.12 | Refit anchoring |
+| 74 Gates | 0.75 / 4 | 0.86 / 4 | +0.11 | Refit anchoring |
+| All others | — | — | — | Stable or improved |
+
+**Runtime improvement:** mean 11292ms → 7097ms (37% faster). The orientation anchoring prevents wasteful V3P3/V3P4 cycles on bad refits. `slow_over_15s` bucket: 7 → 1.
+
+**Status:** BANKED.
+
+**Reopen trigger:** Orientation anchoring blocks a valid refit (legitimate roof that just happens to have high quadrant variance — e.g., a real hip with 4 distinct slopes); regression guard falsely rolls back enforcement that was correct; dominant plane protection prevents ground-detection from working on a genuinely wrong large flat area.
 
 ---
 
