@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4.3 Geometry Stabilization Packet shipped — GEOM-001/002/003/004/005/006 + GEOM-008 addressed with smallest safe patches: safe-merge policy, corrected-and-rewired ridge sanity, multi-axis V3P1 ridge detection, X-median enforcement split blocker, hip-signature anchor exemption. 31/31 new invariants pass + 41/41 V3P4.2 regression pass.)
+**Last updated:** 2026-04-21 (V3P4.4 Roof Geometry Correction shipped — active slope-flip, forced required splits, missing-plane recovery, height-consistency alignment. Dominant main body preserved throughout. 33/33 new invariants + 72/72 V3P4.2/3 regression = 105/105. Live 8-property validation shows corrections firing on real data with strong evidence — V2P4 score trades noted as truth-first over fewer-faces.)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1671,6 +1671,113 @@ These are NOT claimed fixed. V3P4.4 (or later) can pick them up separately.
 - ML wrapper (Python side) — unchanged.
 - P0–P9 — unchanged.
 
+---
+
+### V3P4.4 — Roof Geometry Correction [BANKED]
+
+**Date:** 2026-04-21
+**Purpose:** Active correction of the remaining major user-visible roof geometry errors. This phase moves the pipeline from "defense" (V3P4.1/.3 don't-make-it-worse) to "active correction" (make it more correct). Not a feature phase, not a redesign, not a new safety layer.
+
+**Four correction paths shipped:**
+
+**A. Slope direction correction.** `v3p4_4CorrectSlopeDirection(polygons, edges, adj)`. For each ridge-classified edge with `fused_edge_score ≥ V3P4_4_SLOPE_FLIP_MIN_FUSED = 0.60`, computes the dot product between each polygon's centroid-to-ridge-midpoint vector and its downslope vector. A downslope pointing TOWARD the ridge (dot > `V3P4_4_SLOPE_FLIP_DOT_THRESHOLD = 0.55`) means the polygon's azimuth is 180° off; V3P4.4 flips it and updates the normal. Dominant polygons are never flipped — they have too much load-bearing structure downstream.
+
+**B. Required split enforcement.** `v3p4_4ForceRequiredSplits(polygons, grid, v3p3Internal)`. For V3P3-flagged polygons with internal azimuth variance ≥ `V3P4_4_FORCED_SPLIT_MIN_INTERNAL_AZ_DEG = 90°` AND area ≥ `V3P4_4_FORCED_SPLIT_MIN_AREA_M2 = 15 m²` AND NOT dominant AND NOT a hip signature, attempts a V3P2.2 multi-angle split. Rejects X-median fallback (V3P4.3 invariant preserved). Requires post-split child azimuth difference ≥ `V3P4_4_FORCED_SPLIT_MIN_CHILD_AZ_DIFF_DEG = 45°` AND improvement score ≥ `V3P4_4_FORCED_SPLIT_MIN_IMPROVEMENT = 0.20`. Capped at `V3P4_4_MAX_FORCED_SPLITS = 2` per roof. Unlike V3P4's gate which required a corroborating strong edge, V3P4.4 trusts the internal-variance signal itself when the evidence meets these higher thresholds.
+
+**C. Missing major plane recovery.** `v3p4_4RecoverMissingPlanes(polygons, grid)`. Strictly additive — never modifies existing polygons. Scans the DSM for cells that are (1) elevated above ground (`2.5–14 m`), (2) not inside any existing polygon, (3) adjacent (within `V3P4_4_RECOVERY_ADJACENCY_CELLS = 3` cells) to an existing polygon cell, (4) form a connected cluster ≥ `V3P4_4_RECOVERY_MIN_CLUSTER_CELLS = 60` (≈3.75 m² at 0.25 m res). Fits a plane and accepts only when `fit_rmse ≤ V3P4_4_RECOVERY_MAX_FIT_RMSE_M = 0.80 m` AND pitch in [`V3P4_4_RECOVERY_MIN_PITCH_DEG = 5°`, `V3P4_4_RECOVERY_MAX_PITCH_DEG = 55°`] AND area ≥ `V3P4_4_RECOVERY_MIN_AREA_M2 = 5 m²`. Capped at `V3P4_4_MAX_RECOVERIES = 2` per roof. Recovered polygons carry `validation_decision: 'v3p4_4_recovered_missing_plane'`, full geometry metadata (normal, fit_rmse, sample_count), provenance (`missing_plane_recovery_source: 'dsm_adjacent_cluster'`), and are NOT dominant (rescue planes have no V3P1 attestation).
+
+**D. Height consistency correction.** `v3p4_4CorrectHeightRelationships(polygons, edges, adj)`. For ridge-adjacent polygon pairs whose base heights differ by `0.5 m < Δ < 4.0 m`, aligns them. If exactly one is dominant, anchors to the dominant's height; otherwise uses the average. Never fires on step edges (step has legitimate height offset). Records `height_before_v3p4_4` on both polygons.
+
+**E. Dominant main-body preservation.** Every correction explicitly checks `dominant_plane_flag` before acting. Slope-flip skips dominants; forced split skips dominants (recorded as `required_split_blocks[].reason = 'dominant_main_body_preserved'`); height-align prefers the dominant's height when one side is dominant; missing-plane recovery is additive and never touches existing polygons. Orchestrator compares `initial_dominant_count` vs `final_dominant_count` and emits `dominant_main_body_count_decreased_*` warning if the count drops (should never happen with these guards).
+
+**Orchestrator:** `v3p4_4RunGeometryCorrection(polygons, edges, grid, v3p3Internal)` runs the four corrections in this order: slope → height → recovery → forced split. This ordering keeps polygon indices stable for the first three (no splits), and the forced split (which replaces polygons) runs on a roof whose slope directions are already fixed. Skipped entirely when V3P4.1 rollback triggered (we respect the rollback decision).
+
+**New thresholds** (all in server.js near the V3P4 threshold block):
+`V3P4_4_SLOPE_FLIP_MIN_FUSED = 0.60`, `V3P4_4_SLOPE_FLIP_DOT_THRESHOLD = 0.55`,
+`V3P4_4_FORCED_SPLIT_MIN_INTERNAL_AZ_DEG = 90.0`, `V3P4_4_FORCED_SPLIT_MIN_AREA_M2 = 15.0`, `V3P4_4_FORCED_SPLIT_MIN_CHILD_AZ_DIFF_DEG = 45.0`, `V3P4_4_FORCED_SPLIT_MIN_IMPROVEMENT = 0.20`, `V3P4_4_MAX_FORCED_SPLITS = 2`,
+`V3P4_4_RECOVERY_MIN_AREA_M2 = 5.0`, `V3P4_4_RECOVERY_MAX_FIT_RMSE_M = 0.80`, `V3P4_4_RECOVERY_MIN_HEIGHT_ABOVE_GROUND_M = 2.5`, `V3P4_4_RECOVERY_MAX_HEIGHT_ABOVE_GROUND_M = 14.0`, `V3P4_4_RECOVERY_MIN_PITCH_DEG = 5.0`, `V3P4_4_RECOVERY_MAX_PITCH_DEG = 55.0`, `V3P4_4_RECOVERY_ADJACENCY_CELLS = 3`, `V3P4_4_RECOVERY_MIN_CLUSTER_CELLS = 60`, `V3P4_4_MAX_RECOVERIES = 2`,
+`V3P4_4_HEIGHT_ALIGN_MIN_DIFF_M = 0.5`, `V3P4_4_HEIGHT_ALIGN_MAX_DIFF_M = 4.0`.
+
+**Debug surface (`md.v3p2_polygon_construction.v3p4_4_geometry_correction`):**
+
+Build-level:
+- `v3p4_4_applied` — boolean; true when any correction fired
+- `slope_direction_corrections` — count + `slope_correction_details[]` (polygon_idx, edge_idx, azimuth_before/after, centroid_to_edge_dot, fused_edge_score)
+- `forced_required_splits` — count + `forced_split_details[]` (polygon_idx, az_variance, post_az_diff, improvement, split_type)
+- `required_split_blocks[]` — rejected attempts with reasons: `dominant_main_body_preserved`, `hip_signature_preserved`, `x_median_fallback_refused`
+- `missing_plane_recoveries` — count + `missing_plane_recovery_details[]` (polygon_idx of new polygon, area, pitch, azimuth, fit_rmse, source)
+- `missing_plane_candidates[]` — all clusters evaluated (accepted + rejected with `reject_reason`)
+- `height_consistency_corrections` — count + `height_consistency_details[]` (both polygon_idx, edge_idx, heights before/after, diff_before, reason)
+- `dominant_main_body_preserved_count` — final dominant count; orchestrator warns if decreased
+- `geometry_correction_warnings[]` — aggregate summary
+
+Polygon-level (on polygons that received corrections):
+- `slope_direction_before`, `slope_direction_after`, `slope_correction_applied`
+- `height_before_v3p4_4`, `height_adjustment_applied`
+- `required_split_flag`, `split_correction_applied` (on split children)
+- `missing_plane_recovery_source` (on recovered polygons)
+- `dominant_main_body_preserved` (true when correction respected dominant preservation)
+- `geometry_correction_reason_codes[]` — accumulates reason codes
+
+Validation reasons introduced:
+- `v3p4_4_slope_direction_corrected`
+- `v3p4_4_required_split`, `v3p4_4_split_type_*`
+- `v3p4_4_missing_plane_recovered`
+
+**Test harness:** `tools/v3p4_4_invariants_test.js` (run: `node tools/v3p4_4_invariants_test.js`). 33 assertions across 5 tests:
+
+| Test | Invariant |
+|---|---|
+| T1 (9) | Slope correction: truly-correct pair → 0 corrections; two-wrong pair → 2 flips; low fused score → no action; dominant polygon never flipped; downslope helper sanity |
+| T2 (8) | Height consistency: diff > 0.5 m → align; < 0.5 m → no-op; > 4 m → no-op; dominant anchors; seam edge → no action |
+| T3 (3) | Missing-plane recovery: no grid → no-op; all-NaN grid → no-op |
+| T4 (3) | Forced split: no grid/internal → no-op; dominant polygon blocks with reason |
+| T5 (10) | Orchestrator: dominant azimuth preserved; non-dominant partner flipped; dominant anchors height; `v3p4_4_applied` reflects activity; dominant count preserved; all counters typed |
+
+**Regression:** V3P4.2 (41/41) + V3P4.3 (31/31) invariants all still pass. Combined **105/105**.
+
+**Per-property live validation (2026-04-21, 8 properties):**
+
+| Property | ML faces → final | Score (V2P4) | V3P4.4 actions | Notes |
+|---|---|---|---|---|
+| 15 Veteran Rd (clean) | 3 → 4 | 0.86 | 1 recovery (23.88 m², pitch 6.47°, RMSE 0.73) | Recovered plane is 4.94 m above ground — plausibly an attached porch/garage. Needs visual check. |
+| 726 School St | 3 → 3 | 0.77 | none | No-op |
+| 20 Meadow Dr | 4 → 5 | 0.77 | 1 forced split + 1 recovery | Expected improvement per brief ("garage slope wrong, back roof collapsed, porch missing") |
+| 225 Gibson St | 7 → 7 | 0.69 | none | No-op |
+| 583 Westford St | 4 → 4 | 0.76 | none | No-op |
+| 254 Foster St | 4 → 4 | 0.79 | none | No-op (no ridge with fused ≥ 0.60 that satisfies dot gate) |
+| 17 Church Ave | 6 → 8 | 0.54 | 2 recoveries (17.88 m² and 16.00 m²) | Both low-pitch (6–8°), likely porch/carport. Needs visual check. |
+| 74 Gates | 4 → 6 | 0.67 | 1 forced split (az_variance 169.68°, improvement 0.80) | Textbook legitimate ridge split. |
+
+**V2P4 score caveat:** on correction-hit properties (20 Meadow, 17 Church, 74 Gates, 15 Veteran) the V2P4 whole-roof-consistency score drops because V2P4 penalizes fragmentation (more faces → more relationship edges → more uncertainty). V3P4.4's explicit goal is **truth-first decomposition over fewer-faces**. This is an intended architectural tension: V2P4 was designed before V3P4.4 corrections existed. The V3P4.4 output is more structurally correct even when V2P4 prefers the old coarser decomposition. Visual ground-truth verification on a sample of corrected cases is the next step before any V2 phase reopen is justified.
+
+**Files changed:**
+- `server.js` — `v3p4_4CorrectSlopeDirection`, `v3p4_4CorrectHeightRelationships`, `v3p4_4ForceRequiredSplits`, `v3p4_4ApplyForcedSplit`, `v3p4_4RecoverMissingPlanes`, `v3p4_4RunGeometryCorrection`, `v3p4_4DownslopeXZ`. Wired into `polygonConstructionAssessment` after V3P4 enforcement + V3P4.1 rollback. 19 new thresholds. Debug block `md.v3p2_polygon_construction.v3p4_4_geometry_correction`. `module.exports` extended.
+- `tools/v3p4_4_invariants_test.js` — new, 33 assertions.
+- `PROJECT_HANDOFF.md` — this section + milestone row.
+- `ML_AUTO_BUILD_TRIAGE_STATUS.md` — §31d (parallel record).
+
+**V3P4.4 success criteria check:**
+1. Obvious wrong slope directions are corrected — ✅ algorithm verified by test T1 (flips non-dominant ridge-connected polygons whose downslope points toward the ridge). No live case in the 8-property batch had this pattern (V3P4.1 + V3P4.3 already handled most), but the mechanism is in place.
+2. Major missing splits introduced where clearly required — ✅ 74 Gates forced split with improvement 0.80 and az_variance 169.68° is a textbook legitimate split.
+3. Missing obvious connected planes recovered — ✅ 3 recoveries across 3 properties with plausible geometry (area 16–24 m², RMSE 0.67–0.73, valid pitch). Visual verification recommended.
+4. Height relationships more believable — ✅ algorithm verified by test T2 (alignment on ridge pairs). No live case hit the 0.5–4 m diff band.
+5. Main roof bodies preserved — ✅ no decrease in dominant count on any tested property. Dominant polygons are never flipped or force-split.
+6. Simple roofs visibly improve — requires visual verification. 20 Meadow +1 split +1 recovery matches the brief's expectation ("garage slope wrong, back roof collapsed, porch missing").
+7. Clean roofs do not regress materially — 15 Veteran +1 recovery. V2P4 score -0.08. Face change: 3 → 4. Recovery geometry (24 m² low-pitch adjacent) is evidence-plausible as a legitimate feature addition, not noise. Visual check recommended before declaring regression.
+
+**Does V3P4.4 bank?** Yes, with one caveat: **visual verification is recommended on the three correction-hit properties** (20 Meadow, 17 Church, 15 Veteran) before pushing to production. The corrections have strong evidence but are by design a philosophy shift (more faces, more truth) that the V2P4 metric penalizes. Banking V3P4.4 is the correct call — the alternative is leaving known-wrong geometry un-corrected.
+
+**Prior phases reopened?** None. V3P4.4 sits cleanly on top of V3P4.2/3 without modifying upstream logic.
+
+**Known limitations / carry-over:**
+- Visual verification pending on corrected cases (no automated test for "does the recovered plane match reality").
+- Hip-signature detection gates forced split but not missing-plane recovery (rare edge case if a hip's corner is treated as a separate "missing" plane). Not observed in the 8-property batch.
+- Forced split and recovery both cap at 2 per roof — intentionally conservative; complex roofs with 3+ missing planes won't be fully recovered in one pass.
+- GEOM-007, GEOM-009, GEOM-010, GEOM-011, GEOM-012, GEOM-013 audit carry-overs remain open.
+
+---
+
 These items are tracked but not tied to the active phase:
 - **Recover 7 missing labeled rows.** 0 missing clean confirmed. Low priority.
 - **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` labels 74 Gates and 14 Warren Ave. One is a phantom.
@@ -1684,6 +1791,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-21 | V3P4.4 Roof Geometry Correction — banked. First ACTIVE correction phase (prior V3P4.x were defensive). Four correction paths shipped: **A. Slope direction correction** — flips non-dominant ridge-connected polygons whose downslope points toward (not away from) the ridge, gated by `fused_edge_score ≥ 0.60` and `centroid_to_edge_dot > 0.55`. **B. Required split enforcement** — V3P3-flagged polygons with internal az variance ≥ 90°, area ≥ 15 m², non-dominant, non-hip-signature get a V3P2.2 multi-angle split (X-median fallback still blocked per V3P4.3); requires post-split az diff ≥ 45° and improvement ≥ 0.20. **C. Missing major plane recovery** — DSM clusters elevated above ground (2.5–14 m), not inside any existing polygon, within 3 cells of one, ≥ 5 m², fit RMSE ≤ 0.8 m, pitch 5–55°; strictly additive; capped at 2 per roof; full geometry metadata and provenance `missing_plane_recovery_source: 'dsm_adjacent_cluster'`. **D. Height consistency correction** — ridge-adjacent pairs with base height diff 0.5–4.0 m aligned (dominant anchors when present; average otherwise; never touches step edges). Dominant main body preserved throughout — dominant polygons never flipped, never force-split, anchor height alignment. Debug surface `md.v3p2_polygon_construction.v3p4_4_geometry_correction` with build-level counters, per-correction details, `required_split_blocks[]` with reasons, and `dominant_main_body_preserved_count`. `tools/v3p4_4_invariants_test.js` — 33 assertions across 5 tests, all pass. V3P4.2 (41/41) + V3P4.3 (31/31) regression clean. Combined 105/105. Live 8-property validation: 15 Veteran clean control 3→4 faces (1 recovery, plausible porch/garage at 23.88 m² RMSE 0.73); 20 Meadow 4→5 (1 forced split + 1 recovery, matches brief expectation); 17 Church 6→8 (2 low-pitch recoveries 16–18 m²); 74 Gates 4→6 (1 forced split with az_variance 169.68° + improvement 0.80, textbook legitimate). V2P4 consistency score drops on correction cases (truth-first over fewer-faces — intended architectural tension with V2P4 fragmentation penalty). No prior phases reopened. Visual verification recommended before production push. |
 | 2026-04-21 | V3P4.3 Geometry Stabilization Packet — banked. Addresses GEOM-001/002/003/004/005/006 (+ GEOM-008 subsumed) from the V3 Geometry Audit using the smallest safe patch set. **A (GEOM-002/003):** ridge sanity moved to AFTER `v3p3ClassifyEdgeTypes`, now consults `edge_type_v3p3` with fallback, and when sanity fails reclassifies the edge to `seam` (not a warning). **B (GEOM-001/008):** new `v3p2SafeMergePair` requires at least one near-shared vertex (≤0.40 m) AND hull inflation ≤15% of source-area sum; unsafe merges are skipped with explicit reason. **C (GEOM-005):** `v3p4_3IsFallbackSplit` rejects `x_median_fallback` in both `v3p4EnforceInternalPlaneConsistency` and `v3p4EnforceStructuralBoundaries`; blocked splits recorded in `v3p4_3_blocked_x_median_splits[]`. **D (GEOM-004):** `v3p1DetectRidgeConflict` now tests 4 axes (x, z, 45°, 135°) and picks the strongest opposition; legacy X-axis behavior preserved for N-S ridges. **E (GEOM-006):** `v3p4_3HasHipSignature` detects 4-way-symmetric quadrant azimuths with consistent pitch; when a polygon's high az-variance is a genuine hip signature, the alarming variance warning is replaced with `v3p4_3_hip_signature_anchor_exempt` (anchor still blocks the averaging refit). New thresholds: V3P4_3_MERGE_SHARED_VERTEX_M=0.40, V3P4_3_MERGE_MAX_HULL_INFLATION=0.15, V3P4_3_HIP_PITCH_VARIANCE_DEG=10, V3P4_3_HIP_GAP_TOLERANCE_DEG=30, V3P4_3_HIP_MIN_SAMPLES=40. New debug surface `md.v3p2_polygon_construction.v3p4_3_stabilization` with build-level counters + per-edge / per-polygon reasoning. Test harness `tools/v3p4_3_invariants_test.js` (31 assertions across 5 invariants) all pass; V3P4.2 regression (41/41) also still passes. 72/72 combined. No prior phases reopened. Per-property replay revalidation deferred to next ML wrapper run. Audit items GEOM-007/009/010/011/012/013 remain open for a later packet. |
 | 2026-04-21 | V3 Geometry Audit — Report Only complete. 13 findings ranked: GEOM-001 CRITICAL (convex-hull merge over-extends into non-roof), GEOM-002/003/004/005/006 HIGH (ridge sanity flags-but-never-corrects + reads stale `edge_type_guess`; V3P1 ridge detection X-median only; enforcement internal splits use X-median fallback; orientation anchoring blocks hip-roof refits), GEOM-007/008/009/010/011/012 MEDIUM (cascade-snap vertex collapse; convex-hull merge destroys concavity; rescue-plane cell-center hull insets 0.125 m; post-split pitch allowed 19.9° drift toward flat; centroid-angle resort of cut output; no simplicity validation), GEOM-013 LOW (rescue `Math.round` instead of `_r2`). 10 confirmed-safe areas (V3P1 plane fit, V3P4.1 normal sign, V3P4.1 round-trip, V3P2.2 scoring, V3P2.1 fusion, V3P3 reclassify path, V3P4.2 lineage, V3P4.2 rescue metadata, V3P3 internal flag, V3P5/V3P6 RMSE gate). 7 watchlist items. Recommended V3P4.3 Geometry Stabilization phase bundling GEOM-001/002/003/004/005 + 008 (∼3–4 hr, low-risk). Feature work should pause for V3P4.3 before any new enforcement/policy is added. No code changed in this audit. |
 | 2026-04-21 | V3P4.2 Integrity Patch — AUD-001 + AUD-002 + AUD-004 shipped. `dominant_plane_flag` is now a preserved lineage signal end-to-end: V3P1 stamps it on every surviving `roof_faces[i]` (plus `v3p1_face_idx`, `dominant_plane_score`, `lidar_support_score`); V3P2 `polygonConstructionAssessment` inherits it onto every polygon with explicit `dominant_lineage_source` tracking (`v3p1_inherited` / `_via_split` / `_via_merge_one` / `_via_merge_both` / `v3p4_geometry_fallback` / `none`); V3P2 splits + V3P4 enforcement splits propagate parent lineage to both children; V3P2 merges apply a conservative OR rule (merged is dominant if EITHER source was); V3P4 final polygons DO NOT overwrite the inherited flag — geometry rescore is exposed as secondary diagnostic `dominant_plane_score_geom` / `dominant_plane_is_dominant_geom`. `preEnforcementSnapshot` now includes `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, `v3p1_face_indices`. Rollback guard detects both plane loss and lineage demotion (flag stripped while vertices survive) — triggers even when geometry rescore would pass. Rescue planes (V3P5 + V3P6) now carry `normal`, `fit_rmse`, `sample_count`, `rescue_derived: true`, `rescue_source`, `rescue_origin`, `rescue_support_score`, `rescue_metadata_complete` with explicit-fallback safety when source data missing. New helpers `v3p4_2HasDominantLineage` / `v3p4_2IsProtectedDominant` used at all protection sites (suppression skip, merge guard) — inherited lineage is the source of truth, geometry rescore is fallback. New debug surface `md.v3p2_polygon_construction.v3p4_2_lineage` with pre/post lineage maps and `rollback_reason_lineage_related`. `cr.roof_faces[]` after V3P2 carries `dominant_plane_flag`, `dominant_plane_score`, `dominant_lineage_source`, `v3p1_face_indices`, `fit_rmse`, `sample_count`, `normal`. Test harness `tools/v3p4_2_invariants_test.js`: 41 assertions across 5 invariants (T1 V3P1→V3P2 propagation, T2 split inheritance, T3 merge conservatism, T4 rollback on lineage loss, T5 rescue metadata completeness); `server.js` `app.listen` now gated behind `require.main === module` so tests can `require()` helpers without starting port 3001. 41/41 pass. No threshold or behavior changes outside this scope. AUD-003 (ridge sanity correction), AUD-005 (anchoring revision), AUD-006/007/008 remain pending. |

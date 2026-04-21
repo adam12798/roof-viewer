@@ -27514,6 +27514,50 @@ const V3P4_3_HIP_PITCH_VARIANCE_DEG = 10.0;
 const V3P4_3_HIP_GAP_TOLERANCE_DEG = 30.0;
 const V3P4_3_HIP_MIN_SAMPLES = 40;
 
+// ── V3P4.4 Roof Geometry Correction thresholds ─────────────────────────────
+// Active geometry correction on top of the V3P4.3 defensive layer. Each
+// threshold is explicit and deliberately conservative: this phase must
+// IMPROVE geometry, not over-correct clean cases.
+//
+// A. Slope direction correction (ridge-based): fire only on ridge-classified
+//    edges with strong fused evidence (≥0.60) when the centroid-to-edge
+//    vector and the polygon's downslope vector align by more than
+//    +DOT_THRESHOLD (i.e. downslope points TOWARD the ridge instead of away).
+//    Dominant polygons are never flipped — they have too much load-bearing
+//    structure downstream.
+const V3P4_4_SLOPE_FLIP_MIN_FUSED = 0.60;
+const V3P4_4_SLOPE_FLIP_DOT_THRESHOLD = 0.55;
+//
+// B. Required split enforcement: fires when V3P3 internal-consistency flagged
+//    the polygon AND internal azimuth variance is very high (>90°) AND the
+//    polygon is large (>15 m²) AND not a hip signature AND not dominant.
+//    Requires a non-fallback V3P2.2 split with clear children separation.
+const V3P4_4_FORCED_SPLIT_MIN_INTERNAL_AZ_DEG = 90.0;
+const V3P4_4_FORCED_SPLIT_MIN_AREA_M2 = 15.0;
+const V3P4_4_FORCED_SPLIT_MIN_CHILD_AZ_DIFF_DEG = 45.0;
+const V3P4_4_FORCED_SPLIT_MIN_IMPROVEMENT = 0.20;
+const V3P4_4_MAX_FORCED_SPLITS = 2;
+//
+// C. Missing major plane recovery: scan the DSM for elevated clusters that
+//    are adjacent to an existing polygon but not inside one. Very strict —
+//    fit RMSE and area gates prevent noise pickup.
+const V3P4_4_RECOVERY_MIN_AREA_M2 = 5.0;
+const V3P4_4_RECOVERY_MAX_FIT_RMSE_M = 0.80;
+const V3P4_4_RECOVERY_MIN_HEIGHT_ABOVE_GROUND_M = 2.5;
+const V3P4_4_RECOVERY_MAX_HEIGHT_ABOVE_GROUND_M = 14.0;
+const V3P4_4_RECOVERY_MIN_PITCH_DEG = 5.0;
+const V3P4_4_RECOVERY_MAX_PITCH_DEG = 55.0;
+const V3P4_4_RECOVERY_ADJACENCY_CELLS = 3;
+const V3P4_4_RECOVERY_MIN_CLUSTER_CELLS = 60;
+const V3P4_4_MAX_RECOVERIES = 2;
+//
+// D. Height consistency correction: align base heights of ridge-adjacent
+//    polygon pairs when they drift too far apart. Never over-aligns step
+//    edges (step transitions legitimately have height offsets).
+const V3P4_4_HEIGHT_ALIGN_MIN_DIFF_M = 0.5;
+const V3P4_4_HEIGHT_ALIGN_MAX_DIFF_M = 4.0; // don't touch huge offsets — they may be legitimate
+
+
 // V3P4.3 (GEOM-006): hip-roof signature detector.
 // Quadrant-fits a polygon and decides whether the 4 sub-slopes are consistent
 // with a real hip — i.e. four roughly symmetric azimuths (each pair ≈ 90°
@@ -28780,6 +28824,582 @@ function v3p4ResolveInvalidRelationships(polygons, edges, grid) {
     break; // only one relationship correction per pass to stay conservative
   }
   return actions;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V3P4.4 — Roof Geometry Correction
+// Active correction of remaining major geometry errors. Runs AFTER V3P4
+// enforcement + V3P4.1 rollback so it operates on the final polygon set.
+// Each correction is tightly evidence-gated and preserves the dominant main
+// body. Philosophy: when the current geometry is clearly wrong, correct it
+// instead of leaving it wrong.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Helper: downslope (horizontal) unit vector from azimuth. Matches the
+// convention used by v3p3ClassifyEdgeTypes.
+function v3p4_4DownslopeXZ(azimuthDeg) {
+  const rad = (azimuthDeg || 0) * Math.PI / 180;
+  return { x: Math.sin(rad), z: -Math.cos(rad) };
+}
+
+// A. SLOPE DIRECTION CORRECTION (ridge-based)
+// For each ridge-classified edge between polyA and polyB we compute the
+// centroid-to-edge-midpoint vector for each polygon. On a correctly-oriented
+// ridge pair, each polygon's downslope should point AWAY from the ridge — so
+// dot(centroidToEdge, downslope) should be NEGATIVE (edge is on the high
+// side; slope runs away). A positive dot (> threshold) means the polygon's
+// azimuth is 180° off; we flip it.
+function v3p4_4CorrectSlopeDirection(polygons, edges, v3p3BuildAdjacencyFn) {
+  const corrections = [];
+  if (!Array.isArray(polygons) || polygons.length < 2) return { corrections, events: 0 };
+  const { faceToPolyIdx } = v3p3BuildAdjacencyFn(edges, polygons);
+
+  for (const edge of edges) {
+    if (!edge || edge.edge_type_v3p3 !== 'ridge') continue;
+    const fused = edge.fused_edge_score;
+    if (fused == null || fused < V3P4_4_SLOPE_FLIP_MIN_FUSED) continue;
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+    const polyA = polygons[pAIdx];
+    const polyB = polygons[pBIdx];
+    if (!polyA || !polyB) continue;
+
+    const cA = v3p2PolygonCentroid(polyA.vertices || []);
+    const cB = v3p2PolygonCentroid(polyB.vertices || []);
+    const midX = (cA.x + cB.x) / 2;
+    const midZ = (cA.z + cB.z) / 2;
+    const vA = { x: midX - cA.x, z: midZ - cA.z };
+    const vB = { x: midX - cB.x, z: midZ - cB.z };
+    const magA = Math.hypot(vA.x, vA.z) || 1e-9;
+    const magB = Math.hypot(vB.x, vB.z) || 1e-9;
+
+    for (const { poly, v, mag, polyIdx } of [
+      { poly: polyA, v: vA, mag: magA, polyIdx: pAIdx },
+      { poly: polyB, v: vB, mag: magB, polyIdx: pBIdx },
+    ]) {
+      if (poly.dominant_plane_flag === true) continue; // preserve dominant main body
+      const azBefore = poly.azimuth || poly.original_azimuth || 0;
+      const ds = v3p4_4DownslopeXZ(azBefore);
+      const dot = (v.x * ds.x + v.z * ds.z) / mag;
+      if (dot <= V3P4_4_SLOPE_FLIP_DOT_THRESHOLD) continue; // not a clear flip
+      const azAfter = (azBefore + 180) % 360;
+      poly.slope_direction_before = _r2(azBefore);
+      poly.slope_direction_after = _r2(azAfter);
+      poly.azimuth = azAfter;
+      poly.normal = v3p4_1OrientationToNormal(poly.pitch || 0, azAfter);
+      poly.slope_correction_applied = true;
+      poly.dominant_main_body_preserved = true;
+      poly.geometry_correction_reason_codes = (poly.geometry_correction_reason_codes || []);
+      poly.geometry_correction_reason_codes.push('v3p4_4_slope_flipped_via_ridge_neighbor');
+      if (!Array.isArray(poly.validation_reasons)) poly.validation_reasons = [];
+      poly.validation_reasons.push('v3p4_4_slope_direction_corrected');
+      corrections.push({
+        polygon_idx: polyIdx,
+        edge_idx: edge.edge_idx,
+        azimuth_before: _r2(azBefore),
+        azimuth_after: _r2(azAfter),
+        centroid_to_edge_dot: _r2(dot),
+        fused_edge_score: fused,
+        preserved_dominant: false, // this polygon was NOT dominant (we skipped above)
+      });
+    }
+  }
+  return { corrections, events: corrections.length };
+}
+
+// B. REQUIRED SPLIT ENFORCEMENT
+// When a polygon was flagged by V3P3 internal-consistency AND its internal
+// azimuth variance is very high AND it is not dominant AND not a hip
+// signature, we attempt a V3P2.2 multi-angle split. Unlike the V3P4 gate
+// which required a strong adjacent edge, the V3P4.4 gate trusts the
+// internal-variance signal itself. X-median fallback is still rejected
+// (V3P4.3 invariant), and the children must separate cleanly.
+function v3p4_4ForceRequiredSplits(polygons, grid, v3p3Internal) {
+  const actions = [];
+  if (!grid || !v3p3Internal || !Array.isArray(v3p3Internal.per_polygon)) {
+    return { actions, blocked: [] };
+  }
+  const flagged = v3p3Internal.per_polygon.filter(p => p.flagged);
+  const blocked = [];
+
+  for (const flag of flagged) {
+    if (actions.length >= V3P4_4_MAX_FORCED_SPLITS) break;
+    const pi = flag.polygon_idx;
+    if (pi == null || pi >= polygons.length) continue;
+    const poly = polygons[pi];
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    if (poly.dominant_plane_flag === true) {
+      blocked.push({ polygon_idx: pi, reason: 'dominant_main_body_preserved' });
+      continue;
+    }
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    if (area < V3P4_4_FORCED_SPLIT_MIN_AREA_M2) continue;
+    if ((flag.max_azimuth_variance || 0) < V3P4_4_FORCED_SPLIT_MIN_INTERNAL_AZ_DEG) continue;
+    // Hip signature: V3P4.3 handles these — do not force-split.
+    const hip = v3p4_3HasHipSignature(poly.vertices, grid);
+    if (hip && hip.isHip) {
+      blocked.push({ polygon_idx: pi, reason: 'hip_signature_preserved' });
+      continue;
+    }
+
+    const fakeFace = {
+      vertices: poly.vertices,
+      pitch: poly.pitch || poly.original_pitch,
+      azimuth: poly.azimuth || poly.original_azimuth,
+    };
+    const splitResult = v3p2_2ApplyEdgeAlignedSplit(fakeFace, grid, null, null, []);
+    if (!splitResult || !splitResult.success) continue;
+    if (v3p4_3IsFallbackSplit(splitResult)) {
+      blocked.push({ polygon_idx: pi, reason: 'x_median_fallback_refused' });
+      continue;
+    }
+    const refitA = splitResult.refits[0];
+    const refitB = splitResult.refits[1];
+    const azDiff = v3p2AngularDistance(refitA.azimuth, refitB.azimuth);
+    if (azDiff < V3P4_4_FORCED_SPLIT_MIN_CHILD_AZ_DIFF_DEG) continue;
+    if (!splitResult.improvement || splitResult.improvement.score < V3P4_4_FORCED_SPLIT_MIN_IMPROVEMENT) continue;
+
+    actions.push({
+      polygon_idx: pi,
+      action: 'split',
+      reason: 'v3p4_4_required_split',
+      required_split_flag: true,
+      az_variance: flag.max_azimuth_variance,
+      post_az_diff: _r2(azDiff),
+      improvement: splitResult.improvement.score,
+      parts: splitResult.parts,
+      refits: splitResult.refits,
+      split_type: splitResult.splitLine ? splitResult.splitLine.type : 'unknown',
+    });
+  }
+  return { actions, blocked };
+}
+
+// Helper: apply a forced-split action in place. Mirrors the V3P2 / V3P4
+// split-child construction so dominant lineage + anchoring continue to work.
+function v3p4_4ApplyForcedSplit(polygons, action) {
+  const pi = action.polygon_idx;
+  if (pi >= polygons.length) return false;
+  const origPoly = polygons[pi];
+  if (!origPoly || origPoly.validation_decision === 'suppress') return false;
+
+  const rawRefitA = action.refits[0];
+  const rawRefitB = action.refits[1];
+  const parentP = origPoly.pitch || origPoly.original_pitch || 0;
+  const parentA = origPoly.azimuth || origPoly.original_azimuth || 0;
+  const ancA = v3p4_1AnchorChildRefit(rawRefitA, parentP, parentA);
+  const ancB = v3p4_1AnchorChildRefit(rawRefitB, parentP, parentA);
+  const refitA = ancA.refit;
+  const refitB = ancB.refit;
+
+  // V3P4.2 dominant lineage — children inherit from parent (but parent is
+  // non-dominant here because we skipped dominants upstream; keep the rule
+  // for completeness).
+  const childDom = !!origPoly.dominant_plane_flag;
+  const childDomScore = origPoly.dominant_plane_score || 0;
+  const childLineage = childDom
+    ? 'v3p1_inherited_via_v3p4_4_split'
+    : (origPoly.dominant_lineage_source || 'none');
+  const childV3p1Indices = (origPoly.v3p1_face_indices || []).slice();
+
+  const makeChild = (verts, refit, anc, letter) => ({
+    polygon_idx: -1,
+    source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
+    v3p1_face_indices: childV3p1Indices.slice(),
+    vertices: verts,
+    pitch: refit.pitch, azimuth: refit.azimuth,
+    height: origPoly.height,
+    original_pitch: origPoly.original_pitch || origPoly.pitch,
+    original_azimuth: origPoly.original_azimuth || origPoly.azimuth,
+    fit_rmse: refit.rmse,
+    fit_sample_count: refit.sample_count,
+    normal: refit.normal || null,
+    was_flipped: refit.was_flipped || false,
+    inherited_parent_orientation: anc.anchored,
+    ridge_crossing_flag: false,
+    ground_veto_flag: false,
+    validation_decision: 'v3p4_4_required_split_' + letter,
+    validation_reasons: ['v3p4_4_required_split', 'v3p4_4_split_type_' + (action.split_type || 'unknown')],
+    dominant_plane_flag: childDom,
+    dominant_plane_score: childDomScore,
+    dominant_lineage_source: childLineage,
+    geometry_correction_reason_codes: ['v3p4_4_required_split_applied'],
+    required_split_flag: true,
+    split_correction_applied: true,
+    dominant_main_body_preserved: true,
+  });
+  const childA = makeChild(action.parts[0], refitA, ancA, 'a');
+  const childB = makeChild(action.parts[1], refitB, ancB, 'b');
+  if (ancA.anchored) childA.validation_reasons.push('v3p4_1_child_anchored_' + ancA.reason);
+  if (ancB.anchored) childB.validation_reasons.push('v3p4_1_child_anchored_' + ancB.reason);
+
+  polygons.splice(pi, 1, childA, childB);
+  return true;
+}
+
+// D. HEIGHT CONSISTENCY CORRECTION
+// For ridge-adjacent polygon pairs whose base heights differ by more than
+// V3P4_4_HEIGHT_ALIGN_MIN_DIFF_M but less than V3P4_4_HEIGHT_ALIGN_MAX_DIFF_M,
+// align them. If exactly one is dominant, anchor to the dominant polygon's
+// height; otherwise use the average. Never touches 'step'-classified edges
+// (step legitimately has height offsets).
+function v3p4_4CorrectHeightRelationships(polygons, edges, v3p3BuildAdjacencyFn) {
+  const corrections = [];
+  if (!Array.isArray(polygons) || polygons.length < 2) return { corrections };
+  const { faceToPolyIdx } = v3p3BuildAdjacencyFn(edges, polygons);
+
+  const appliedPairs = new Set();
+  for (const edge of edges) {
+    if (!edge || edge.edge_type_v3p3 !== 'ridge') continue;
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+    const pairKey = pAIdx < pBIdx ? pAIdx + '-' + pBIdx : pBIdx + '-' + pAIdx;
+    if (appliedPairs.has(pairKey)) continue;
+    const polyA = polygons[pAIdx];
+    const polyB = polygons[pBIdx];
+    if (!polyA || !polyB) continue;
+    const hA = +polyA.height || 0;
+    const hB = +polyB.height || 0;
+    const diff = Math.abs(hA - hB);
+    if (diff < V3P4_4_HEIGHT_ALIGN_MIN_DIFF_M) continue;
+    if (diff > V3P4_4_HEIGHT_ALIGN_MAX_DIFF_M) continue;
+
+    let target;
+    let reason;
+    if (polyA.dominant_plane_flag === true && polyB.dominant_plane_flag !== true) {
+      target = hA;
+      reason = 'aligned_to_dominant_a';
+    } else if (polyB.dominant_plane_flag === true && polyA.dominant_plane_flag !== true) {
+      target = hB;
+      reason = 'aligned_to_dominant_b';
+    } else {
+      target = (hA + hB) / 2;
+      reason = 'aligned_to_average';
+    }
+    polyA.height_before_v3p4_4 = hA;
+    polyB.height_before_v3p4_4 = hB;
+    polyA.height = _r2(target);
+    polyB.height = _r2(target);
+    polyA.height_adjustment_applied = true;
+    polyB.height_adjustment_applied = true;
+    polyA.geometry_correction_reason_codes = (polyA.geometry_correction_reason_codes || []);
+    polyB.geometry_correction_reason_codes = (polyB.geometry_correction_reason_codes || []);
+    polyA.geometry_correction_reason_codes.push('v3p4_4_height_consistency');
+    polyB.geometry_correction_reason_codes.push('v3p4_4_height_consistency');
+    polyA.dominant_main_body_preserved = true;
+    polyB.dominant_main_body_preserved = true;
+    corrections.push({
+      polygon_a_idx: pAIdx,
+      polygon_b_idx: pBIdx,
+      edge_idx: edge.edge_idx,
+      height_a_before: _r2(hA),
+      height_b_before: _r2(hB),
+      height_after: _r2(target),
+      diff_before: _r2(diff),
+      reason,
+    });
+    appliedPairs.add(pairKey);
+  }
+  return { corrections };
+}
+
+// C. MISSING MAJOR PLANE RECOVERY
+// Scan DSM cells that are (a) elevated above ground, (b) not inside any
+// existing polygon footprint, (c) adjacent to at least one existing polygon
+// cell, (d) form a connected cluster of meaningful size. Fit a plane and
+// accept only when RMSE is low and pitch is in the residential band.
+// Strictly additive — never modifies existing polygons. Cap at
+// V3P4_4_MAX_RECOVERIES to prevent runaway additions.
+function v3p4_4RecoverMissingPlanes(polygons, grid) {
+  const recoveries = [];
+  if (!grid || !Array.isArray(polygons) || polygons.length === 0) {
+    return { recoveries, candidates: [] };
+  }
+  const SIZE = V2P0_GRID_SIZE;
+  const RES = V2P0_GRID_RES;
+  const HALF = V2P0_GRID_HALF;
+
+  // Global ground reference (p10 of finite DSM samples) — re-derive locally
+  // to avoid threading the v2p0 build result here.
+  const finiteVals = [];
+  for (let i = 0; i < grid.length; i++) {
+    if (!isNaN(grid[i])) finiteVals.push(grid[i]);
+  }
+  if (finiteVals.length === 0) return { recoveries, candidates: [] };
+  finiteVals.sort((a, b) => a - b);
+  const groundElev = finiteVals[Math.floor(finiteVals.length * 0.10)];
+  const minElev = groundElev + V3P4_4_RECOVERY_MIN_HEIGHT_ABOVE_GROUND_M;
+  const maxElev = groundElev + V3P4_4_RECOVERY_MAX_HEIGHT_ABOVE_GROUND_M;
+
+  // Build an "inside-polygon" mask once: 1 for cells inside any existing poly.
+  const insideMask = new Uint8Array(SIZE * SIZE);
+  for (const poly of polygons) {
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    const verts = poly.vertices || [];
+    if (verts.length < 3) continue;
+    // Bounding box of the polygon to cut scan cost.
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const v of verts) {
+      if (v.x < minX) minX = v.x;
+      if (v.x > maxX) maxX = v.x;
+      if (v.z < minZ) minZ = v.z;
+      if (v.z > maxZ) maxZ = v.z;
+    }
+    const colMin = Math.max(0, Math.floor((minX + HALF) / RES));
+    const colMax = Math.min(SIZE - 1, Math.ceil((maxX + HALF) / RES));
+    const rowMin = Math.max(0, Math.floor((minZ + HALF) / RES));
+    const rowMax = Math.min(SIZE - 1, Math.ceil((maxZ + HALF) / RES));
+    for (let row = rowMin; row <= rowMax; row++) {
+      for (let col = colMin; col <= colMax; col++) {
+        const x = col * RES - HALF;
+        const z = row * RES - HALF;
+        if (v3p1PointInPolygon(x, z, verts)) {
+          insideMask[row * SIZE + col] = 1;
+        }
+      }
+    }
+  }
+
+  // Candidate elevated-but-outside mask.
+  const cand = new Uint8Array(SIZE * SIZE);
+  for (let idx = 0; idx < grid.length; idx++) {
+    if (insideMask[idx]) continue;
+    const e = grid[idx];
+    if (isNaN(e)) continue;
+    if (e < minElev || e > maxElev) continue;
+    cand[idx] = 1;
+  }
+
+  // Adjacent-to-existing mask: a candidate is eligible only if one of its
+  // 4-neighbors (within V3P4_4_RECOVERY_ADJACENCY_CELLS cells) is inside any
+  // existing polygon. This keeps recovery attached to the detected roof body.
+  const adj = V3P4_4_RECOVERY_ADJACENCY_CELLS;
+  const adjEligible = new Uint8Array(SIZE * SIZE);
+  for (let row = 0; row < SIZE; row++) {
+    for (let col = 0; col < SIZE; col++) {
+      const idx = row * SIZE + col;
+      if (!cand[idx]) continue;
+      let touched = false;
+      for (let dr = -adj; dr <= adj && !touched; dr++) {
+        for (let dc = -adj; dc <= adj && !touched; dc++) {
+          const nr = row + dr, nc = col + dc;
+          if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+          if (insideMask[nr * SIZE + nc]) touched = true;
+        }
+      }
+      if (touched) adjEligible[idx] = 1;
+    }
+  }
+
+  // Flood-fill connected components over adjEligible.
+  const visited = new Uint8Array(SIZE * SIZE);
+  const clusters = [];
+  for (let idx = 0; idx < SIZE * SIZE; idx++) {
+    if (!adjEligible[idx] || visited[idx]) continue;
+    const cluster = [];
+    const stack = [idx];
+    while (stack.length) {
+      const ci = stack.pop();
+      if (visited[ci]) continue;
+      visited[ci] = true;
+      if (!adjEligible[ci]) continue;
+      cluster.push(ci);
+      const crw = Math.floor(ci / SIZE);
+      const cco = ci % SIZE;
+      if (cco > 0) stack.push(ci - 1);
+      if (cco < SIZE - 1) stack.push(ci + 1);
+      if (crw > 0) stack.push(ci - SIZE);
+      if (crw < SIZE - 1) stack.push(ci + SIZE);
+    }
+    if (cluster.length >= V3P4_4_RECOVERY_MIN_CLUSTER_CELLS) {
+      clusters.push(cluster);
+    }
+  }
+  clusters.sort((a, b) => b.length - a.length);
+
+  const candidates = [];
+  for (const cluster of clusters) {
+    if (recoveries.length >= V3P4_4_MAX_RECOVERIES) break;
+    const areaM2 = cluster.length * RES * RES;
+    if (areaM2 < V3P4_4_RECOVERY_MIN_AREA_M2) continue;
+    const fit = v3p5FitPlaneToCluster(grid, cluster, SIZE, RES, HALF);
+    if (!fit) continue;
+    const candidate = {
+      area_m2: _r2(areaM2),
+      cell_count: cluster.length,
+      pitch_deg: _r2(fit.pitchDeg),
+      azimuth_deg: _r2(fit.azimuthDeg),
+      rmse: _r2(fit.rmse),
+      height_above_ground: _r2(fit.centroid.e - groundElev),
+      accepted: false,
+      reject_reason: null,
+    };
+    if (fit.rmse > V3P4_4_RECOVERY_MAX_FIT_RMSE_M) {
+      candidate.reject_reason = 'rmse_too_high';
+      candidates.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg < V3P4_4_RECOVERY_MIN_PITCH_DEG) {
+      candidate.reject_reason = 'too_flat';
+      candidates.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg > V3P4_4_RECOVERY_MAX_PITCH_DEG) {
+      candidate.reject_reason = 'too_steep';
+      candidates.push(candidate);
+      continue;
+    }
+
+    // Build convex hull in XZ for the new polygon vertices (same approach as
+    // v3p5, but with cell corners offset to reduce inward bias — minor fix
+    // relative to GEOM-009 carry-over).
+    const hullPts = [];
+    for (const ci of cluster) {
+      const row = Math.floor(ci / SIZE);
+      const col = ci % SIZE;
+      hullPts.push({ x: col * RES - HALF, z: row * RES - HALF });
+    }
+    const hull = v3p5BuildConvexHull(hullPts);
+    if (!hull || hull.length < 3) {
+      candidate.reject_reason = 'hull_too_small';
+      candidates.push(candidate);
+      continue;
+    }
+
+    candidate.accepted = true;
+    candidates.push(candidate);
+    const normal = v3p4_1OrientationToNormal(fit.pitchDeg, fit.azimuthDeg);
+    recoveries.push({
+      vertices: hull.map(p => ({ x: p.x, z: p.z })),
+      pitch: _r2(fit.pitchDeg),
+      azimuth: _r2(fit.azimuthDeg),
+      height: _r2(fit.centroid.e - groundElev),
+      normal,
+      fit_rmse: _r2(fit.rmse),
+      fit_sample_count: cluster.length,
+      sample_count: cluster.length,
+      // Mark as recovery-derived; no V3P1 lineage.
+      dominant_plane_flag: false,
+      dominant_plane_score: 0,
+      dominant_lineage_source: 'none',
+      v3p1_face_indices: [],
+      source_face_indices: [],
+      validation_decision: 'v3p4_4_recovered_missing_plane',
+      validation_reasons: ['v3p4_4_missing_plane_recovered'],
+      geometry_correction_reason_codes: ['v3p4_4_missing_plane_recovered'],
+      missing_plane_recovery_source: 'dsm_adjacent_cluster',
+      ridge_crossing_flag: false,
+      ground_veto_flag: false,
+      original_pitch: _r2(fit.pitchDeg),
+      original_azimuth: _r2(fit.azimuthDeg),
+      recovery_area_m2: _r2(areaM2),
+      recovery_rmse: _r2(fit.rmse),
+    });
+  }
+
+  return { recoveries, candidates };
+}
+
+// Main orchestrator. Runs the four correction families in this order:
+//   1. Slope direction correction   (safest — no vertex or polygon change)
+//   2. Height consistency correction (heights only)
+//   3. Missing major plane recovery  (strictly additive)
+//   4. Required split enforcement    (replaces polygons)
+// This ordering keeps indices stable for the first three corrections and
+// lets forced splits act on a roof whose slope directions are already fixed.
+function v3p4_4RunGeometryCorrection(polygons, edges, grid, v3p3Internal) {
+  const debug = {
+    v3p4_4_applied: false,
+    slope_direction_corrections: 0,
+    forced_required_splits: 0,
+    required_split_blocks: [],
+    missing_plane_recoveries: 0,
+    height_consistency_corrections: 0,
+    dominant_main_body_preserved_count: 0,
+    slope_correction_details: [],
+    forced_split_details: [],
+    missing_plane_recovery_details: [],
+    missing_plane_candidates: [],
+    height_consistency_details: [],
+    geometry_correction_warnings: [],
+  };
+  if (!Array.isArray(polygons) || polygons.length === 0) {
+    return debug;
+  }
+
+  const initialDominantCount = polygons.filter(p => p.dominant_plane_flag === true).length;
+
+  // 1. Slope direction correction
+  const slopeResult = v3p4_4CorrectSlopeDirection(polygons, edges, v3p3BuildPolyAdjacency);
+  debug.slope_direction_corrections = slopeResult.events;
+  debug.slope_correction_details = slopeResult.corrections;
+
+  // 2. Height consistency correction
+  const heightResult = v3p4_4CorrectHeightRelationships(polygons, edges, v3p3BuildPolyAdjacency);
+  debug.height_consistency_corrections = heightResult.corrections.length;
+  debug.height_consistency_details = heightResult.corrections;
+
+  // 3. Missing plane recovery
+  if (grid) {
+    const recoveryResult = v3p4_4RecoverMissingPlanes(polygons, grid);
+    for (const r of recoveryResult.recoveries) {
+      r.polygon_idx = polygons.length;
+      polygons.push(r);
+      debug.missing_plane_recovery_details.push({
+        polygon_idx: r.polygon_idx,
+        area_m2: r.recovery_area_m2,
+        pitch: r.pitch,
+        azimuth: r.azimuth,
+        fit_rmse: r.recovery_rmse,
+        source: r.missing_plane_recovery_source,
+      });
+    }
+    debug.missing_plane_recoveries = recoveryResult.recoveries.length;
+    debug.missing_plane_candidates = recoveryResult.candidates.slice(0, 10);
+  }
+
+  // 4. Forced required splits — last, because they replace polygons.
+  if (grid && v3p3Internal) {
+    const forceResult = v3p4_4ForceRequiredSplits(polygons, grid, v3p3Internal);
+    const sorted = forceResult.actions.slice().sort((a, b) => b.polygon_idx - a.polygon_idx);
+    for (const action of sorted) {
+      if (v3p4_4ApplyForcedSplit(polygons, action)) {
+        debug.forced_required_splits++;
+        debug.forced_split_details.push({
+          polygon_idx: action.polygon_idx,
+          az_variance: action.az_variance,
+          post_az_diff: action.post_az_diff,
+          improvement: action.improvement,
+          split_type: action.split_type,
+        });
+      }
+    }
+    debug.required_split_blocks = forceResult.blocked;
+    // Reindex polygons after splits.
+    for (let i = 0; i < polygons.length; i++) polygons[i].polygon_idx = i;
+  }
+
+  const finalDominantCount = polygons.filter(p => p.dominant_plane_flag === true).length;
+  debug.dominant_main_body_preserved_count = finalDominantCount;
+  debug.v3p4_4_applied = (
+    debug.slope_direction_corrections > 0 ||
+    debug.forced_required_splits > 0 ||
+    debug.missing_plane_recoveries > 0 ||
+    debug.height_consistency_corrections > 0
+  );
+  if (finalDominantCount < initialDominantCount) {
+    debug.geometry_correction_warnings.push(
+      'dominant_main_body_count_decreased_' + initialDominantCount + '_to_' + finalDominantCount
+    );
+  }
+  if (debug.slope_direction_corrections > 0) debug.geometry_correction_warnings.push('slope_corrected_' + debug.slope_direction_corrections);
+  if (debug.forced_required_splits > 0) debug.geometry_correction_warnings.push('forced_split_' + debug.forced_required_splits);
+  if (debug.missing_plane_recoveries > 0) debug.geometry_correction_warnings.push('missing_plane_recovered_' + debug.missing_plane_recoveries);
+  if (debug.height_consistency_corrections > 0) debug.geometry_correction_warnings.push('height_aligned_' + debug.height_consistency_corrections);
+
+  return debug;
 }
 
 function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
@@ -30519,6 +31139,22 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   }
   if (v3p4_1_rollback) warnings.push('v3p4_1_enforcement_rolled_back');
 
+  // ── V3P4.4: Roof Geometry Correction ─────────────────────────────────────
+  // Runs AFTER V3P4 enforcement + V3P4.1 rollback so it operates on the final
+  // polygon set the user will actually see. Active corrections: slope-flip,
+  // height-align, missing-plane-recovery, forced-required-split. Dominant
+  // main body is preserved throughout. Skipped when the pipeline rolled back
+  // (we respect the rollback decision).
+  const v3p4_4Debug = v3p4_1_rollback
+    ? { v3p4_4_applied: false, rollback_skipped: true }
+    : v3p4_4RunGeometryCorrection(v3p4FinalPolygons, edges, grid, v3p3Internal);
+  if (v3p4_4Debug.v3p4_4_applied) {
+    if (v3p4_4Debug.slope_direction_corrections > 0) warnings.push('v3p4_4_slope_corrections_' + v3p4_4Debug.slope_direction_corrections);
+    if (v3p4_4Debug.forced_required_splits > 0) warnings.push('v3p4_4_forced_splits_' + v3p4_4Debug.forced_required_splits);
+    if (v3p4_4Debug.missing_plane_recoveries > 0) warnings.push('v3p4_4_missing_plane_recovered_' + v3p4_4Debug.missing_plane_recoveries);
+    if (v3p4_4Debug.height_consistency_corrections > 0) warnings.push('v3p4_4_height_aligned_' + v3p4_4Debug.height_consistency_corrections);
+  }
+
   const totalSuppressed = v3p3Suppressed.size + v3p4Suppressed.size;
 
   return {
@@ -30651,6 +31287,10 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
         ...(v3p4_3_hipAnchorExemptions > 0 ? ['hip_anchor_exempt_' + v3p4_3_hipAnchorExemptions] : []),
       ],
     },
+    // V3P4.4: active roof geometry correction (slope direction, forced splits,
+    // missing-plane recovery, height consistency). Present only when not
+    // skipped by the V3P4.1 rollback.
+    v3p4_4_geometry_correction: v3p4_4Debug,
     // V3P4.2: dominant-lineage + rescue-metadata visibility (non-behavioral).
     v3p4_2_lineage: {
       pre_dominant_flag_count: preEnforcementSnapshot.filter(s => s.dominant_plane_flag && s.validation_decision !== 'suppress').length,
@@ -32019,4 +32659,11 @@ module.exports = {
   v3p4_3IsFallbackSplit,
   v3p4_3HasHipSignature,
   v3p4_1ValidateRidgeSanity,
+  // V3P4.4 test surface
+  v3p4_4CorrectSlopeDirection,
+  v3p4_4CorrectHeightRelationships,
+  v3p4_4ForceRequiredSplits,
+  v3p4_4RecoverMissingPlanes,
+  v3p4_4RunGeometryCorrection,
+  v3p4_4DownslopeXZ,
 };

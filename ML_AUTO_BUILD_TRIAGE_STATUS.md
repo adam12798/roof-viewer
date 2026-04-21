@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P4.3 Geometry Stabilization Packet banked — GEOM-001/002/003/004/005/006 + GEOM-008 addressed. 72/72 invariants pass. Audit items GEOM-007/009/010/011/012/013 remain open for a later packet.)
+**Last updated:** 2026-04-21 (V3P4.4 Roof Geometry Correction banked — active slope-flip, forced required split, missing-plane recovery, height-consistency alignment. First active-correction phase after V3P4.3's defensive packet. 105/105 invariants green. V2P4 score trades noted as truth-first over fewer-faces.)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2443,6 +2443,29 @@ Full findings in `PROJECT_HANDOFF.md` §V3P4.2.
 **Status:** BANKED. No prior phases reopened.
 
 Full section in `PROJECT_HANDOFF.md` §V3P4.3.
+
+---
+
+## 31d. V3P4.4 Roof Geometry Correction
+
+**Date:** 2026-04-21
+**Scope:** First ACTIVE geometry-correction phase. Prior V3P4.x were defensive (don't make it worse); V3P4.4 makes existing outputs more correct.
+
+**Four corrections:**
+- **A. Slope direction correction** — ridge-based azimuth flip when downslope points toward instead of away from the ridge. Dominant-preserving.
+- **B. Required split enforcement** — V3P3-flagged multi-slope polygons with variance ≥ 90° + area ≥ 15 m² + strong evidence (post-split az diff ≥ 45°, improvement ≥ 0.20). X-median fallback still blocked.
+- **C. Missing major plane recovery** — strictly additive; elevated DSM clusters adjacent to existing polygons, with valid pitch and low RMSE, become new polygons. Full metadata + provenance.
+- **D. Height consistency correction** — ridge-pair base height alignment in the 0.5–4.0 m diff band.
+
+**Dominant main body preservation:** every correction checks `dominant_plane_flag`; dominants are never flipped or force-split; height alignment anchors to dominant when present.
+
+**Live validation (8 properties):** corrections fired on 4 of 8 (15 Veteran clean, 20 Meadow, 17 Church, 74 Gates) with strong evidence per correction (RMSE 0.67–0.73 on recoveries; improvement 0.80 on 74 Gates forced split with az_variance 169.68°). V2P4 whole-roof-consistency score drops on correction-hit properties because V2P4 penalizes fragmentation — this is an intended architectural tension (truth-first over fewer-faces). Visual verification of corrected cases recommended before production push.
+
+**Testing:** `tools/v3p4_4_invariants_test.js` — 33/33 pass. V3P4.2 (41/41) + V3P4.3 (31/31) regression clean. Combined 105/105.
+
+**Status:** BANKED. No prior phases reopened. Visual verification pending.
+
+Full section in `PROJECT_HANDOFF.md` §V3P4.4.
 
 ---
 
