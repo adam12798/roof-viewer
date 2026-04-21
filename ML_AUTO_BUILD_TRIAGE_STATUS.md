@@ -2392,7 +2392,22 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 
 ---
 
-## 31. Related resources (renumbered from §30)
+## 31. V3P4.2 — Stability / Bug Audit (Report-Only)
+
+**Date:** 2026-04-21
+**Purpose:** Deep code audit of V3P1–V3P4.1. No code changes made.
+
+**Summary:** 8 findings ranked. 2 critical (dominant plane flag propagation), 3 high (ridge enforcement, rescue metadata, anchoring false-positives), 3 medium (minor logic gaps). 10 areas confirmed safe. System is structurally sound but has latent failure modes in dominant plane propagation and rescue plane metadata.
+
+**Immediate action needed:** AUD-001 + AUD-002 (thread dominant_plane_flag from V3P1 through V3P2 into V3P4 snapshot). ~45 min combined, low risk.
+
+**Should further feature work pause?** No. The system is stable for the 21-case batch. Critical findings are latent risks, not active regressions. Recommended: patch AUD-001/002 before adding new enforcement logic.
+
+Full findings in `PROJECT_HANDOFF.md` §V3P4.2.
+
+---
+
+## 32. Related resources (renumbered from §31)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

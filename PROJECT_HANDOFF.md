@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4.1 full geometry stabilization banked — 6 mechanisms, 20 Meadow +0.60, 74 Gates +0.15)
+**Last updated:** 2026-04-21 (V3P4.2 stability audit complete — 2 critical, 3 high, 3 medium findings; no code changes)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1396,6 +1396,35 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 **Status:** BANKED.
 
 **Reopen trigger:** Orientation anchoring blocks a valid refit on a real hip roof; post-split pitch clamp damages a legitimate steep child; ridge sanity flags a correct relationship; anti-collapse guard blocks needed enforcement.
+
+---
+
+### V3P4.2 — Stability / Bug Audit (Report-Only) [COMPLETE]
+
+**Purpose:** Deep code-and-behavior audit of V3P1–V3P4.1 pipeline. No code changes — ranked issue list only.
+
+**Top findings (8 total, ranked by severity):**
+
+| ID | Severity | Title | Fix effort |
+|---|---|---|---|
+| AUD-001 | CRITICAL | Dominant plane flag lost at V3P1→V3P2 boundary — V3P1 scores dominance per-face but V3P2 polygons never inherit it; V3P4 rescores from scratch | 30 min |
+| AUD-002 | CRITICAL | Pre-enforcement snapshot missing dominant_plane_flag — rollback guard cannot detect dominant plane loss after enforcement | 15 min |
+| AUD-003 | HIGH | Ridge sanity validation flags but never corrects — same-direction ridge pairs persist in output | 1 hour |
+| AUD-004 | HIGH | Rescue planes (V3P5/V3P6) lack normal vector, sample_count, fit_rmse — bypass downstream geometry sanity | 45 min |
+| AUD-005 | HIGH | Orientation anchoring blocks valid refits on multi-slope roofs — internal az variance >60° is also the signature of legitimate hips | 30 min |
+| AUD-006 | MEDIUM | V3P1 dominant area ratio computed pre-suppression — post-suppression largest plane may not reach 35% threshold | 20 min |
+| AUD-007 | MEDIUM | Post-split child pitch anchoring permits drift to near-flat on pitched roofs | 15 min |
+| AUD-008 | MEDIUM | V3P3 ridge classification requires fused edge score ≥0.35 — geometry-perfect ridges with weak LiDAR edge are missed | 1.5 hours |
+
+**Confirmed safe areas:** V3P1 fusion logic, V3P2 edge graph, V3P2.1 scoring, V3P2.2 splits, V3P3 floating plane detection, V3P4 improvement thresholds, V3P4.1 normal normalization, V3P5 cluster filtering, V3P6 central window, replay harness.
+
+**Recommended patch order:**
+1. AUD-001 + AUD-002 (critical, 45 min total, low risk)
+2. AUD-004 (rescue metadata, 45 min, low risk)
+3. AUD-003 + AUD-005 (ridge correction + anchoring revision, 1.5 hr, medium risk)
+4. AUD-006 + AUD-007 + AUD-008 (follow-up, backlog)
+
+**Status:** COMPLETE. No code changes made.
 
 ---
 
