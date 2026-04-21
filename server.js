@@ -27402,6 +27402,16 @@ const V3P3_INTERNAL_QUADRANT_MIN_SAMPLES = 6;
 const V3P3_INTERNAL_SLOPE_VARIANCE_DEG = 20;
 const V3P3_EDGE_UPGRADE_MIN_FUSED = 0.35;
 
+// ── V3P4: Structural Enforcement Engine ─────────────────────────────────────
+const V3P4_MULTI_SLOPE_AZ_VARIANCE_DEG = 45;
+const V3P4_MULTI_SLOPE_MIN_AREA_M2 = 8.0;
+const V3P4_BOUNDARY_SPLIT_MIN_FUSED = 0.65;
+const V3P4_BOUNDARY_SPLIT_MIN_AREA_M2 = 6.0;
+const V3P4_GROUND_SUPPRESS_MAX_PITCH_DEG = 7.0;
+const V3P4_GROUND_SUPPRESS_MIN_AREA_M2 = 4.0;
+const V3P4_INVALID_REL_SUPPRESS_MIN_FUSED = 0.50;
+const V3P4_ENFORCEMENT_IMPROVEMENT_MIN = 0.20;
+
 function v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces) {
   // Returns { direction: {dx, dz}, point: {x, z}, type, confidence, fallback }
   // direction is the unit vector ALONG the split line (not perpendicular to it).
@@ -28098,6 +28108,348 @@ function v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid) {
   return { floating_count: floatingCount, ground_suppressed_count: groundSuppressed, disconnected_count: disconnectedCount, suppressions_applied: suppressionsApplied, per_polygon_status: perPolyStatus };
 }
 
+// ── V3P4: Structural Enforcement Engine ─────────────────────────────────────
+// Turns structural understanding into controlled geometric action.
+
+function v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal) {
+  const actions = [];
+  if (!grid || !v3p3Internal) return actions;
+  const { polyAdj: cachedPolyAdj } = v3p3BuildPolyAdjacency(edges, polygons);
+  const flagged = (v3p3Internal.per_polygon || []).filter(p => p.flagged);
+  const MAX_INTERNAL_SPLITS = 2;
+
+  for (const flag of flagged) {
+    if (actions.length >= MAX_INTERNAL_SPLITS) break;
+    const pi = flag.polygon_idx;
+    if (pi >= polygons.length) continue;
+    const poly = polygons[pi];
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    // Don't override V3P2.1's edge-evidence gate
+    const reasons = poly.validation_reasons || [];
+    if (reasons.includes('split_blocked_by_weak_edge_evidence')) continue;
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    if (area < V3P4_MULTI_SLOPE_MIN_AREA_M2) continue;
+    if (flag.max_azimuth_variance < V3P4_MULTI_SLOPE_AZ_VARIANCE_DEG) continue;
+    // Require corroborating edge evidence — without a strong edge, internal
+    // variance alone is insufficient for enforcement (stays as warning only)
+    const adjEdges = cachedPolyAdj[pi] || [];
+    const hasStrongEdge = adjEdges.some(a => {
+      const e = edges[a.edge_idx];
+      return e && e.fused_edge_score && e.fused_edge_score >= V3P4_BOUNDARY_SPLIT_MIN_FUSED;
+    });
+    if (!hasStrongEdge) continue;
+
+    // Attempt split using v3p2_2 infrastructure
+    const fakeEdge = null;
+    const fakeFace = { vertices: poly.vertices, pitch: poly.pitch || poly.original_pitch, azimuth: poly.azimuth || poly.original_azimuth };
+    const splitResult = v3p2_2ApplyEdgeAlignedSplit(fakeFace, grid, null, fakeEdge, []);
+
+    if (splitResult && splitResult.success) {
+      const refitA = splitResult.refits[0];
+      const refitB = splitResult.refits[1];
+      const azDiff = v3p2AngularDistance(refitA.azimuth, refitB.azimuth);
+      if (azDiff > 35 && splitResult.improvement && splitResult.improvement.score >= V3P4_ENFORCEMENT_IMPROVEMENT_MIN) {
+        actions.push({
+          polygon_idx: pi,
+          action: 'split',
+          reason: 'multi_slope_enforcement',
+          az_variance: flag.max_azimuth_variance,
+          post_az_diff: _r2(azDiff),
+          improvement: splitResult.improvement.score,
+          parts: splitResult.parts,
+          refits: splitResult.refits,
+          split_type: splitResult.splitLine ? splitResult.splitLine.type : 'unknown',
+        });
+      }
+    }
+  }
+  return actions;
+}
+
+function v3p4EnforceStructuralBoundaries(polygons, edges, grid) {
+  const actions = [];
+  if (!grid) return actions;
+  const { polyAdj, faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, polygons);
+  const structuralTypes = new Set(['ridge', 'valley', 'hip', 'step']);
+  const alreadySplit = new Set();
+
+  for (const edge of edges) {
+    if (!edge.edge_type_v3p3 || !structuralTypes.has(edge.edge_type_v3p3)) continue;
+    if (!edge.fused_edge_score || edge.fused_edge_score < V3P4_BOUNDARY_SPLIT_MIN_FUSED) continue;
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+
+    // Check if a polygon spans across this strong boundary (has the same source face on both sides)
+    // This catches cases where V3P2.2 didn't split because the edge wasn't its "best edge"
+    const polyA = polygons[pAIdx];
+    const polyB = polygons[pBIdx];
+    if (!polyA || !polyB) continue;
+    if (polyA.validation_decision === 'suppress' || polyB.validation_decision === 'suppress') continue;
+
+    // Check relationship validity — if the edge type says ridge but slopes agree, one side is wrong
+    const pitchA = polyA.pitch || polyA.original_pitch || 0;
+    const pitchB = polyB.pitch || polyB.original_pitch || 0;
+    const azA = polyA.azimuth || polyA.original_azimuth || 0;
+    const azB = polyB.azimuth || polyB.original_azimuth || 0;
+    const azDiff = v3p2AngularDistance(azA, azB);
+
+    let targetPolyIdx = null;
+    let splitReason = null;
+
+    if (edge.edge_type_v3p3 === 'ridge' && azDiff < 30) {
+      // Ridge but same direction slopes — larger polygon may span it
+      const areaA = v3p2_1ApproxArea(polyA.vertices || []);
+      const areaB = v3p2_1ApproxArea(polyB.vertices || []);
+      targetPolyIdx = areaA >= areaB ? pAIdx : pBIdx;
+      splitReason = 'ridge_boundary_same_slope';
+    } else if (edge.edge_type_v3p3 === 'step') {
+      // Step with same azimuth but height offset — check the larger polygon for internal break
+      const areaA = v3p2_1ApproxArea(polyA.vertices || []);
+      const areaB = v3p2_1ApproxArea(polyB.vertices || []);
+      if (Math.abs(pitchA - pitchB) > 8) {
+        targetPolyIdx = areaA >= areaB ? pAIdx : pBIdx;
+        splitReason = 'step_boundary_pitch_conflict';
+      }
+    }
+
+    if (targetPolyIdx == null || alreadySplit.has(targetPolyIdx)) continue;
+    const targetPoly = polygons[targetPolyIdx];
+    const area = v3p2_1ApproxArea(targetPoly.vertices || []);
+    if (area < V3P4_BOUNDARY_SPLIT_MIN_AREA_M2) continue;
+
+    const fakeFace = { vertices: targetPoly.vertices, pitch: targetPoly.pitch || targetPoly.original_pitch, azimuth: targetPoly.azimuth || targetPoly.original_azimuth };
+    const splitResult = v3p2_2ApplyEdgeAlignedSplit(fakeFace, grid, null, edge, []);
+
+    if (splitResult && splitResult.success && splitResult.improvement && splitResult.improvement.score >= V3P4_ENFORCEMENT_IMPROVEMENT_MIN) {
+      alreadySplit.add(targetPolyIdx);
+      actions.push({
+        polygon_idx: targetPolyIdx,
+        action: 'split',
+        reason: splitReason,
+        edge_idx: edge.edge_idx,
+        edge_type: edge.edge_type_v3p3,
+        edge_fused: edge.fused_edge_score,
+        improvement: splitResult.improvement.score,
+        parts: splitResult.parts,
+        refits: splitResult.refits,
+        split_type: splitResult.splitLine ? splitResult.splitLine.type : 'unknown',
+      });
+    }
+  }
+  return actions;
+}
+
+function v3p4SuppressInvalidGroundPolygons(polygons, edges) {
+  const actions = [];
+  const { polyAdj, faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, polygons);
+  const structuralTypes = new Set(['ridge', 'valley', 'hip', 'step']);
+
+  for (let pi = 0; pi < polygons.length; pi++) {
+    const poly = polygons[pi];
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    const pitch = poly.pitch || poly.original_pitch || 0;
+    if (pitch >= V3P4_GROUND_SUPPRESS_MAX_PITCH_DEG) continue;
+
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    if (area < V3P4_GROUND_SUPPRESS_MIN_AREA_M2) continue;
+
+    const adj = polyAdj[pi] || [];
+    const hasStructural = adj.some(a => {
+      const e = edges[a.edge_idx];
+      return e && structuralTypes.has(e.edge_type_v3p3);
+    });
+
+    // Only suppress if: no structural connections AND very flat AND already flagged by prior ground detection
+    if (!hasStructural && pitch < 3 && poly.ground_veto_flag) {
+      actions.push({
+        polygon_idx: pi,
+        action: 'suppress',
+        reason: 'ground_no_structural_support',
+        pitch: _r2(pitch),
+        area: _r2(area),
+        has_neighbors: adj.length > 0,
+        ground_veto_prior: !!poly.ground_veto_flag,
+      });
+    }
+  }
+  return actions;
+}
+
+function v3p4ResolveInvalidRelationships(polygons, edges, grid) {
+  const actions = [];
+  if (!grid) return actions;
+  const { faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, polygons);
+
+  for (const edge of edges) {
+    if (!edge.edge_type_v3p3 || edge.edge_type_v3p3 === 'uncertain' || edge.edge_type_v3p3 === 'outer_boundary') continue;
+    if (!edge.fused_edge_score || edge.fused_edge_score < V3P4_INVALID_REL_SUPPRESS_MIN_FUSED) continue;
+
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+
+    const polyA = polygons[pAIdx];
+    const polyB = polygons[pBIdx];
+    if (!polyA || !polyB) continue;
+    if (polyA.validation_decision === 'suppress' || polyB.validation_decision === 'suppress') continue;
+
+    const pitchA = polyA.pitch || polyA.original_pitch || 0;
+    const pitchB = polyB.pitch || polyB.original_pitch || 0;
+    const azA = polyA.azimuth || polyA.original_azimuth || 0;
+    const azB = polyB.azimuth || polyB.original_azimuth || 0;
+    const azDiff = v3p2AngularDistance(azA, azB);
+    const azOpp = v3p2AngularDistance(azA + 180, azB);
+
+    // Ridge classified but slopes go same direction — suppress smaller if clearly wrong
+    if (edge.edge_type_v3p3 === 'ridge' && azDiff < 20 && pitchA > 5 && pitchB > 5) {
+      const areaA = v3p2_1ApproxArea(polyA.vertices || []);
+      const areaB = v3p2_1ApproxArea(polyB.vertices || []);
+      const smaller = areaA <= areaB ? pAIdx : pBIdx;
+      const smallerArea = Math.min(areaA, areaB);
+      if (smallerArea < 6) {
+        actions.push({
+          polygon_idx: smaller,
+          action: 'suppress',
+          reason: 'invalid_ridge_same_direction_small',
+          edge_idx: edge.edge_idx,
+          edge_type: edge.edge_type_v3p3,
+          az_diff: _r2(azDiff),
+          area: _r2(smallerArea),
+        });
+      }
+    }
+    break; // only one relationship correction per pass to stay conservative
+  }
+  return actions;
+}
+
+function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
+  const debug = {
+    v3p4_enforcement_applied: false,
+    enforced_split_count: 0,
+    enforced_suppression_count: 0,
+    invalid_single_plane_count: 0,
+    ridge_forced_split_count: 0,
+    ground_forced_suppression_count: 0,
+    global_cleanup_actions: 0,
+    enforcement_warnings: [],
+    per_polygon: [],
+  };
+
+  // 1. Internal plane consistency enforcement
+  const internalActions = v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal);
+  debug.invalid_single_plane_count = internalActions.length;
+
+  // 2. Structural boundary enforcement
+  const boundaryActions = v3p4EnforceStructuralBoundaries(polygons, edges, grid);
+  debug.ridge_forced_split_count = boundaryActions.length;
+
+  // 3. Ground suppression enforcement
+  const groundActions = v3p4SuppressInvalidGroundPolygons(polygons, edges);
+  debug.ground_forced_suppression_count = groundActions.length;
+
+  // 4. Invalid relationship enforcement
+  const relActions = v3p4ResolveInvalidRelationships(polygons, edges, grid);
+
+  // Apply actions: splits first, then suppressions
+  const allSplits = [...internalActions.filter(a => a.action === 'split'), ...boundaryActions.filter(a => a.action === 'split')];
+  const allSuppresses = [...groundActions, ...relActions.filter(a => a.action === 'suppress')];
+
+  // De-duplicate: don't split and suppress the same polygon
+  const splitTargets = new Set(allSplits.map(a => a.polygon_idx));
+  const validSuppresses = allSuppresses.filter(a => !splitTargets.has(a.polygon_idx));
+
+  // Apply splits (reverse order to preserve indices)
+  const sortedSplits = allSplits.sort((a, b) => b.polygon_idx - a.polygon_idx);
+  for (const split of sortedSplits) {
+    const pi = split.polygon_idx;
+    if (pi >= polygons.length) continue;
+    const origPoly = polygons[pi];
+    if (!origPoly || origPoly.validation_decision === 'suppress') continue;
+
+    const refitA = split.refits[0];
+    const refitB = split.refits[1];
+    const childA = {
+      polygon_idx: -1,
+      source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
+      vertices: split.parts[0],
+      pitch: refitA.pitch, azimuth: refitA.azimuth,
+      height: origPoly.height,
+      original_pitch: origPoly.original_pitch || origPoly.pitch,
+      original_azimuth: origPoly.original_azimuth || origPoly.azimuth,
+      fit_rmse: refitA.rmse, fit_sample_count: refitA.sample_count,
+      ridge_crossing_flag: false, ground_veto_flag: false,
+      validation_decision: 'v3p4_enforced_split_a',
+      validation_reasons: ['v3p4_' + split.reason],
+    };
+    const childB = {
+      polygon_idx: -1,
+      source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
+      vertices: split.parts[1],
+      pitch: refitB.pitch, azimuth: refitB.azimuth,
+      height: origPoly.height,
+      original_pitch: origPoly.original_pitch || origPoly.pitch,
+      original_azimuth: origPoly.original_azimuth || origPoly.azimuth,
+      fit_rmse: refitB.rmse, fit_sample_count: refitB.sample_count,
+      ridge_crossing_flag: false, ground_veto_flag: false,
+      validation_decision: 'v3p4_enforced_split_b',
+      validation_reasons: ['v3p4_' + split.reason],
+    };
+    polygons.splice(pi, 1, childA, childB);
+    debug.enforced_split_count++;
+    debug.per_polygon.push({
+      polygon_idx: pi,
+      action: 'split',
+      reason: split.reason,
+      improvement: split.improvement,
+      split_type: split.split_type,
+      post_children: 2,
+    });
+  }
+
+  // Reindex after splits
+  for (let i = 0; i < polygons.length; i++) polygons[i].polygon_idx = i;
+
+  // Apply suppressions
+  for (const sup of validSuppresses) {
+    // Find the polygon by original index (may have shifted after splits)
+    // Use a best-effort match by checking source_face_indices or just iterating
+    let targetIdx = sup.polygon_idx;
+    if (targetIdx >= polygons.length) continue;
+    const poly = polygons[targetIdx];
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    poly.validation_decision = 'suppress';
+    poly.validation_reasons = poly.validation_reasons || [];
+    poly.validation_reasons.push('v3p4_' + sup.reason);
+    if (sup.reason.includes('ground')) poly.ground_veto_flag = true;
+    debug.enforced_suppression_count++;
+    debug.per_polygon.push({
+      polygon_idx: targetIdx,
+      action: 'suppress',
+      reason: sup.reason,
+    });
+  }
+
+  // Global safety: never suppress all
+  const surviving = polygons.filter(p => p.validation_decision !== 'suppress');
+  if (surviving.length === 0 && polygons.length > 0) {
+    let bestIdx = 0, bestArea = 0;
+    for (let i = 0; i < polygons.length; i++) {
+      const a = v3p2_1ApproxArea(polygons[i].vertices || []);
+      if (a > bestArea) { bestArea = a; bestIdx = i; }
+    }
+    polygons[bestIdx].validation_decision = 'keep';
+    polygons[bestIdx].validation_reasons.push('v3p4_restored_last_survivor');
+    debug.enforced_suppression_count--;
+    debug.enforcement_warnings.push('restored_last_survivor');
+    debug.global_cleanup_actions++;
+  }
+
+  debug.v3p4_enforcement_applied = debug.enforced_split_count > 0 || debug.enforced_suppression_count > 0;
+  return debug;
+}
+
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
   const cr = (envelope && envelope.crm_result) || {};
   const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map((f, idx) => ({
@@ -28577,14 +28929,33 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     warnings.push('v3p3_polygons_suppressed_' + v3p3Global.suppressions_applied);
   }
 
+  // ── V3P4: Structural Enforcement Engine ───────────────────────────────────
+  const v3p4Debug = v3p4RunEnforcement(v3p3FinalPolygons, edges, grid, v3p3Internal);
+
+  // Apply V3P4 suppressions: remove suppressed polygons
+  const v3p4Suppressed = new Set();
+  for (let i = 0; i < v3p3FinalPolygons.length; i++) {
+    if (v3p3FinalPolygons[i].validation_decision === 'suppress') v3p4Suppressed.add(i);
+  }
+  const v3p4FinalPolygons = v3p3FinalPolygons.filter((_, i) => !v3p4Suppressed.has(i));
+  for (let i = 0; i < v3p4FinalPolygons.length; i++) v3p4FinalPolygons[i].polygon_idx = i;
+
+  if (v3p4Debug.v3p4_enforcement_applied) {
+    warnings.push('v3p4_enforcement_applied');
+    if (v3p4Debug.enforced_split_count > 0) warnings.push('v3p4_enforced_splits_' + v3p4Debug.enforced_split_count);
+    if (v3p4Debug.enforced_suppression_count > 0) warnings.push('v3p4_enforced_suppressions_' + v3p4Debug.enforced_suppression_count);
+  }
+
+  const totalSuppressed = v3p3Suppressed.size + v3p4Suppressed.size;
+
   return {
     v3_polygon_construction_applied: true,
     candidate_edge_count: edges.length,
     candidate_polygon_count: n,
-    final_polygon_face_count: v3p3FinalPolygons.length,
+    final_polygon_face_count: v3p4FinalPolygons.length,
     merged_polygon_count: mergeCount,
-    split_polygon_count: splitCount,
-    suppressed_polygon_count: v3p3Suppressed.size,
+    split_polygon_count: splitCount + v3p4Debug.enforced_split_count,
+    suppressed_polygon_count: totalSuppressed,
     fallback_polygon_count: fallbackCount,
     shared_boundary_snaps: snaps.length,
     edge_graph_summary: {
@@ -28642,8 +29013,10 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     split_geometry_warnings: warnings.filter(w => w.startsWith('split_')),
     // V3P3: relationships + global consistency
     v3p3_relationships: v3p3Debug,
+    // V3P4: structural enforcement
+    v3p4_enforcement: v3p4Debug,
     edges,
-    polygons: v3p3FinalPolygons,
+    polygons: v3p4FinalPolygons,
   };
 }
 
@@ -28662,6 +29035,7 @@ function v3p2ApplyConstruction(envelope, result) {
   if (result.merged_polygon_count > 0 && !reasons.includes('v3_polygon_merge_applied')) reasons.push('v3_polygon_merge_applied');
   if (result.fallback_polygon_count > 0 && !reasons.includes('v3_polygon_fallback_applied')) reasons.push('v3_polygon_fallback_applied');
   if (result.suppressed_polygon_count > 0 && !reasons.includes('v3p3_polygon_suppressed')) reasons.push('v3p3_polygon_suppressed');
+  if (result.v3p4_enforcement && result.v3p4_enforcement.v3p4_enforcement_applied && !reasons.includes('v3p4_enforcement_applied')) reasons.push('v3p4_enforcement_applied');
   envelope.review_policy_reasons = reasons;
   return {
     applied: true,

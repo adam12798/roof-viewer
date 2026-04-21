@@ -266,6 +266,13 @@ function normalize_replay_result(r) {
     v3p3_ground_suppressed: 0,
     v3p3_floating: 0,
     v3p3_disconnected: 0,
+    // V3P4: structural enforcement
+    v3p4_applied: false,
+    v3p4_enforced_splits: 0,
+    v3p4_enforced_suppressions: 0,
+    v3p4_invalid_single_plane: 0,
+    v3p4_ridge_forced_splits: 0,
+    v3p4_ground_forced_suppressions: 0,
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -414,6 +421,14 @@ function normalize_replay_result(r) {
   row.v3p3_ground_suppressed = v3p3.global_consistency ? v3p3.global_consistency.ground_suppressed_count : 0;
   row.v3p3_floating = v3p3.global_consistency ? v3p3.global_consistency.floating_count : 0;
   row.v3p3_disconnected = v3p3.global_consistency ? v3p3.global_consistency.disconnected_count : 0;
+  // V3P4 structural enforcement fields
+  const v3p4 = v3p2.v3p4_enforcement || {};
+  row.v3p4_applied = !!v3p4.v3p4_enforcement_applied;
+  row.v3p4_enforced_splits = v3p4.enforced_split_count || 0;
+  row.v3p4_enforced_suppressions = v3p4.enforced_suppression_count || 0;
+  row.v3p4_invalid_single_plane = v3p4.invalid_single_plane_count || 0;
+  row.v3p4_ridge_forced_splits = v3p4.ridge_forced_split_count || 0;
+  row.v3p4_ground_forced_suppressions = v3p4.ground_forced_suppression_count || 0;
 
   return row;
 }

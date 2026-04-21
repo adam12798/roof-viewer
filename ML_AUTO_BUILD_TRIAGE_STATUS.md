@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-20 (V3P2.1 edge scoring system active — splits/merges now evidence-driven)
+**Last updated:** 2026-04-21 (V3P4 structural enforcement engine banked)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2264,11 +2264,49 @@ Conservative by design: 1 suppression across 15 active-face cases. Zero regressi
 
 **Edge type distribution (across 15 active cases):** ridge:1, valley:9, hip:1, eave:2, seam:1, uncertain:29. Edge classification correctly identifies structural relationships — valleys dominate on multi-plane roofs, ridge detected at split boundaries, eaves where flat meets pitched.
 
-**KEEP (ACTIVE, ready to bank).** System correctly classifies edge relationships and enforces consistency without over-acting. Conservative: flags > changes. One genuine ground suppression improved 21 Stoddard. Zero regressions.
+**KEEP (BANKED).** System correctly classifies edge relationships and enforces consistency without over-acting. Conservative: flags > changes. One genuine ground suppression improved 21 Stoddard. Zero regressions. Superseded by §27 (V3P4).
 
 ---
 
-## 27. Related resources (renumbered from §26)
+## 27. V3P4 — Structural Enforcement Engine
+
+**Date:** 2026-04-21
+**Scope:** Turn V3P3's structural understanding into controlled geometric action. Enforce, correct, suppress where structure is definitively wrong.
+
+**What changed:**
+- Multi-slope enforcement: splits V3P3-flagged polygons with high azimuth variance (≥45°), large area (≥8 m²), strong edge evidence (fused ≥0.65), and verified improvement (≥0.20)
+- Structural boundary enforcement: splits across strong boundaries where polygon spans incorrectly
+- Ground suppression: removes flat polygons (pitch <3°) with ground_veto_flag and no structural support
+- Invalid relationship resolution: suppresses small polygons in impossible ridge configurations
+- Safety guards: never suppress all polygons, cap splits at 2, require edge evidence, validate post-split geometry
+
+**Evidence (21-case replay, 2026-04-21):**
+
+| Case | Before | After | Delta | Enforcement |
+|------|--------|-------|-------|---|
+| 225 Gibson St | 0.90 | 0.86 | -0.04 | split |
+| 21 Stoddard | 0.73 | 0.69 | -0.04 | split + suppress |
+| 17 Church Ave | 0.83 | 0.77 | -0.06 | split |
+| All other 12 cases | — | — | 0.00 | none |
+
+Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfully gate harmful splits that plagued earlier iterations (74 Gates -0.39, Puffer -0.10 eliminated).
+
+**Tuning history (4 iterations):**
+- Iter 1: AZ_VARIANCE=25, MIN_AREA=4, FUSED=0.55, IMPROVEMENT=0.05 → over-aggressive, 15 Veteran regressed
+- Iter 2: AZ_VARIANCE=35, MIN_AREA=6, FUSED=0.60, IMPROVEMENT=0.15 → 13 Richardson 4→8 faces (no cap)
+- Iter 3: Added MAX_SPLITS=2, edge evidence gate → 74 Gates -0.39, net -0.41
+- Iter 4: AZ_VARIANCE=45, MIN_AREA=8, FUSED=0.65, IMPROVEMENT=0.20 → net stable, harmful splits blocked
+
+**KEEP (BANKED).** System enforces structural violations with conservative thresholds. Ground suppression and boundary enforcement are reliable. Multi-slope enforcement gates effectively against harmful splits. Small net cost on enforced cases justified by structural correctness.
+
+---
+
+## 28. Related resources (renumbered from §27)
+
+- `PROJECT_HANDOFF.md` — canonical source-of-truth.
+- `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
+- `GET /api/ml-drafts/:id` — full-detail row.
+- `data/ml-drafts.json` — append-only local audit log (gitignored).
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

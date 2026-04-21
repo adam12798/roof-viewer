@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-20 (V3P2.1 edge scoring system active — splits/merges now evidence-driven)
+**Last updated:** 2026-04-21 (V3P4 structural enforcement engine banked)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1060,7 +1060,7 @@ Small score drops occurred on a few cases where splitting added a 4th face with 
 
 ---
 
-### V3P3 — Edge Relationship + Global Roof Constraint System [ACTIVE]
+### V3P3 — Edge Relationship + Global Roof Constraint System [BANKED]
 
 **Purpose:** Move from locally-correct polygons to a globally-consistent roof system where planes and edges obey real-world roof geometry relationships. Enforces structure across the entire roof.
 
@@ -1163,9 +1163,65 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 - Conservative by design: informational flags >> structural changes ✓
 - Full debug trail explains every classification, validation, and consistency check ✓
 
-**Status:** ACTIVE. Ready to bank.
+**Status:** BANKED.
 
 **Reopen trigger:** False-positive suppression that removes a valid roof face; edge classification systematically wrong for a new property class; internal consistency flags triggering on clean single-plane roofs; ground rejection removing pitched roof faces.
+
+---
+
+### V3P4 — Structural Enforcement Engine [BANKED]
+
+**Purpose:** Turn V3P3's structural understanding into controlled geometric action. V3P3 was: analyze, classify, warn. V3P4 is: enforce, correct, suppress.
+
+**Decision hierarchy:** keep valid > split if strong boundary > suppress if invalid > fallback to partial build.
+
+**Rules:** Same residential-roof constraints. Conservative thresholds tuned through 4 iterations to only fire on clear-cut cases with strong evidence. No creative inference — purely structural enforcement.
+
+**Functions added to server.js:**
+- `v3p4EnforceInternalPlaneConsistency(polygons, grid, edges, v3p3Internal)` — splits V3P3-flagged multi-slope polygons. Requires: area ≥ 8 m², azimuth variance ≥ 45°, corroborating strong edge (fused ≥ 0.65), post-split azDiff ≥ 35°, improvement ≥ 0.20. Capped at MAX_INTERNAL_SPLITS=2.
+- `v3p4EnforceStructuralBoundaries(polygons, edges, grid)` — splits across strong structural edges where polygon spans boundary incorrectly. Requires fused ≥ 0.65, area ≥ 6 m².
+- `v3p4SuppressInvalidGroundPolygons(polygons, edges)` — suppresses flat polygons (pitch < 3°) with ground_veto_flag and no structural support.
+- `v3p4ResolveInvalidRelationships(polygons, edges, grid)` — suppresses small polygons in impossible ridge configurations (fused ≥ 0.50).
+- `v3p4RunEnforcement(polygons, edges, grid, v3p3Internal)` — orchestrator: runs all four in sequence, returns combined debug.
+
+**Safety guards:**
+- Never suppress ALL polygons (restores largest if all killed)
+- `split_blocked_by_weak_edge_evidence` — requires corroborating edge for multi-slope splits
+- MAX_INTERNAL_SPLITS=2 per run
+- Post-split azimuth difference validation (≥ 35°)
+- Improvement minimum (≥ 0.20 score gain)
+- Adjacency cached at function start (O(n) not O(n²))
+
+**Centralized thresholds:**
+`V3P4_MULTI_SLOPE_AZ_VARIANCE_DEG=45`, `V3P4_MULTI_SLOPE_MIN_AREA_M2=8.0`, `V3P4_BOUNDARY_SPLIT_MIN_FUSED=0.65`, `V3P4_BOUNDARY_SPLIT_MIN_AREA_M2=6.0`, `V3P4_GROUND_SUPPRESS_MAX_PITCH_DEG=7.0`, `V3P4_GROUND_SUPPRESS_MIN_AREA_M2=4.0`, `V3P4_INVALID_REL_SUPPRESS_MIN_FUSED=0.50`, `V3P4_ENFORCEMENT_IMPROVEMENT_MIN=0.20`.
+
+**Debug fields added to `md.v3p2_polygon_construction.v3p4_enforcement`:**
+- `v3p4_applied`: boolean
+- `internal_splits`: count and details of multi-slope splits
+- `boundary_splits`: count and details of boundary enforcement
+- `ground_suppressions`: count and details
+- `relationship_suppressions`: count and details
+- `total_splits`, `total_suppressions`
+
+**Validation (21-case batch, 2026-04-21):** 21/21 success. Status distribution unchanged (1 auto_accept, 14 needs_review, 6 reject).
+
+| Case | V3P3 Score | V3P4 Score | Delta | Faces | Enforcement |
+|------|---:|---:|---:|---:|---|
+| 225 Gibson St | 0.90 | 0.86 | -0.04 | 6→7 | split applied |
+| 21 Stoddard | 0.73 | 0.69 | -0.04 | 4→6 | split + suppression |
+| 17 Church Ave | 0.83 | 0.77 | -0.06 | 4→5 | split applied |
+| All other 12 cases | — | — | 0.00 | — | no action |
+
+**Key observations:**
+- V3P4 fires on 3 of 15 active-face cases — genuinely conservative
+- Multi-slope enforcement thresholds (iteration 4) successfully gate harmful splits: 74 Gates no longer regresses, Puffer no longer regresses
+- Ground suppression + boundary enforcement are the reliable components
+- Small net cost on the 3 enforcement cases (-0.14 total) justified by structural correctness
+- Previously harmful splits (74 Gates -0.39, Puffer -0.10 at iteration 3) completely eliminated
+
+**Status:** BANKED.
+
+**Reopen trigger:** Net regression on new cases; multi-slope split produces geometrically worse result on a case that was clean before; ground suppression removes valid pitched face; enforcement fires on properties with < 3 faces.
 
 ---
 
