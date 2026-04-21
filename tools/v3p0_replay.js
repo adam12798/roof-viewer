@@ -249,6 +249,13 @@ function normalize_replay_result(r) {
     v3p2_1_edges_blocking_merges: 0,
     v3p2_1_edges_suppressed: 0,
     v3p2_1_mean_fused_score: null,
+    // V3P2.2: edge-aligned split geometry
+    v3p2_2_edge_aligned_split_applied: false,
+    v3p2_2_split_attempts: 0,
+    v3p2_2_split_kept: 0,
+    v3p2_2_split_rejected: 0,
+    v3p2_2_fallback_splits: 0,
+    v3p2_2_split_types: null,
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -379,6 +386,13 @@ function normalize_replay_result(r) {
   row.v3p2_1_mean_fused_score = scoredEdges.length > 0
     ? +(scoredEdges.reduce((s, e) => s + e.fused_edge_score, 0) / scoredEdges.length).toFixed(2)
     : null;
+  // V3P2.2 edge-aligned split geometry fields
+  row.v3p2_2_edge_aligned_split_applied = !!v3p2.edge_aligned_split_applied;
+  row.v3p2_2_split_attempts = v3p2.split_attempt_count || 0;
+  row.v3p2_2_split_kept = v3p2.split_kept_count || 0;
+  row.v3p2_2_split_rejected = v3p2.split_rejected_count || 0;
+  row.v3p2_2_fallback_splits = v3p2.fallback_split_count || 0;
+  row.v3p2_2_split_types = v3p2.split_type_counts || null;
 
   return row;
 }

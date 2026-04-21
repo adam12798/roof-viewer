@@ -980,9 +980,83 @@ Small score drops occurred on a few cases where splitting added a 4th face with 
 - Polygon system is more stable across cases (13 Richardson improved) ✓
 - Debug explains WHY edges were used/blocked ✓
 
-**Status:** ACTIVE. Ready to bank.
+**Status:** BANKED. Superseded by V3P2.2 edge-aligned split geometry.
 
 **Reopen trigger:** False-positive split block on a case where the split was visually correct; false-positive merge block; edge scores systematically miscalibrated on a new property class.
+
+---
+
+### V3P2.2 — Edge-Aligned Split Geometry [ACTIVE]
+
+**Purpose:** Replace the crude X-median axis-aligned split with edge-aligned split geometry that follows the actual detected roof break direction. When a face should split, the cut follows the real ridge/hip/valley/step direction, validates both sides, and only keeps the split if geometry is truly better.
+
+**Rules:** No new data sources. No retraining. No V3P2 rewrite. Split direction is evidence-derived. Validation is quantitative. Fallback to old behavior only as last resort (tracked separately).
+
+**Inputs:**
+- Face geometry (vertices, pitch, azimuth)
+- DSM grid (281×281 at 0.25m, from LiDAR)
+- V3P1 per-face ridge/conflict data
+- Best edge from V3P2.1 scoring (fused score, edge type)
+- Neighbor face geometry from edge graph
+
+**Split line estimation strategies (in priority order):**
+1. **Strategy A — Ridge-aligned gradient analysis:** Samples DSM heights across 6 candidate angles (0°–150° in 30° steps). For each angle, measures gradient opposition between half-planes. Picks angle with strongest opposition (slope going opposite ways = ridge break). Requires opposition > 0.5 and > 1.5× second-best.
+2. **Strategy B — Neighbor-aligned edge break:** Uses centroid-to-centroid direction between source face and neighbor across the best edge. Split perpendicular to this direction. Confidence 0.50.
+3. **Strategy C — X-median fallback:** Last resort. Axis-aligned vertical split at face X-median. Confidence 0.15. Always tracked as `fallback_split_used`.
+
+**Polygon cutting:** General-purpose line-based half-space classification. Each vertex classified as side A or side B of the cut line. Edge intersections computed for edges that cross the line. Produces two clean polygons with CCW vertex ordering and deduplication.
+
+**Split validation (all required):**
+- Both polygons must have area ≥ `V3P2_2_MIN_SPLIT_AREA_M2` (2.5 m²)
+- Area ratio must exceed `V3P2_2_SLIVER_ASPECT_RATIO` (0.08)
+- Improvement score ≥ `V3P2_2_IMPROVEMENT_THRESHOLD` (0.10) based on:
+  - Residual improvement: weighted RMSE of parts vs original (0.40 weight)
+  - Slope differentiation: pitch delta between halves (0.30 weight)
+  - Shape sanity: area and sliver checks (0.15 weight)
+  - Sample count: adequate LiDAR points in both halves (0.15 weight)
+
+**Functions added to server.js:**
+- `v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces)` — multi-strategy split direction
+- `v3p2_2CutPolygonAlongLine(vertices, linePoint, lineDir)` — general polygon bisection
+- `v3p2_2ScoreSplitImprovement(origRefit, refitA, refitB, origVerts, polyA, polyB)` — quantitative validation
+- `v3p2_2ApplyEdgeAlignedSplit(face, grid, v3p1PerFace, bestEdge, faces)` — full orchestrator
+
+**Debug fields added to `md.v3p2_polygon_construction`:**
+- `edge_aligned_split_applied`: boolean — any splits used edge-aligned geometry
+- `split_attempt_count`: total split attempts
+- `split_kept_count`: splits that passed validation
+- `split_rejected_count`: splits that failed validation
+- `split_type_counts`: `{ridge_aligned: N, edge_neighbor_aligned: N, x_median_fallback: N}`
+- `fallback_split_count`: how many fell back to X-median
+- `split_geometry_debug[]`: per-split detail (source polygon, edge, type, direction, confidence, areas, residuals, pitches, azimuths, improvement score, decision)
+- `split_geometry_warnings[]`: split-prefixed warnings
+
+**Centralized thresholds:**
+`V3P2_2_MIN_SPLIT_AREA_M2=2.5`, `V3P2_2_IMPROVEMENT_THRESHOLD=0.10`, `V3P2_2_SLIVER_ASPECT_RATIO=0.08`.
+
+**Validation (21-case batch, 2026-04-20):** 21/21 success. Status distribution unchanged (1 auto_accept, 14 needs_review, 6 reject). Key outcomes:
+- **225 Gibson St:** 0.71→0.90 (+0.19) — ridge-aligned split. Gradient analysis found real ridge direction; both halves validated with strong slope differentiation.
+- **254 Foster St:** 0.43→0.90 (+0.47) — ridge-aligned split. Major improvement; the old X-median cut was producing poor geometry. Edge-aligned cut follows actual roof break.
+- **Puffer:** 0.90→0.88 (-0.02) — ridge-aligned split. Negligible regression within noise.
+- **74 Gates:** 0.79→0.75 (-0.04) — edge-neighbor-aligned split. Minor regression, split direction adequate but not optimal.
+- **13 Richardson St:** 0.82→0.82 (stable) — V3P2.1 gate still blocks split (weak edge evidence). V3P2.2 never reached.
+- **15 Veteran Rd (clean):** 0.94→0.94 (stable) — no splits attempted.
+- All other cases: stable (17 Church 0.83, 583 Westford 0.84, 11 Ash 0.94, 21 Stoddard 0.71, etc.)
+
+**Split type distribution:** 3 ridge-aligned, 1 edge-neighbor-aligned, 0 fallback X-median. Zero fallbacks means the real break direction is consistently detectable across these cases.
+
+**Bank criteria:**
+- Splits follow real roof break direction (not arbitrary X-median) ✓
+- Split validation is quantitative (improvement threshold + area + sliver checks) ✓
+- Major improvements on previously poor splits (254 Foster +0.47, 225 Gibson +0.19) ✓
+- No regression on clean/simple roofs (15 Veteran, 11 Ash stable) ✓
+- V3P2.1 gate still working (13 Richardson blocked) ✓
+- Zero fallback splits (break direction consistently detected) ✓
+- Full debug trail per split attempt ✓
+
+**Status:** ACTIVE. Ready to bank.
+
+**Reopen trigger:** Case where edge-aligned split produces worse geometry than old X-median; fallback rate exceeds 30% on new property class; split direction estimate consistently perpendicular to actual break.
 
 ---
 

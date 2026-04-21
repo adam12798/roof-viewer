@@ -27381,36 +27381,240 @@ function v3p2BuildEdgeGraph(faces) {
   return { edges, adjacency };
 }
 
-// Split a face along the X-median axis. Produces two 4-vertex sub-polygons.
-// Returns [polyLo, polyHi] or null if the cut cannot be performed.
-function v3p2SplitFaceAlongRidge(face) {
+// ── V3P2.2: Edge-Aligned Split Geometry ──────────────────────────────────────
+// Replaces crude X-median splits with geometry that follows real break direction.
+
+const V3P2_2_MIN_SPLIT_AREA_M2 = 2.5;
+const V3P2_2_IMPROVEMENT_THRESHOLD = 0.10;
+const V3P2_2_SLIVER_ASPECT_RATIO = 0.08;
+
+function v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces) {
+  // Returns { direction: {dx, dz}, point: {x, z}, type, confidence, fallback }
+  // direction is the unit vector ALONG the split line (not perpendicular to it).
   const verts = face.vertices || [];
-  if (verts.length !== 4) return null;
-  // Determine X-median of the footprint.
-  const xs = verts.map(v => v.x).sort((a, b) => a - b);
-  const xMed = (xs[1] + xs[2]) / 2;
-  // Find where x = xMed intersects each polygon edge.
-  const lo = [], hi = [];
-  for (let i = 0; i < verts.length; i++) {
-    const a = verts[i];
-    const b = verts[(i + 1) % verts.length];
-    if (a.x <= xMed) lo.push({ x: a.x, z: a.z });
-    if (a.x >= xMed) hi.push({ x: a.x, z: a.z });
-    const crosses = (a.x < xMed && b.x > xMed) || (a.x > xMed && b.x < xMed);
-    if (crosses) {
-      const t = (xMed - a.x) / (b.x - a.x);
-      const zCut = a.z + t * (b.z - a.z);
-      lo.push({ x: xMed, z: zCut });
-      hi.push({ x: xMed, z: zCut });
+  const centroid = v3p2PolygonCentroid(verts);
+  let result = null;
+
+  // Strategy A: Ridge direction from half-plane gradient analysis.
+  // When we have a ridge conflict, the ridge runs perpendicular to the
+  // bisector of the two opposing downslope vectors.
+  if (grid && verts.length >= 3) {
+    const samples = v3p1CollectFootprintSamples(grid, verts);
+    if (samples.length >= 24) {
+      // Split samples at centroid along multiple axes; find the axis
+      // that maximizes slope opposition (= the ridge direction).
+      let bestDot = 1.0, bestDir = null;
+      const angles = [0, 30, 60, 90, 120, 150]; // test 6 candidate split directions (degrees)
+      for (const angDeg of angles) {
+        const rad = angDeg * Math.PI / 180;
+        const nx = Math.cos(rad), nz = Math.sin(rad);
+        // Split perpendicular to this direction
+        const sideA = [], sideB = [];
+        for (const s of samples) {
+          const proj = (s.x - centroid.x) * nx + (s.z - centroid.z) * nz;
+          if (proj <= 0) sideA.push(s);
+          else sideB.push(s);
+        }
+        if (sideA.length < 12 || sideB.length < 12) continue;
+        const fitA = v3p1FitLocalPlane(sideA);
+        const fitB = v3p1FitLocalPlane(sideB);
+        if (!fitA || !fitB) continue;
+        // Downslope vectors
+        const dsAx = -fitA.a, dsAz = -fitA.b;
+        const dsBx = -fitB.a, dsBz = -fitB.b;
+        const magA = Math.hypot(dsAx, dsAz) || 1e-9;
+        const magB = Math.hypot(dsBx, dsBz) || 1e-9;
+        const dot = (dsAx * dsBx + dsAz * dsBz) / (magA * magB);
+        if (dot < bestDot) {
+          bestDot = dot;
+          // The split line runs ALONG the tested angle direction
+          // (perpendicular to the separation normal nx, nz)
+          bestDir = { dx: -nz, dz: nx }; // 90° rotation of the separation normal
+        }
+      }
+      if (bestDot < -0.20 && bestDir) {
+        const conf = Math.min(1.0, (-bestDot - 0.20) / 0.60);
+        result = { direction: bestDir, point: centroid, type: 'ridge_aligned', confidence: _r2(conf), fallback: false };
+      }
     }
   }
-  if (lo.length < 3 || hi.length < 3) return null;
-  // Ensure counter-clockwise orientation by sorting around centroid.
-  function sortCcw(poly) {
-    const c = v3p2PolygonCentroid(poly);
-    return poly.slice().sort((p, q) => Math.atan2(p.z - c.z, p.x - c.x) - Math.atan2(q.z - c.z, q.x - c.x));
+
+  // Strategy B: Use neighboring face geometry to infer break direction.
+  // The edge between this face and its neighbor implies a break running
+  // along the line connecting the closest points of the two polygons.
+  if (!result && bestEdge && bestEdge.face_b_idx >= 0) {
+    const otherIdx = bestEdge.face_a_idx === face._origIdx ? bestEdge.face_b_idx : bestEdge.face_a_idx;
+    const otherFace = faces[otherIdx];
+    if (otherFace && otherFace.vertices && otherFace.vertices.length >= 3) {
+      const otherC = v3p2PolygonCentroid(otherFace.vertices);
+      // Direction from this centroid to neighbor centroid = perpendicular to break
+      const toNeighborX = otherC.x - centroid.x;
+      const toNeighborZ = otherC.z - centroid.z;
+      const mag = Math.hypot(toNeighborX, toNeighborZ) || 1e-9;
+      // Split line is perpendicular to the centroid-to-centroid direction
+      const splitDx = -toNeighborZ / mag;
+      const splitDz = toNeighborX / mag;
+
+      let type = 'edge_neighbor_aligned';
+      if (bestEdge.edge_type_guess === 'hip_candidate') type = 'hip_aligned';
+      else if (bestEdge.edge_type_guess === 'valley_candidate') type = 'valley_aligned';
+      else if (bestEdge.edge_type_guess === 'step_break_candidate') type = 'step_aligned';
+      else if (bestEdge.edge_type_guess === 'ridge_candidate') type = 'ridge_aligned';
+
+      const conf = bestEdge.fused_edge_score != null ? Math.min(1.0, bestEdge.fused_edge_score) : 0.3;
+      result = { direction: { dx: splitDx, dz: splitDz }, point: centroid, type, confidence: _r2(conf), fallback: false };
+    }
   }
-  return [sortCcw(lo), sortCcw(hi)];
+
+  // Strategy C (fallback): X-median cut — only if nothing else works.
+  if (!result) {
+    result = { direction: { dx: 0, dz: 1 }, point: centroid, type: 'x_median_fallback', confidence: 0.15, fallback: true };
+  }
+
+  return result;
+}
+
+function v3p2_2CutPolygonAlongLine(vertices, linePoint, lineDir) {
+  // Cuts polygon into two halves using a line through linePoint with direction lineDir.
+  // The line normal is perpendicular to lineDir.
+  // Points with positive projection onto normal go to sideA, negative to sideB.
+  if (!vertices || vertices.length < 3) return null;
+  const nx = lineDir.dz, nz = -lineDir.dx; // normal to split line (90° CW rotation)
+  const sideA = [], sideB = [];
+  const n = vertices.length;
+
+  for (let i = 0; i < n; i++) {
+    const curr = vertices[i];
+    const next = vertices[(i + 1) % n];
+    const dCurr = (curr.x - linePoint.x) * nx + (curr.z - linePoint.z) * nz;
+    const dNext = (next.x - linePoint.x) * nx + (next.z - linePoint.z) * nz;
+
+    if (dCurr >= 0) sideA.push({ x: curr.x, z: curr.z });
+    if (dCurr <= 0) sideB.push({ x: curr.x, z: curr.z });
+
+    // Check for edge crossing
+    if ((dCurr > 0 && dNext < 0) || (dCurr < 0 && dNext > 0)) {
+      const t = dCurr / (dCurr - dNext);
+      const ix = curr.x + t * (next.x - curr.x);
+      const iz = curr.z + t * (next.z - curr.z);
+      sideA.push({ x: ix, z: iz });
+      sideB.push({ x: ix, z: iz });
+    }
+  }
+
+  if (sideA.length < 3 || sideB.length < 3) return null;
+
+  // Sort CCW and deduplicate near-coincident points
+  function cleanPoly(pts) {
+    const c = v3p2PolygonCentroid(pts);
+    const sorted = pts.slice().sort((p, q) =>
+      Math.atan2(p.z - c.z, p.x - c.x) - Math.atan2(q.z - c.z, q.x - c.x)
+    );
+    // Deduplicate points within 0.01m
+    const clean = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const dx = sorted[i].x - clean[clean.length - 1].x;
+      const dz = sorted[i].z - clean[clean.length - 1].z;
+      if (Math.hypot(dx, dz) > 0.01) clean.push(sorted[i]);
+    }
+    return clean.length >= 3 ? clean : null;
+  }
+
+  const polyA = cleanPoly(sideA);
+  const polyB = cleanPoly(sideB);
+  if (!polyA || !polyB) return null;
+
+  return [polyA, polyB];
+}
+
+function v3p2_2ScoreSplitImprovement(origRefit, refitA, refitB, origVerts, polyA, polyB) {
+  // Compare before vs after: residual improvement, slope consistency, shape sanity.
+  if (!origRefit || !refitA || !refitB) return { score: 0, reasons: ['refit_missing'] };
+  const reasons = [];
+  let score = 0;
+
+  // 1. Residual improvement: weighted average RMSE of halves vs original
+  const areaA = v3p2_1ApproxArea(polyA);
+  const areaB = v3p2_1ApproxArea(polyB);
+  const totalArea = areaA + areaB || 1;
+  const weightedPostRmse = (refitA.rmse * areaA + refitB.rmse * areaB) / totalArea;
+  const residualImprovement = (origRefit.rmse - weightedPostRmse) / Math.max(origRefit.rmse, 0.01);
+  if (residualImprovement > 0.3) { score += 0.40; reasons.push('strong_residual_improvement'); }
+  else if (residualImprovement > 0.1) { score += 0.25; reasons.push('moderate_residual_improvement'); }
+  else if (residualImprovement > 0) { score += 0.10; reasons.push('slight_residual_improvement'); }
+  else { score -= 0.15; reasons.push('residual_no_improvement'); }
+
+  // 2. Slope differentiation: the two halves should have different pitch/azimuth
+  const pitchDiff = Math.abs(refitA.pitch - refitB.pitch);
+  const azDiff = v3p2AngularDistance(refitA.azimuth, refitB.azimuth);
+  if (pitchDiff > 8 || azDiff > 30) { score += 0.30; reasons.push('strong_slope_differentiation'); }
+  else if (pitchDiff > 4 || azDiff > 15) { score += 0.15; reasons.push('moderate_slope_differentiation'); }
+  else { score -= 0.10; reasons.push('weak_slope_differentiation'); }
+
+  // 3. Shape sanity: reject tiny slivers
+  const minArea = Math.min(areaA, areaB);
+  const origArea = v3p2_1ApproxArea(origVerts);
+  if (minArea < V3P2_2_MIN_SPLIT_AREA_M2) { score -= 0.30; reasons.push('sliver_too_small'); }
+  else if (origArea > 0 && minArea / origArea < V3P2_2_SLIVER_ASPECT_RATIO) { score -= 0.20; reasons.push('extreme_area_ratio'); }
+  else { score += 0.10; reasons.push('shape_acceptable'); }
+
+  // 4. Sample count sanity
+  if (refitA.sample_count < V3P2_REFIT_MIN_SAMPLES || refitB.sample_count < V3P2_REFIT_MIN_SAMPLES) {
+    score -= 0.20; reasons.push('insufficient_samples_on_half');
+  }
+
+  return { score: _r2(Math.max(-1, Math.min(1, score))), reasons };
+}
+
+function v3p2_2ApplyEdgeAlignedSplit(face, grid, v3p1PerFace, bestEdge, faces) {
+  // Full edge-aligned split: estimate line, cut polygon, refit, validate.
+  // Returns { success, parts, refits, splitLine, improvement, fallbackUsed } or null.
+  const verts = face.vertices || [];
+  if (verts.length < 3) return null;
+
+  const splitLine = v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces);
+  if (!splitLine) return null;
+
+  const parts = v3p2_2CutPolygonAlongLine(verts, splitLine.point, splitLine.direction);
+  if (!parts) return null;
+
+  // Refit planes on both sides
+  const refitA = grid ? v3p2RefitPlaneInPolygon(parts[0], grid) : null;
+  const refitB = grid ? v3p2RefitPlaneInPolygon(parts[1], grid) : null;
+  const origRefit = grid ? v3p2RefitPlaneInPolygon(verts, grid) : null;
+
+  // Basic validity check
+  if (!refitA || !refitB) return { success: false, reason: 'refit_failed', splitLine, fallbackUsed: splitLine.fallback };
+  if (refitA.rmse > V3P2_REFIT_MAX_RMSE_M || refitB.rmse > V3P2_REFIT_MAX_RMSE_M) {
+    return { success: false, reason: 'refit_rmse_too_high', splitLine, fallbackUsed: splitLine.fallback };
+  }
+
+  // Score improvement
+  const improvement = v3p2_2ScoreSplitImprovement(origRefit, refitA, refitB, verts, parts[0], parts[1]);
+
+  // Decision: keep split only if improvement is meaningful
+  const keep = improvement.score >= V3P2_2_IMPROVEMENT_THRESHOLD;
+
+  return {
+    success: keep,
+    reason: keep ? 'split_improved_geometry' : 'split_improvement_insufficient',
+    parts,
+    refits: [refitA, refitB],
+    splitLine,
+    improvement,
+    origRefit,
+    fallbackUsed: splitLine.fallback,
+  };
+}
+
+// Legacy fallback: X-median axis-aligned split (kept for explicit fallback path).
+function v3p2SplitFaceAlongRidge(face) {
+  const verts = face.vertices || [];
+  if (verts.length < 3) return null;
+  const centroid = v3p2PolygonCentroid(verts);
+  // X-median direction: split line runs along Z axis at X center.
+  const parts = v3p2_2CutPolygonAlongLine(verts, centroid, { dx: 0, dz: 1 });
+  return parts;
 }
 
 function v3p2MergePair(faceA, faceB) {
@@ -27605,6 +27809,12 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   const edgesUsedForSplits = [];
   const edgesBlockingMerges = [];
   const edgesSuppressed = [];
+  let splitAttemptCount = 0;
+  let splitKeptCount = 0;
+  let splitRejectedCount = 0;
+  const splitTypeCounts = {};
+  let fallbackSplitCount = 0;
+  const splitGeometryDebug = [];
 
   // 1) Apply splits for faces flagged by V3P1 with strong ridge_dot.
   //    V3P2.1 gate: only split when edge evidence supports it (fused HIGH
@@ -27646,51 +27856,104 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       if (scoreEntry) scoreEntry.decision_role = 'split';
     }
 
+    // V3P2.2: Edge-aligned split geometry — use real break direction.
     const origFace = faces[poly.source_face_indices[0]];
-    const parts = v3p2SplitFaceAlongRidge(origFace);
-    if (!parts) {
+    splitAttemptCount++;
+    const splitResult = v3p2_2ApplyEdgeAlignedSplit(origFace, grid, v3p1PerFace, bestEdgeForSplit, faces);
+
+    if (!splitResult) {
       poly.validation_reasons.push('split_attempted_but_failed');
       warnings.push('split_failed_face_' + poly.polygon_idx);
+      splitRejectedCount++;
+      splitGeometryDebug.push({
+        source_polygon_idx: poly.polygon_idx,
+        split_edge_idx: bestEdgeForSplit ? bestEdgeForSplit.edge_idx : null,
+        split_type_guess: null,
+        split_line_direction: null,
+        split_line_confidence: null,
+        fallback_split_used: false,
+        pre_split_area: _r2(v3p2_1ApproxArea(origFace.vertices || [])),
+        pre_split_residual: null,
+        post_split_polygon_count: 0,
+        split_improvement_score: null,
+        split_validation_decision: 'reject',
+        split_rejection_reasons: ['geometry_cut_failed'],
+      });
       continue;
     }
-    // Refit each half; ensure both improve or at least don't explode.
-    const origRefit = grid ? v3p2RefitPlaneInPolygon(origFace.vertices, grid) : null;
-    const loRefit = grid ? v3p2RefitPlaneInPolygon(parts[0], grid) : null;
-    const hiRefit = grid ? v3p2RefitPlaneInPolygon(parts[1], grid) : null;
-    const origRmse = origRefit ? origRefit.rmse : null;
-    const loBad = !loRefit || loRefit.rmse > V3P2_REFIT_MAX_RMSE_M;
-    const hiBad = !hiRefit || hiRefit.rmse > V3P2_REFIT_MAX_RMSE_M;
-    if (loBad || hiBad) {
-      poly.validation_reasons.push('split_refit_weak_fallback');
+    if (!splitResult.success) {
+      poly.validation_reasons.push('split_rejected_' + splitResult.reason);
+      if (splitResult.fallbackUsed) fallbackSplitCount++;
+      splitRejectedCount++;
+      splitGeometryDebug.push({
+        source_polygon_idx: poly.polygon_idx,
+        split_edge_idx: bestEdgeForSplit ? bestEdgeForSplit.edge_idx : null,
+        split_type_guess: splitResult.splitLine ? splitResult.splitLine.type : null,
+        split_line_direction: splitResult.splitLine ? splitResult.splitLine.direction : null,
+        split_line_confidence: splitResult.splitLine ? splitResult.splitLine.confidence : null,
+        fallback_split_used: splitResult.fallbackUsed || false,
+        pre_split_area: _r2(v3p2_1ApproxArea(origFace.vertices || [])),
+        pre_split_residual: splitResult.origRefit ? splitResult.origRefit.rmse : null,
+        post_split_polygon_count: 0,
+        split_improvement_score: splitResult.improvement ? splitResult.improvement.score : null,
+        split_validation_decision: 'reject',
+        split_rejection_reasons: splitResult.improvement ? splitResult.improvement.reasons : [splitResult.reason],
+      });
       fallbackCount++;
       continue;
     }
-    if (origRmse != null && (loRefit.rmse > origRmse * V3P2_FALLBACK_REFIT_MULT || hiRefit.rmse > origRmse * V3P2_FALLBACK_REFIT_MULT)) {
-      poly.validation_reasons.push('split_refit_worse_than_orig_fallback');
-      fallbackCount++;
-      continue;
+
+    // Split succeeded — record and apply.
+    const parts = splitResult.parts;
+    const refitA = splitResult.refits[0];
+    const refitB = splitResult.refits[1];
+    if (splitResult.fallbackUsed) fallbackSplitCount++;
+    splitKeptCount++;
+    if (splitResult.splitLine) {
+      const t = splitResult.splitLine.type;
+      splitTypeCounts[t] = (splitTypeCounts[t] || 0) + 1;
     }
+
+    splitGeometryDebug.push({
+      source_polygon_idx: poly.polygon_idx,
+      split_edge_idx: bestEdgeForSplit ? bestEdgeForSplit.edge_idx : null,
+      split_type_guess: splitResult.splitLine ? splitResult.splitLine.type : null,
+      split_line_direction: splitResult.splitLine ? splitResult.splitLine.direction : null,
+      split_line_confidence: splitResult.splitLine ? splitResult.splitLine.confidence : null,
+      fallback_split_used: splitResult.fallbackUsed || false,
+      pre_split_area: _r2(v3p2_1ApproxArea(origFace.vertices || [])),
+      pre_split_residual: splitResult.origRefit ? splitResult.origRefit.rmse : null,
+      post_split_polygon_count: 2,
+      post_split_areas: [_r2(v3p2_1ApproxArea(parts[0])), _r2(v3p2_1ApproxArea(parts[1]))],
+      post_split_residuals: [refitA.rmse, refitB.rmse],
+      post_split_pitches: [refitA.pitch, refitB.pitch],
+      post_split_azimuths: [refitA.azimuth, refitB.azimuth],
+      split_improvement_score: splitResult.improvement.score,
+      split_validation_decision: 'keep',
+      split_rejection_reasons: [],
+    });
+
     const polyLo = {
       polygon_idx: polygons.length + toReplace.length,
       source_face_indices: poly.source_face_indices.slice(),
       vertices: parts[0],
-      pitch: loRefit.pitch, azimuth: loRefit.azimuth, height: poly.height,
+      pitch: refitA.pitch, azimuth: refitA.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
-      fit_rmse: loRefit.rmse, fit_sample_count: loRefit.sample_count,
+      fit_rmse: refitA.rmse, fit_sample_count: refitA.sample_count,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_a',
-      validation_reasons: ['split_from_face_' + poly.polygon_idx],
+      validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
     };
     const polyHi = {
       polygon_idx: polygons.length + toReplace.length + 1,
       source_face_indices: poly.source_face_indices.slice(),
       vertices: parts[1],
-      pitch: hiRefit.pitch, azimuth: hiRefit.azimuth, height: poly.height,
+      pitch: refitB.pitch, azimuth: refitB.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
-      fit_rmse: hiRefit.rmse, fit_sample_count: hiRefit.sample_count,
+      fit_rmse: refitB.rmse, fit_sample_count: refitB.sample_count,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_b',
-      validation_reasons: ['split_from_face_' + poly.polygon_idx],
+      validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
     };
     toReplace.push({ idx: i, replacements: [polyLo, polyHi] });
     splitCount++;
@@ -27894,6 +28157,15 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     edges_used_for_splits: edgesUsedForSplits,
     edges_blocking_merges: edgesBlockingMerges,
     edges_suppressed: edgesSuppressed,
+    // V3P2.2: edge-aligned split geometry
+    edge_aligned_split_applied: splitKeptCount > 0,
+    split_attempt_count: splitAttemptCount,
+    split_kept_count: splitKeptCount,
+    split_rejected_count: splitRejectedCount,
+    split_type_counts: splitTypeCounts,
+    fallback_split_count: fallbackSplitCount,
+    split_geometry_debug: splitGeometryDebug,
+    split_geometry_warnings: warnings.filter(w => w.startsWith('split_')),
     edges,
     polygons: finalPolygons,
   };
