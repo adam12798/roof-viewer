@@ -2238,11 +2238,37 @@ Key change: 13 Richardson St split correctly blocked by V3P2.1 — V3P1 flagged 
 
 **Net impact:** +0.66 total score improvement across target cases. Two previously poor splits (254 Foster, 225 Gibson) now produce correct geometry. Minor regressions on Puffer/74 Gates within tolerance (−0.06 combined).
 
-**KEEP (ACTIVE, ready to bank).** Edge-aligned splits demonstrably better than axis-aligned. Zero fallbacks. Major wins on the hardest cases. V3P2.1 gate still intact (13 Richardson protected). No clean-roof regressions.
+**KEEP (BANKED).** Edge-aligned splits demonstrably better than axis-aligned. Zero fallbacks. Major wins on the hardest cases. Superseded by §26 (V3P3).
 
 ---
 
-## 26. Related resources (renumbered from §25)
+## 26. V3P3 — Edge Relationship + Global Roof Constraint System
+
+**Date:** 2026-04-20
+**Scope:** Move from locally-correct polygons to globally-consistent roof system. Enforce real-world geometry relationships between planes and edges.
+
+**What changed:**
+- Edge classification upgrade: `_candidate` guesses → definitive types (ridge, valley, hip, eave, step, seam, uncertain) using polygon-level geometry + fused scores + downslope vector analysis
+- Plane-to-plane relationship validation: detects and reclassifies impossible configurations (ridge with same-direction slopes, valley with diverging slopes, etc.)
+- Internal plane consistency: quadrant-based slope variance check flags multi-direction polygons
+- Global consistency pass: floating plane detection, ground rejection reinforcement, disconnected subgraph detection with safety guard
+
+**Evidence (21-case replay, 2026-04-20):**
+
+| Case | Before | After | Delta | Suppressions |
+|------|--------|-------|-------|---:|
+| 21 Stoddard | 0.71 | 0.73 | +0.02 | 1 (ground) |
+| All other 14 cases | — | — | 0.00 | 0 |
+
+Conservative by design: 1 suppression across 15 active-face cases. Zero regressions.
+
+**Edge type distribution (across 15 active cases):** ridge:1, valley:9, hip:1, eave:2, seam:1, uncertain:29. Edge classification correctly identifies structural relationships — valleys dominate on multi-plane roofs, ridge detected at split boundaries, eaves where flat meets pitched.
+
+**KEEP (ACTIVE, ready to bank).** System correctly classifies edge relationships and enforces consistency without over-acting. Conservative: flags > changes. One genuine ground suppression improved 21 Stoddard. Zero regressions.
+
+---
+
+## 27. Related resources (renumbered from §26)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

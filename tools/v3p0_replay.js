@@ -256,6 +256,16 @@ function normalize_replay_result(r) {
     v3p2_2_split_rejected: 0,
     v3p2_2_fallback_splits: 0,
     v3p2_2_split_types: null,
+    // V3P3: edge relationship + global consistency
+    v3p3_applied: false,
+    v3p3_edge_upgrades: 0,
+    v3p3_edge_types: null,
+    v3p3_violations: 0,
+    v3p3_internal_flagged: 0,
+    v3p3_suppressions: 0,
+    v3p3_ground_suppressed: 0,
+    v3p3_floating: 0,
+    v3p3_disconnected: 0,
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -393,6 +403,17 @@ function normalize_replay_result(r) {
   row.v3p2_2_split_rejected = v3p2.split_rejected_count || 0;
   row.v3p2_2_fallback_splits = v3p2.fallback_split_count || 0;
   row.v3p2_2_split_types = v3p2.split_type_counts || null;
+  // V3P3 edge relationship + global consistency fields
+  const v3p3 = v3p2.v3p3_relationships || {};
+  row.v3p3_applied = !!v3p3.v3p3_applied;
+  row.v3p3_edge_upgrades = v3p3.edge_classification ? v3p3.edge_classification.upgraded_count : 0;
+  row.v3p3_edge_types = v3p3.edge_classification ? v3p3.edge_classification.type_counts : null;
+  row.v3p3_violations = v3p3.relationship_validation ? v3p3.relationship_validation.violation_count : 0;
+  row.v3p3_internal_flagged = v3p3.internal_consistency ? v3p3.internal_consistency.flagged_count : 0;
+  row.v3p3_suppressions = v3p3.global_consistency ? v3p3.global_consistency.suppressions_applied : 0;
+  row.v3p3_ground_suppressed = v3p3.global_consistency ? v3p3.global_consistency.ground_suppressed_count : 0;
+  row.v3p3_floating = v3p3.global_consistency ? v3p3.global_consistency.floating_count : 0;
+  row.v3p3_disconnected = v3p3.global_consistency ? v3p3.global_consistency.disconnected_count : 0;
 
   return row;
 }

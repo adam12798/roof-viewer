@@ -1054,9 +1054,118 @@ Small score drops occurred on a few cases where splitting added a 4th face with 
 - Zero fallback splits (break direction consistently detected) ✓
 - Full debug trail per split attempt ✓
 
-**Status:** ACTIVE. Ready to bank.
+**Status:** BANKED. Edge-aligned splits validated and stable.
 
 **Reopen trigger:** Case where edge-aligned split produces worse geometry than old X-median; fallback rate exceeds 30% on new property class; split direction estimate consistently perpendicular to actual break.
+
+---
+
+### V3P3 — Edge Relationship + Global Roof Constraint System [ACTIVE]
+
+**Purpose:** Move from locally-correct polygons to a globally-consistent roof system where planes and edges obey real-world roof geometry relationships. Enforces structure across the entire roof.
+
+**Rules:** Standard residential roofs (99% case). Conservative: prefer minimal changes. No retraining. No V3P2 rewrite. No overengineering.
+
+**Inputs:**
+- `finalPolygons` (post-V3P2/V3P2.1/V3P2.2 — splits, merges, refits complete)
+- `edges` (with V3P2.1 fused scores and V3P2 initial type guesses)
+- `adjacency` (face-level, remapped to polygon-level at runtime)
+- `grid` (DSM 281×281 at 0.25m)
+
+**1. Edge Classification Upgrade — `v3p3ClassifyEdgeTypes`**
+Refines `edge_type_guess` (which uses `_candidate` suffixes) into definitive types using polygon-level pitch/azimuth, fused edge scores, and downslope vector analysis:
+- **ridge**: opposing azimuths (azOpp < 30°), both pitched > 8°, diverging downslopes, fused ≥ 0.35
+- **valley**: converging slopes (both downslopes point toward boundary), high az diff (> 90°), fused ≥ 0.35
+- **hip**: oblique azimuths (35°–145°), convex boundary (downslopes diverge), fused ≥ 0.35
+- **eave**: one polygon flat (< 8°), other pitched (> 15°)
+- **step**: height offset ≥ 0.3m, similar slopes (pitch delta < 10, az diff < 25)
+- **seam**: very similar planes (pitch delta < 4°, az diff < 12°) with weak boundary
+- **uncertain**: no clear classification — kept as-is, never forced
+
+Stores `edge.edge_type_v3p3` (definitive) alongside `edge.edge_type_guess` (backward compat).
+
+**2. Plane-to-Plane Relationship Validation — `v3p3ValidatePlaneRelationships`**
+Validates each classified edge's geometry against its type:
+- Ridge with same-direction slopes → reclassify to seam
+- Valley with diverging slopes → reclassify to hip
+- Hip with concave boundary → reclassify to valley
+- Step with no actual height diff → reclassify to seam
+- Seam with divergent planes (pitch > 6° or az > 20°) → reclassify to uncertain
+
+Seams between truly similar planes are flagged as merge candidates.
+
+**3. Internal Plane Consistency — `v3p3EnforceInternalConsistency`**
+Per polygon: collects DSM samples, divides into 4 quadrants around centroid, fits local plane per quadrant. Flags polygon if:
+- Quadrant azimuth variance > 20° → `multi_slope_direction`
+- Quadrant pitch deviates > 15° from polygon overall → `internal_pitch_variance`
+
+Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`, `v3p3_internal_pitch_variance`) but does NOT suppress or split. Skips polygons already split by V3P2.2 and small polygons (< 5 m²).
+
+**4. Global Consistency Pass — `v3p3RunGlobalConsistencyPass`**
+- **Floating plane detection**: Polygons with zero edges (truly isolated) may be suppressed if flat + small (< 8° + < 5 m²) or tiny fragment (< 2 m²). Polygons with edges but no structural types get `v3p3_no_structural_edges` warning (not suppressed).
+- **Ground rejection reinforcement**: Flat polygons (< 5°) with NO neighbors at all AND area > 10m² → suppress as ground. Very flat (< 3°) with no neighbors AND area > 3m² → suppress.
+- **Disconnected subgraph**: BFS from largest polygon through ALL edges (not just structural). Truly disconnected polygons: keep if pitched + large (> 12° + > 8 m²), suppress if flat + small (< 5° + < 5 m²), warn otherwise.
+- **Safety guard**: Never suppresses ALL polygons — restores largest if all would be killed.
+
+**Functions added to server.js:**
+- `v3p3BuildPolyAdjacency(edges, finalPolygons)` — maps face-level edges to polygon-level adjacency
+- `v3p3ClassifyEdgeTypes(edges, finalPolygons, faces, grid)` — definitive edge classification
+- `v3p3ValidatePlaneRelationships(edges, finalPolygons, faces)` — validates and reclassifies
+- `v3p3EnforceInternalConsistency(finalPolygons, grid)` — quadrant-based slope variance check
+- `v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid)` — floating/ground/disconnected detection
+
+**Debug fields added to `md.v3p2_polygon_construction.v3p3_relationships`:**
+- `v3p3_applied`: boolean
+- `edge_classification`: `{upgraded_count, type_counts, per_edge[]}`
+- `relationship_validation`: `{violation_count, violations[], merge_candidates_count}`
+- `internal_consistency`: `{checked_count, flagged_count, flagged_polygons[]}`
+- `global_consistency`: `{floating_count, ground_suppressed_count, disconnected_count, suppressions_applied}`
+- `thresholds`: all V3P3 threshold values
+
+**Centralized thresholds:**
+`V3P3_RIDGE_AZ_OPP_MAX_DEG=30`, `V3P3_VALLEY_CONVERGENCE_MIN=0.15`, `V3P3_HIP_AZ_OBLIQUE_MIN_DEG=35`, `V3P3_HIP_AZ_OBLIQUE_MAX_DEG=145`, `V3P3_STEP_HEIGHT_DELTA_MIN_M=0.3`, `V3P3_SEAM_PITCH_TOL_DEG=4.0`, `V3P3_SEAM_AZIMUTH_TOL_DEG=12.0`, `V3P3_FLAT_PITCH_DEG=8.0`, `V3P3_GROUND_REJECT_PITCH_DEG=10.0`, `V3P3_INTERNAL_QUADRANT_MIN_SAMPLES=6`, `V3P3_INTERNAL_SLOPE_VARIANCE_DEG=20`, `V3P3_EDGE_UPGRADE_MIN_FUSED=0.35`.
+
+**Validation (21-case batch, 2026-04-20):** 21/21 success. Status distribution unchanged (1 auto_accept, 14 needs_review, 6 reject).
+
+| Case | V3P2.2 Score | V3P3 Score | Delta | Faces | Suppressions | Edge Types |
+|------|---:|---:|---:|---:|---:|---|
+| 15 Veteran Rd (clean) | 0.94 | 0.94 | 0.00 | 3 | 0 | valley:1 uncertain:1 |
+| 726 School St | 0.48 | 0.48 | 0.00 | 2 | 0 | uncertain:1 |
+| 20 Meadow Dr | 0.20 | 0.20 | 0.00 | 2 | 0 | — |
+| 225 Gibson St | 0.90 | 0.90 | 0.00 | 6 | 0 | valley:3 uncertain:2 |
+| 175 Warwick | 0.71 | 0.71 | 0.00 | 3 | 0 | seam:1 uncertain:5 |
+| Lawrence | 0.27 | 0.27 | 0.00 | 3 | 0 | uncertain:1 |
+| 583 Westford St | 0.84 | 0.84 | 0.00 | 3 | 0 | uncertain:2 |
+| 13 Richardson St | 0.82 | 0.82 | 0.00 | 4 | 0 | eave:2 uncertain:1 |
+| 11 Ash Road | 0.94 | 0.94 | 0.00 | 4 | 0 | valley:3 uncertain:2 |
+| 254 Foster St | 0.90 | 0.90 | 0.00 | 4 | 0 | ridge:1 uncertain:1 |
+| 21 Stoddard | 0.71 | 0.73 | +0.02 | 4 | 1 | uncertain:6 |
+| 17 Church Ave | 0.83 | 0.83 | 0.00 | 4 | 0 | valley:1 hip:1 uncertain:3 |
+| Puffer | 0.88 | 0.88 | 0.00 | 3 | 0 | valley:1 |
+| 573 Westford St | 0.79 | 0.79 | 0.00 | 3 | 0 | uncertain:2 |
+| 74 Gates | 0.75 | 0.75 | 0.00 | 4 | 0 | uncertain:1 |
+
+**Key observations:**
+- **Zero regressions** across all 15 active-face cases
+- **21 Stoddard: +0.02** — 1 ground plane suppressed (flat disconnected polygon removed → cleaner roof story)
+- **254 Foster: ridge:1** — V3P3 correctly classified the edge between split halves as ridge
+- **225 Gibson: valley:3** — complex hip/valley roof correctly identified
+- **17 Church: valley:1 hip:1** — multi-section roof relationships correctly classified
+- **13 Richardson: eave:2** — flat-meets-pitched edges correctly classified
+- **175 Warwick: seam:1** — near-identical planes correctly identified as seam candidate
+
+**Bank criteria:**
+- Edge classification produces physically correct types (ridge, valley, hip, eave, step, seam) ✓
+- No false suppressions (573 Westford preserved, 13 Richardson faces preserved) ✓
+- Only true ground/disconnected fragments suppressed (21 Stoddard improved) ✓
+- Internal consistency flags multi-slope polygons for review without over-acting ✓
+- Zero regressions on clean roofs (15 Veteran, 11 Ash stable at 0.94) ✓
+- Conservative by design: informational flags >> structural changes ✓
+- Full debug trail explains every classification, validation, and consistency check ✓
+
+**Status:** ACTIVE. Ready to bank.
+
+**Reopen trigger:** False-positive suppression that removes a valid roof face; edge classification systematically wrong for a new property class; internal consistency flags triggering on clean single-plane roofs; ground rejection removing pitched roof faces.
 
 ---
 

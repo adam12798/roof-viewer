@@ -27388,6 +27388,20 @@ const V3P2_2_MIN_SPLIT_AREA_M2 = 2.5;
 const V3P2_2_IMPROVEMENT_THRESHOLD = 0.10;
 const V3P2_2_SLIVER_ASPECT_RATIO = 0.08;
 
+// ── V3P3: Edge Relationship + Global Roof Constraint System ─────────────────
+const V3P3_RIDGE_AZ_OPP_MAX_DEG = 30;
+const V3P3_VALLEY_CONVERGENCE_MIN = 0.15;
+const V3P3_HIP_AZ_OBLIQUE_MIN_DEG = 35;
+const V3P3_HIP_AZ_OBLIQUE_MAX_DEG = 145;
+const V3P3_STEP_HEIGHT_DELTA_MIN_M = 0.3;
+const V3P3_SEAM_PITCH_TOL_DEG = 4.0;
+const V3P3_SEAM_AZIMUTH_TOL_DEG = 12.0;
+const V3P3_FLAT_PITCH_DEG = 8.0;
+const V3P3_GROUND_REJECT_PITCH_DEG = 10.0;
+const V3P3_INTERNAL_QUADRANT_MIN_SAMPLES = 6;
+const V3P3_INTERNAL_SLOPE_VARIANCE_DEG = 20;
+const V3P3_EDGE_UPGRADE_MIN_FUSED = 0.35;
+
 function v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces) {
   // Returns { direction: {dx, dz}, point: {x, z}, type, confidence, fallback }
   // direction is the unit vector ALONG the split line (not perpendicular to it).
@@ -27675,6 +27689,413 @@ function v3p2EnforceSharedBoundaries(polygons) {
     }
   }
   return snaps;
+}
+
+// ── V3P3: Edge Relationship + Global Roof Constraint System ─────────────────
+// Moves from locally-correct polygons to globally-consistent roof system.
+
+function v3p3BuildPolyAdjacency(edges, finalPolygons) {
+  const faceToPolyIdx = new Map();
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    for (const fi of finalPolygons[pi].source_face_indices) faceToPolyIdx.set(fi, pi);
+  }
+  const polyAdj = finalPolygons.map(() => []);
+  for (const edge of edges) {
+    if (edge.face_b_idx < 0) continue;
+    const pA = faceToPolyIdx.get(edge.face_a_idx);
+    const pB = faceToPolyIdx.get(edge.face_b_idx);
+    if (pA == null || pB == null || pA === pB) continue;
+    polyAdj[pA].push({ edge_idx: edge.edge_idx, other_poly_idx: pB });
+    polyAdj[pB].push({ edge_idx: edge.edge_idx, other_poly_idx: pA });
+  }
+  return { polyAdj, faceToPolyIdx };
+}
+
+function v3p3ClassifyEdgeTypes(edges, finalPolygons, faces, grid) {
+  const { polyAdj, faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, finalPolygons);
+  const perEdge = [];
+  let upgradedCount = 0;
+  const typeCounts = { ridge: 0, valley: 0, hip: 0, eave: 0, step: 0, seam: 0, uncertain: 0 };
+
+  for (const edge of edges) {
+    if (edge.face_b_idx < 0) { edge.edge_type_v3p3 = 'outer_boundary'; continue; }
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) {
+      edge.edge_type_v3p3 = 'seam';
+      typeCounts.seam++;
+      continue;
+    }
+    const polyA = finalPolygons[pAIdx];
+    const polyB = finalPolygons[pBIdx];
+    const pitchA = polyA.pitch || polyA.original_pitch || 0;
+    const pitchB = polyB.pitch || polyB.original_pitch || 0;
+    const azA = polyA.azimuth || polyA.original_azimuth || 0;
+    const azB = polyB.azimuth || polyB.original_azimuth || 0;
+    const pitchDelta = Math.abs(pitchA - pitchB);
+    const azOpp = v3p2AngularDistance(azA + 180, azB);
+    const azDiff = v3p2AngularDistance(azA, azB);
+    const heightA = polyA.height || 0;
+    const heightB = polyB.height || 0;
+    const heightDelta = Math.abs(heightA - heightB);
+
+    const cA = v3p2PolygonCentroid(polyA.vertices || []);
+    const cB = v3p2PolygonCentroid(polyB.vertices || []);
+    const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+    const dsA = { x: Math.sin(azA * Math.PI / 180), z: -Math.cos(azA * Math.PI / 180) };
+    const dsB = { x: Math.sin(azB * Math.PI / 180), z: -Math.cos(azB * Math.PI / 180) };
+    const vA = { x: midX - cA.x, z: midZ - cA.z };
+    const vB = { x: midX - cB.x, z: midZ - cB.z };
+    const magA = Math.hypot(vA.x, vA.z) || 1e-9;
+    const magB = Math.hypot(vB.x, vB.z) || 1e-9;
+    const dotA = (vA.x * dsA.x + vA.z * dsA.z) / magA;
+    const dotB = (vB.x * dsB.x + vB.z * dsB.z) / magB;
+
+    const fused = edge.fused_edge_score;
+    const hasMinFused = fused != null && fused >= V3P3_EDGE_UPGRADE_MIN_FUSED;
+    const oldType = edge.edge_type_guess;
+    let newType = 'uncertain';
+    let reason = '';
+
+    if (pitchDelta < V3P3_SEAM_PITCH_TOL_DEG && azDiff < V3P3_SEAM_AZIMUTH_TOL_DEG &&
+        (!hasMinFused || fused < V3P2_1_MEDIUM_CONFIDENCE_THRESHOLD)) {
+      newType = 'seam';
+      reason = 'low_pitch_az_diff_weak_boundary';
+    } else if (azOpp < V3P3_RIDGE_AZ_OPP_MAX_DEG && pitchDelta < 12 &&
+               pitchA > V3P3_FLAT_PITCH_DEG && pitchB > V3P3_FLAT_PITCH_DEG &&
+               hasMinFused && dotA < 0 && dotB < 0) {
+      newType = 'ridge';
+      reason = 'opposing_azimuths_diverging_slopes';
+    } else if (azDiff > 90 && hasMinFused && dotA > V3P3_VALLEY_CONVERGENCE_MIN && dotB > V3P3_VALLEY_CONVERGENCE_MIN) {
+      newType = 'valley';
+      reason = 'converging_slopes_high_az_diff';
+    } else if (azDiff >= V3P3_HIP_AZ_OBLIQUE_MIN_DEG && azDiff <= V3P3_HIP_AZ_OBLIQUE_MAX_DEG &&
+               hasMinFused && dotA < 0 && dotB < 0) {
+      newType = 'hip';
+      reason = 'oblique_azimuths_convex_boundary';
+    } else if (heightDelta >= V3P3_STEP_HEIGHT_DELTA_MIN_M && pitchDelta < 10 && azDiff < 25) {
+      newType = 'step';
+      reason = 'height_offset_similar_slopes';
+    } else if ((pitchA < V3P3_FLAT_PITCH_DEG && pitchB > 15) || (pitchB < V3P3_FLAT_PITCH_DEG && pitchA > 15)) {
+      newType = 'eave';
+      reason = 'flat_meets_pitched';
+    } else if (hasMinFused && azOpp < V3P3_RIDGE_AZ_OPP_MAX_DEG && (pitchA <= V3P3_FLAT_PITCH_DEG || pitchB <= V3P3_FLAT_PITCH_DEG)) {
+      newType = 'ridge';
+      reason = 'opposing_azimuths_one_flat';
+    } else {
+      newType = 'uncertain';
+      reason = 'no_clear_classification';
+    }
+
+    edge.edge_type_v3p3 = newType;
+    edge.v3p3_classification_reason = reason;
+    typeCounts[newType] = (typeCounts[newType] || 0) + 1;
+    if (newType !== oldType.replace('_candidate', '').replace('_edge', '').replace('_break', '').replace('_boundary', '')) {
+      upgradedCount++;
+    }
+    perEdge.push({ edge_idx: edge.edge_idx, old_type: oldType, new_type: newType, reason });
+  }
+
+  return { upgraded_count: upgradedCount, type_counts: typeCounts, per_edge: perEdge, polyAdj };
+}
+
+function v3p3ValidatePlaneRelationships(edges, finalPolygons, faces) {
+  const { faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, finalPolygons);
+  const violations = [];
+  const mergeCandidates = [];
+  const suppressCandidates = [];
+
+  for (const edge of edges) {
+    if (!edge.edge_type_v3p3 || edge.edge_type_v3p3 === 'outer_boundary' || edge.edge_type_v3p3 === 'uncertain') continue;
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+
+    const polyA = finalPolygons[pAIdx];
+    const polyB = finalPolygons[pBIdx];
+    const pitchA = polyA.pitch || polyA.original_pitch || 0;
+    const pitchB = polyB.pitch || polyB.original_pitch || 0;
+    const azA = polyA.azimuth || polyA.original_azimuth || 0;
+    const azB = polyB.azimuth || polyB.original_azimuth || 0;
+    const azOpp = v3p2AngularDistance(azA + 180, azB);
+    const azDiff = v3p2AngularDistance(azA, azB);
+    const pitchDelta = Math.abs(pitchA - pitchB);
+    const type = edge.edge_type_v3p3;
+
+    if (type === 'ridge') {
+      if (azDiff < 30 && azOpp > 60) {
+        violations.push({ edge_idx: edge.edge_idx, type, violation: 'ridge_same_direction', resolution: 'reclassify_seam' });
+        edge.edge_type_v3p3 = 'seam';
+        edge.v3p3_classification_reason = 'reclassified_from_ridge_same_direction';
+      }
+    } else if (type === 'valley') {
+      const cA = v3p2PolygonCentroid(polyA.vertices || []);
+      const cB = v3p2PolygonCentroid(polyB.vertices || []);
+      const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+      const dsA = { x: Math.sin(azA * Math.PI / 180), z: -Math.cos(azA * Math.PI / 180) };
+      const dsB = { x: Math.sin(azB * Math.PI / 180), z: -Math.cos(azB * Math.PI / 180) };
+      const vA = { x: midX - cA.x, z: midZ - cA.z };
+      const vB = { x: midX - cB.x, z: midZ - cB.z };
+      const magA2 = Math.hypot(vA.x, vA.z) || 1e-9;
+      const magB2 = Math.hypot(vB.x, vB.z) || 1e-9;
+      const dA = (vA.x * dsA.x + vA.z * dsA.z) / magA2;
+      const dB = (vB.x * dsB.x + vB.z * dsB.z) / magB2;
+      if (dA < 0 && dB < 0) {
+        violations.push({ edge_idx: edge.edge_idx, type, violation: 'valley_diverging', resolution: 'reclassify_hip' });
+        edge.edge_type_v3p3 = 'hip';
+        edge.v3p3_classification_reason = 'reclassified_from_valley_diverging';
+      }
+    } else if (type === 'hip') {
+      const cA = v3p2PolygonCentroid(polyA.vertices || []);
+      const cB = v3p2PolygonCentroid(polyB.vertices || []);
+      const midX = (cA.x + cB.x) / 2, midZ = (cA.z + cB.z) / 2;
+      const dsA = { x: Math.sin(azA * Math.PI / 180), z: -Math.cos(azA * Math.PI / 180) };
+      const dsB = { x: Math.sin(azB * Math.PI / 180), z: -Math.cos(azB * Math.PI / 180) };
+      const vA = { x: midX - cA.x, z: midZ - cA.z };
+      const vB = { x: midX - cB.x, z: midZ - cB.z };
+      const magA2 = Math.hypot(vA.x, vA.z) || 1e-9;
+      const magB2 = Math.hypot(vB.x, vB.z) || 1e-9;
+      const dA = (vA.x * dsA.x + vA.z * dsA.z) / magA2;
+      const dB = (vB.x * dsB.x + vB.z * dsB.z) / magB2;
+      if (dA > 0 && dB > 0) {
+        violations.push({ edge_idx: edge.edge_idx, type, violation: 'hip_concave_boundary', resolution: 'reclassify_valley' });
+        edge.edge_type_v3p3 = 'valley';
+        edge.v3p3_classification_reason = 'reclassified_from_hip_concave';
+      }
+    } else if (type === 'step') {
+      const heightA = polyA.height || 0;
+      const heightB = polyB.height || 0;
+      if (Math.abs(heightA - heightB) < 0.1 && azDiff < 15) {
+        violations.push({ edge_idx: edge.edge_idx, type, violation: 'step_no_height_diff', resolution: 'reclassify_seam' });
+        edge.edge_type_v3p3 = 'seam';
+        edge.v3p3_classification_reason = 'reclassified_from_step_no_height';
+      }
+    } else if (type === 'seam') {
+      if (pitchDelta > 6 || azDiff > 20) {
+        violations.push({ edge_idx: edge.edge_idx, type, violation: 'seam_planes_divergent', resolution: 'reclassify_uncertain' });
+        edge.edge_type_v3p3 = 'uncertain';
+        edge.v3p3_classification_reason = 'reclassified_from_seam_divergent';
+      } else {
+        mergeCandidates.push({ poly_a: pAIdx, poly_b: pBIdx, edge_idx: edge.edge_idx });
+      }
+    }
+  }
+
+  return { violation_count: violations.length, violations, merge_candidates: mergeCandidates, suppress_candidates: suppressCandidates };
+}
+
+function v3p3EnforceInternalConsistency(finalPolygons, grid) {
+  const perPolygon = [];
+  let checkedCount = 0, flaggedCount = 0;
+  if (!grid) return { checked_count: 0, flagged_count: 0, per_polygon: [] };
+
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    const poly = finalPolygons[pi];
+    if (poly.validation_decision === 'suppress') continue;
+    const verts = poly.vertices || [];
+    if (verts.length < 3) continue;
+    const samples = v3p1CollectFootprintSamples(grid, verts);
+    if (samples.length < 20) continue;
+    checkedCount++;
+
+    const cx = v3p2PolygonCentroid(verts);
+    const quadrants = [[], [], [], []];
+    for (const s of samples) {
+      const qx = s.x >= cx.x ? 1 : 0;
+      const qz = s.z >= cx.z ? 2 : 0;
+      quadrants[qx + qz].push(s);
+    }
+
+    const quadFits = [];
+    for (const q of quadrants) {
+      if (q.length < V3P3_INTERNAL_QUADRANT_MIN_SAMPLES) continue;
+      const fit = v3p1FitLocalPlane(q);
+      if (!fit) continue;
+      const horizMag = Math.hypot(fit.normal.nx, fit.normal.nz);
+      const qPitch = Math.atan2(horizMag, Math.max(fit.normal.ny, 1e-9)) * 180 / Math.PI;
+      const dsX = -fit.normal.nx, dsZ = -fit.normal.nz;
+      const mag = Math.hypot(dsX, dsZ) || 1e-9;
+      let qAz = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
+      if (qAz < 0) qAz += 360;
+      quadFits.push({ pitch: qPitch, azimuth: qAz });
+    }
+
+    if (quadFits.length < 2) {
+      perPolygon.push({ polygon_idx: pi, quadrant_count: quadFits.length, max_azimuth_variance: 0, max_pitch_variance: 0, flagged: false, flag_reason: null });
+      continue;
+    }
+
+    let maxAzVar = 0, maxPitchVar = 0;
+    const polyPitch = poly.pitch || poly.original_pitch || 0;
+    for (let i = 0; i < quadFits.length; i++) {
+      for (let j = i + 1; j < quadFits.length; j++) {
+        const azV = v3p2AngularDistance(quadFits[i].azimuth, quadFits[j].azimuth);
+        if (azV > maxAzVar) maxAzVar = azV;
+      }
+      const pVar = Math.abs(quadFits[i].pitch - polyPitch);
+      if (pVar > maxPitchVar) maxPitchVar = pVar;
+    }
+
+    const area = v3p2_1ApproxArea(verts);
+    const isSplit = (poly.validation_decision || '').includes('split_half');
+    let flagged = false, flagReason = null;
+
+    if (maxAzVar > V3P3_INTERNAL_SLOPE_VARIANCE_DEG && !isSplit && area > 5) {
+      flagged = true;
+      flagReason = 'multi_slope_direction';
+      if ((poly.fit_rmse || 0) > 0.8) {
+        poly.validation_reasons = poly.validation_reasons || [];
+        poly.validation_reasons.push('v3p3_suspect_multi_plane');
+      }
+    } else if (maxPitchVar > 15 && !isSplit && area > 5) {
+      flagged = true;
+      flagReason = 'internal_pitch_variance';
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_internal_pitch_variance');
+    }
+
+    if (flagged) flaggedCount++;
+    perPolygon.push({ polygon_idx: pi, quadrant_count: quadFits.length, max_azimuth_variance: _r2(maxAzVar), max_pitch_variance: _r2(maxPitchVar), flagged, flag_reason: flagReason });
+  }
+
+  return { checked_count: checkedCount, flagged_count: flaggedCount, per_polygon: perPolygon };
+}
+
+function v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid) {
+  const { polyAdj, faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, finalPolygons);
+  let floatingCount = 0, groundSuppressed = 0, disconnectedCount = 0, suppressionsApplied = 0;
+  const perPolyStatus = [];
+  const structuralTypes = new Set(['ridge', 'valley', 'hip', 'step']);
+
+  // Floating plane detection: polygons with no structural edge connections
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    const poly = finalPolygons[pi];
+    if (poly.validation_decision === 'suppress') continue;
+    const adj = polyAdj[pi] || [];
+    const hasStructural = adj.some(a => {
+      const e = edges[a.edge_idx];
+      return e && structuralTypes.has(e.edge_type_v3p3);
+    });
+    if (adj.length === 0) {
+      const pitch = poly.pitch || poly.original_pitch || 0;
+      const area = v3p2_1ApproxArea(poly.vertices || []);
+      if (pitch < V3P3_FLAT_PITCH_DEG && area < 5) {
+        poly.validation_decision = 'suppress';
+        poly.validation_reasons = poly.validation_reasons || [];
+        poly.validation_reasons.push('v3p3_floating_flat_small');
+        suppressionsApplied++;
+        floatingCount++;
+      } else if (pitch > 15 && area < 2) {
+        poly.validation_decision = 'suppress';
+        poly.validation_reasons = poly.validation_reasons || [];
+        poly.validation_reasons.push('v3p3_floating_tiny_fragment');
+        suppressionsApplied++;
+        floatingCount++;
+      } else {
+        poly.validation_reasons = poly.validation_reasons || [];
+        poly.validation_reasons.push('v3p3_floating_plane_warning');
+        floatingCount++;
+      }
+    } else if (!hasStructural) {
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_no_structural_edges');
+      floatingCount++;
+    }
+  }
+
+  // Ground/driveway rejection reinforcement
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    const poly = finalPolygons[pi];
+    if (poly.validation_decision === 'suppress') continue;
+    const pitch = poly.pitch || poly.original_pitch || 0;
+    if (pitch >= V3P3_GROUND_REJECT_PITCH_DEG) continue;
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    const adj = polyAdj[pi] || [];
+    const hasStructural = adj.some(a => {
+      const e = edges[a.edge_idx];
+      return e && structuralTypes.has(e.edge_type_v3p3);
+    });
+    const hasAnyNeighbor = adj.length > 0;
+    if (!hasStructural && !hasAnyNeighbor && pitch < 5 && area > 10) {
+      poly.validation_decision = 'suppress';
+      poly.ground_veto_flag = true;
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_ground_no_structural_connection');
+      groundSuppressed++;
+      suppressionsApplied++;
+    } else if (!hasStructural && !hasAnyNeighbor && pitch < 3 && area > 3) {
+      poly.validation_decision = 'suppress';
+      poly.ground_veto_flag = true;
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_ground_flat_disconnected');
+      groundSuppressed++;
+      suppressionsApplied++;
+    }
+  }
+
+  // Disconnected subgraph detection via BFS from largest polygon
+  // Uses ALL edges (including uncertain) for connectivity — we want to find
+  // truly isolated polygons with no topological path to the main roof.
+  let largestIdx = 0, largestArea = 0;
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    if (finalPolygons[pi].validation_decision === 'suppress') continue;
+    const a = v3p2_1ApproxArea(finalPolygons[pi].vertices || []);
+    if (a > largestArea) { largestArea = a; largestIdx = pi; }
+  }
+  const visited = new Set();
+  const queue = [largestIdx];
+  visited.add(largestIdx);
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    for (const adj of (polyAdj[cur] || [])) {
+      if (visited.has(adj.other_poly_idx)) continue;
+      if (finalPolygons[adj.other_poly_idx].validation_decision === 'suppress') continue;
+      visited.add(adj.other_poly_idx);
+      queue.push(adj.other_poly_idx);
+    }
+  }
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    const poly = finalPolygons[pi];
+    if (poly.validation_decision === 'suppress') continue;
+    if (visited.has(pi)) continue;
+    const pitch = poly.pitch || poly.original_pitch || 0;
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    if (pitch > 12 && area > 8) {
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_disconnected_kept_structure');
+      disconnectedCount++;
+    } else if (pitch < 5 && area < 5) {
+      poly.validation_decision = 'suppress';
+      poly.validation_reasons = poly.validation_reasons || [];
+      poly.validation_reasons.push('v3p3_disconnected_flat_small');
+      disconnectedCount++;
+      suppressionsApplied++;
+    } else {
+      poly.validation_reasons = poly.validation_reasons || [];
+      disconnectedCount++;
+    }
+  }
+
+  // Safety guard: never suppress ALL polygons — preserve the largest
+  const surviving = finalPolygons.filter(p => p.validation_decision !== 'suppress');
+  if (surviving.length === 0 && finalPolygons.length > 0) {
+    let bestIdx = 0, bestArea = 0;
+    for (let pi = 0; pi < finalPolygons.length; pi++) {
+      const a = v3p2_1ApproxArea(finalPolygons[pi].vertices || []);
+      if (a > bestArea) { bestArea = a; bestIdx = pi; }
+    }
+    finalPolygons[bestIdx].validation_decision = 'keep';
+    finalPolygons[bestIdx].validation_reasons.push('v3p3_restored_last_survivor');
+    suppressionsApplied--;
+    if (finalPolygons[bestIdx].ground_veto_flag) { groundSuppressed--; finalPolygons[bestIdx].ground_veto_flag = false; }
+  }
+
+  for (let pi = 0; pi < finalPolygons.length; pi++) {
+    const poly = finalPolygons[pi];
+    perPolyStatus.push({ polygon_idx: pi, status: poly.validation_decision, reasons: poly.validation_reasons || [] });
+  }
+
+  return { floating_count: floatingCount, ground_suppressed_count: groundSuppressed, disconnected_count: disconnectedCount, suppressions_applied: suppressionsApplied, per_polygon_status: perPolyStatus };
 }
 
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
@@ -28103,14 +28524,67 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     }
   }
 
+  // ── V3P3: Edge Relationship + Global Roof Constraint System ───────────────
+  const v3p3Classify = v3p3ClassifyEdgeTypes(edges, finalPolygons, faces, grid);
+  const v3p3Validate = v3p3ValidatePlaneRelationships(edges, finalPolygons, faces);
+  const v3p3Internal = v3p3EnforceInternalConsistency(finalPolygons, grid);
+  const v3p3Global = v3p3RunGlobalConsistencyPass(edges, finalPolygons, grid);
+
+  // Apply suppressions: remove suppressed polygons from final output
+  const v3p3Suppressed = new Set();
+  for (let i = 0; i < finalPolygons.length; i++) {
+    if (finalPolygons[i].validation_decision === 'suppress') v3p3Suppressed.add(i);
+  }
+  const v3p3FinalPolygons = finalPolygons.filter((_, i) => !v3p3Suppressed.has(i));
+  for (let i = 0; i < v3p3FinalPolygons.length; i++) v3p3FinalPolygons[i].polygon_idx = i;
+
+  const v3p3Debug = {
+    v3p3_applied: true,
+    edge_classification: {
+      upgraded_count: v3p3Classify.upgraded_count,
+      type_counts: v3p3Classify.type_counts,
+      per_edge: v3p3Classify.per_edge.slice(0, 50),
+    },
+    relationship_validation: {
+      violation_count: v3p3Validate.violation_count,
+      violations: v3p3Validate.violations,
+      merge_candidates_count: v3p3Validate.merge_candidates.length,
+    },
+    internal_consistency: {
+      checked_count: v3p3Internal.checked_count,
+      flagged_count: v3p3Internal.flagged_count,
+      flagged_polygons: v3p3Internal.per_polygon.filter(p => p.flagged),
+    },
+    global_consistency: {
+      floating_count: v3p3Global.floating_count,
+      ground_suppressed_count: v3p3Global.ground_suppressed_count,
+      disconnected_count: v3p3Global.disconnected_count,
+      suppressions_applied: v3p3Global.suppressions_applied,
+    },
+    thresholds: {
+      ridge_az_opp_max_deg: V3P3_RIDGE_AZ_OPP_MAX_DEG,
+      valley_convergence_min: V3P3_VALLEY_CONVERGENCE_MIN,
+      hip_az_oblique_min_deg: V3P3_HIP_AZ_OBLIQUE_MIN_DEG,
+      step_height_delta_min_m: V3P3_STEP_HEIGHT_DELTA_MIN_M,
+      seam_pitch_tol_deg: V3P3_SEAM_PITCH_TOL_DEG,
+      seam_azimuth_tol_deg: V3P3_SEAM_AZIMUTH_TOL_DEG,
+      flat_pitch_deg: V3P3_FLAT_PITCH_DEG,
+      ground_reject_pitch_deg: V3P3_GROUND_REJECT_PITCH_DEG,
+      internal_slope_variance_deg: V3P3_INTERNAL_SLOPE_VARIANCE_DEG,
+    },
+  };
+  if (v3p3Global.suppressions_applied > 0) {
+    warnings.push('v3p3_polygons_suppressed_' + v3p3Global.suppressions_applied);
+  }
+
   return {
     v3_polygon_construction_applied: true,
     candidate_edge_count: edges.length,
     candidate_polygon_count: n,
-    final_polygon_face_count: finalPolygons.length,
+    final_polygon_face_count: v3p3FinalPolygons.length,
     merged_polygon_count: mergeCount,
     split_polygon_count: splitCount,
-    suppressed_polygon_count: 0,
+    suppressed_polygon_count: v3p3Suppressed.size,
     fallback_polygon_count: fallbackCount,
     shared_boundary_snaps: snaps.length,
     edge_graph_summary: {
@@ -28166,8 +28640,10 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     fallback_split_count: fallbackSplitCount,
     split_geometry_debug: splitGeometryDebug,
     split_geometry_warnings: warnings.filter(w => w.startsWith('split_')),
+    // V3P3: relationships + global consistency
+    v3p3_relationships: v3p3Debug,
     edges,
-    polygons: finalPolygons,
+    polygons: v3p3FinalPolygons,
   };
 }
 
@@ -28185,6 +28661,7 @@ function v3p2ApplyConstruction(envelope, result) {
   if (result.split_polygon_count > 0 && !reasons.includes('v3_polygon_split_applied')) reasons.push('v3_polygon_split_applied');
   if (result.merged_polygon_count > 0 && !reasons.includes('v3_polygon_merge_applied')) reasons.push('v3_polygon_merge_applied');
   if (result.fallback_polygon_count > 0 && !reasons.includes('v3_polygon_fallback_applied')) reasons.push('v3_polygon_fallback_applied');
+  if (result.suppressed_polygon_count > 0 && !reasons.includes('v3p3_polygon_suppressed')) reasons.push('v3p3_polygon_suppressed');
   envelope.review_policy_reasons = reasons;
   return {
     applied: true,
@@ -28193,6 +28670,7 @@ function v3p2ApplyConstruction(envelope, result) {
     merges: result.merged_polygon_count,
     fallbacks: result.fallback_polygon_count,
     snaps: result.shared_boundary_snaps,
+    v3p3_suppressed: result.suppressed_polygon_count,
   };
 }
 
@@ -28439,7 +28917,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       md.v3p2_polygon_construction = result;
       const applied = v3p2ApplyConstruction(envelope, result);
       if (applied.applied) {
-        console.log(`[v3p2_polygon] in=${result.candidate_polygon_count} out=${result.final_polygon_face_count} splits=${result.split_polygon_count} merges=${result.merged_polygon_count} fallbacks=${result.fallback_polygon_count} snaps=${result.shared_boundary_snaps} warns=[${result.polygon_construction_warnings.join(',')}]`);
+        console.log(`[v3p2_polygon] in=${result.candidate_polygon_count} out=${result.final_polygon_face_count} splits=${result.split_polygon_count} merges=${result.merged_polygon_count} fallbacks=${result.fallback_polygon_count} snaps=${result.shared_boundary_snaps} suppressed=${result.suppressed_polygon_count} warns=[${result.polygon_construction_warnings.join(',')}]`);
       } else {
         console.log(`[v3p2_polygon] skipped (no faces or no grid)`);
       }
