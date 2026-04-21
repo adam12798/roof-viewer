@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4 structural enforcement engine banked)
+**Last updated:** 2026-04-21 (V3P5 partial build rescue banked — reject bucket reduced 6→4)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1222,6 +1222,70 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 **Status:** BANKED.
 
 **Reopen trigger:** Net regression on new cases; multi-slope split produces geometrically worse result on a case that was clean before; ground suppression removes valid pitched face; enforcement fires on properties with < 3 faces.
+
+---
+
+### V3P5 — Partial Build Rescue / Reject Reduction [BANKED]
+
+**Purpose:** Reduce false total rejects by building conservative partial roofs from LiDAR when ML pipeline returns 0 faces. Never hallucinate — only rescue when LiDAR geometry clearly supports a roof hypothesis.
+
+**When it fires:** Only when ML returns 0 faces (reject) AND LiDAR points are available. Does not affect any case where ML returns ≥1 face.
+
+**Algorithm:**
+1. Build DSM elevation grid from LiDAR (reuses `v2p0BuildElevationGrid`)
+2. Estimate ground level at center (reuses `v2p0EstimateLocalGround`)
+3. Find cells elevated 2–15m above ground
+4. Flood-fill connected elevated regions into clusters
+5. For each cluster (≥40 cells, ≥6 m²): fit a plane via least-squares
+6. Filter: pitch 3–60°, RMSE ≤ 1.2m, first plane must be ≥15% central
+7. Build convex hull vertices for surviving planes (max 3)
+8. Inject rescue planes into envelope as `roof_faces`
+9. Set status to `needs_review`, add rescue reason codes
+10. Downstream pipeline (V2P0, V3P1, V3P2, V2P1-V2P7) validates rescue planes normally
+
+**Functions added to server.js:**
+- `v3p5FloodFill(visited, grid, startIdx, minElev, maxElev, size)` — connected-component fill for elevated cells
+- `v3p5FitPlaneToCluster(grid, cluster, size, res, half)` — least-squares plane fit with RMSE
+- `v3p5BuildConvexHull(points2d)` — Andrew's monotone chain convex hull
+- `v3p5DetectRescuePlanes(lidarPoints, centerLat, centerLng)` — orchestrator: grid→clusters→planes→filter
+- `v3p5ApplyPartialRescue(envelope, rescueResult, body)` — injects rescue planes, sets status/reasons
+
+**Centralized thresholds:**
+`V3P5_MIN_HEIGHT_ABOVE_GROUND_M=2.0`, `V3P5_MAX_HEIGHT_ABOVE_GROUND_M=15.0`, `V3P5_MIN_CLUSTER_CELLS=40`, `V3P5_MIN_CLUSTER_AREA_M2=6.0`, `V3P5_MIN_PITCH_DEG=3.0`, `V3P5_MAX_PITCH_DEG=60.0`, `V3P5_MAX_FIT_RESIDUAL_M=1.2`, `V3P5_MIN_GRID_FILL_FRACTION=0.15`, `V3P5_MAX_RESCUE_PLANES=3`, `V3P5_CENTRAL_RADIUS_M=18.0`.
+
+**Debug fields in `md.v3p5_partial_rescue`:**
+- `v3_partial_rescue_applied`, `rescue_attempted`, `rescue_succeeded`
+- `rescue_type`: `minimal_roof_mass` | `multi_plane_rescue`
+- `rescue_reason_codes[]`, `rescue_plane_count`, `original_reject_reason`
+- `final_status_after_rescue`, `rescue_warnings[]`
+- `grid_fill_fraction`, `ground_elevation`, `elevated_cell_count`, `cluster_count`
+- `candidate_planes[]`: area, pitch, rmse, accepted/reject_reason for each evaluated cluster
+- `per_plane[]`: face_idx, rescue_support_score, lidar_support_score, height_above_ground, fit_residual, rescue_origin, area_m2, central_fraction
+
+**Validation (21-case batch, 2026-04-21):** 21/21 success.
+
+| Case | Prior Status | New Status | Faces | Score | Rescue Type | Notes |
+|------|---|---|---:|---:|---|---|
+| 42 Tanager St | reject | needs_review | 1 | 0.77 | multi_plane (3→1 after V3P1) | `reject_too_strict` correctly rescued |
+| 52 Spaulding | reject | needs_review | 2 | 0.35 | multi_plane (2 survived) | `reject_too_strict` correctly rescued |
+| 94 C St | reject | reject | 0 | — | — | no valid planes (RMSE > 1.2) |
+| 44 D St | reject | reject | 0 | — | — | no valid planes (RMSE > 1.2) |
+| 12 Brown St | reject | reject | 0 | — | — | no valid planes (RMSE > 1.2) |
+| Salem | reject | reject | 0 | — | — | no valid planes (RMSE > 1.2) |
+| All 15 non-reject cases | — | — | — | — | — | **zero regressions** (scores identical) |
+
+**Key behaviors:**
+- Rescue only fires on 0-face rejects — never touches ML-provided geometry
+- `reject_too_strict` cases rescued; `reject_correct` cases stay rejected
+- RMSE threshold (1.2m) naturally separates "clear roof plane" from "noisy elevation blob"
+- Downstream pipeline (V3P1 LiDAR veto, V2P0 ground check) validates rescue planes normally
+- Rescue planes are never auto_accepted — always needs_review
+- 42 Tanager: 3 rescue candidates → 1 survives downstream validation (0.77 score)
+- Correct rejects (usable < 0.05) have high RMSE everywhere → no false rescues
+
+**Status:** BANKED.
+
+**Reopen trigger:** False rescue on a case with no actual house; rescue plane is flat ground/driveway that escapes downstream filtering; rescue causes downstream pipeline crash; rescue fires on a case that already has ML faces.
 
 ---
 

@@ -28450,6 +28450,315 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
   return debug;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V3P5 — Partial Build Rescue / Reject Reduction
+// ═══════════════════════════════════════════════════════════════════════════
+const V3P5_MIN_HEIGHT_ABOVE_GROUND_M = 2.0;
+const V3P5_MAX_HEIGHT_ABOVE_GROUND_M = 15.0;
+const V3P5_MIN_CLUSTER_CELLS = 40;
+const V3P5_MIN_CLUSTER_AREA_M2 = 6.0;
+const V3P5_MIN_PITCH_DEG = 3.0;
+const V3P5_MAX_PITCH_DEG = 60.0;
+const V3P5_MAX_FIT_RESIDUAL_M = 1.2;
+const V3P5_MIN_GRID_FILL_FRACTION = 0.15;
+const V3P5_MAX_RESCUE_PLANES = 3;
+const V3P5_CENTRAL_RADIUS_M = 18.0;
+
+function v3p5FloodFill(visited, grid, startIdx, minElev, maxElev, size) {
+  const cluster = [];
+  const stack = [startIdx];
+  while (stack.length > 0) {
+    const idx = stack.pop();
+    if (visited[idx]) continue;
+    visited[idx] = true;
+    const e = grid[idx];
+    if (isNaN(e) || e < minElev || e > maxElev) continue;
+    cluster.push(idx);
+    const row = Math.floor(idx / size);
+    const col = idx % size;
+    if (col > 0) stack.push(idx - 1);
+    if (col < size - 1) stack.push(idx + 1);
+    if (row > 0) stack.push(idx - size);
+    if (row < size - 1) stack.push(idx + size);
+  }
+  return cluster;
+}
+
+function v3p5FitPlaneToCluster(grid, cluster, size, res, half) {
+  let sumX = 0, sumZ = 0, sumE = 0;
+  let sumXX = 0, sumXZ = 0, sumZZ = 0;
+  let sumXE = 0, sumZE = 0;
+  const n = cluster.length;
+  const pts = [];
+  for (const idx of cluster) {
+    const row = Math.floor(idx / size);
+    const col = idx % size;
+    const x = col * res - half;
+    const z = row * res - half;
+    const e = grid[idx];
+    pts.push({ x, z, e });
+    sumX += x; sumZ += z; sumE += e;
+    sumXX += x * x; sumXZ += x * z; sumZZ += z * z;
+    sumXE += x * e; sumZE += z * e;
+  }
+  const mx = sumX / n, mz = sumZ / n, me = sumE / n;
+  const Sxx = sumXX - n * mx * mx;
+  const Sxz = sumXZ - n * mx * mz;
+  const Szz = sumZZ - n * mz * mz;
+  const Sxe = sumXE - n * mx * me;
+  const Sze = sumZE - n * mz * me;
+  const det = Sxx * Szz - Sxz * Sxz;
+  if (Math.abs(det) < 1e-12) return null;
+  const a = (Szz * Sxe - Sxz * Sze) / det;
+  const b = (Sxx * Sze - Sxz * Sxe) / det;
+  const c = me - a * mx - b * mz;
+
+  let sumResidual = 0;
+  for (const p of pts) {
+    const predicted = a * p.x + b * p.z + c;
+    sumResidual += (p.e - predicted) * (p.e - predicted);
+  }
+  const rmse = Math.sqrt(sumResidual / n);
+
+  const nx = -a, nz = -b, ny = 1.0;
+  const mag = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  const nnx = nx / mag, nny = ny / mag, nnz = nz / mag;
+  const pitchRad = Math.acos(Math.min(1, Math.abs(nny)));
+  const pitchDeg = pitchRad * 180 / Math.PI;
+  let azimuthDeg = Math.atan2(nnx, nnz) * 180 / Math.PI;
+  if (azimuthDeg < 0) azimuthDeg += 360;
+
+  return { a, b, c, rmse, pitchDeg, azimuthDeg, centroid: { x: mx, z: mz, e: me }, pts, n };
+}
+
+function v3p5BuildConvexHull(points2d) {
+  if (points2d.length < 3) return points2d.slice();
+  const sorted = points2d.slice().sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+function v3p5DetectRescuePlanes(lidarPoints, centerLat, centerLng) {
+  const debug = {
+    v3_partial_rescue_applied: false,
+    rescue_attempted: false,
+    rescue_succeeded: false,
+    rescue_type: null,
+    rescue_reason_codes: [],
+    rescue_plane_count: 0,
+    original_reject_reason: 'usable_gate_very_low',
+    final_status_after_rescue: null,
+    rescue_warnings: [],
+    grid_fill_fraction: 0,
+    ground_elevation: null,
+    elevated_cell_count: 0,
+    cluster_count: 0,
+    candidate_planes: [],
+    rescue_rejected_reason: null,
+  };
+
+  if (!Array.isArray(lidarPoints) || lidarPoints.length < 500) {
+    debug.rescue_rejected_reason = 'insufficient_lidar_points';
+    return { planes: [], debug };
+  }
+
+  const built = v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng);
+  const grid = built.grid;
+  const fillFraction = built.validCount / built.totalCells;
+  debug.grid_fill_fraction = _r2(fillFraction);
+
+  if (fillFraction < V3P5_MIN_GRID_FILL_FRACTION) {
+    debug.rescue_rejected_reason = 'grid_too_sparse';
+    return { planes: [], debug };
+  }
+
+  const groundElev = v2p0EstimateLocalGround(grid, 0, 0, built.globalGroundP10);
+  debug.ground_elevation = _r2(groundElev);
+
+  const minElev = groundElev + V3P5_MIN_HEIGHT_ABOVE_GROUND_M;
+  const maxElev = groundElev + V3P5_MAX_HEIGHT_ABOVE_GROUND_M;
+
+  debug.rescue_attempted = true;
+
+  const size = V2P0_GRID_SIZE;
+  const res = V2P0_GRID_RES;
+  const half = V2P0_GRID_HALF;
+  const centralRadiusCells = Math.round(V3P5_CENTRAL_RADIUS_M / res);
+  const centerCell = Math.floor(size / 2);
+
+  const visited = new Uint8Array(size * size);
+  const clusters = [];
+
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const idx = row * size + col;
+      if (visited[idx]) continue;
+      const e = grid[idx];
+      if (isNaN(e) || e < minElev || e > maxElev) { visited[idx] = true; continue; }
+      const cluster = v3p5FloodFill(visited, grid, idx, minElev, maxElev, size);
+      if (cluster.length >= V3P5_MIN_CLUSTER_CELLS) {
+        clusters.push(cluster);
+      }
+    }
+  }
+
+  debug.cluster_count = clusters.length;
+  debug.elevated_cell_count = clusters.reduce((s, c) => s + c.length, 0);
+
+  if (clusters.length === 0) {
+    debug.rescue_rejected_reason = 'no_elevated_clusters';
+    return { planes: [], debug };
+  }
+
+  clusters.sort((a, b) => b.length - a.length);
+
+  const rescuePlanes = [];
+  for (const cluster of clusters) {
+    if (rescuePlanes.length >= V3P5_MAX_RESCUE_PLANES) break;
+
+    const areaM2 = cluster.length * res * res;
+    if (areaM2 < V3P5_MIN_CLUSTER_AREA_M2) continue;
+
+    const centralCells = cluster.filter(idx => {
+      const row = Math.floor(idx / size);
+      const col = idx % size;
+      return Math.abs(row - centerCell) <= centralRadiusCells && Math.abs(col - centerCell) <= centralRadiusCells;
+    });
+    const centralFraction = centralCells.length / cluster.length;
+
+    const fit = v3p5FitPlaneToCluster(grid, cluster, size, res, half);
+    if (!fit) continue;
+
+    const candidate = {
+      area_m2: _r2(areaM2),
+      cell_count: cluster.length,
+      central_fraction: _r2(centralFraction),
+      pitch_deg: _r2(fit.pitchDeg),
+      azimuth_deg: _r2(fit.azimuthDeg),
+      rmse: _r2(fit.rmse),
+      height_above_ground: _r2(fit.centroid.e - groundElev),
+      centroid: { x: _r2(fit.centroid.x), z: _r2(fit.centroid.z) },
+      accepted: false,
+      reject_reason: null,
+    };
+
+    if (fit.pitchDeg < V3P5_MIN_PITCH_DEG) {
+      candidate.reject_reason = 'too_flat_ground_like';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg > V3P5_MAX_PITCH_DEG) {
+      candidate.reject_reason = 'too_steep_wall_like';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (fit.rmse > V3P5_MAX_FIT_RESIDUAL_M) {
+      candidate.reject_reason = 'poor_plane_fit';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (centralFraction < 0.15 && rescuePlanes.length === 0) {
+      candidate.reject_reason = 'not_central_enough';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+
+    candidate.accepted = true;
+    debug.candidate_planes.push(candidate);
+
+    const hullPts = [];
+    for (const idx of cluster) {
+      const row = Math.floor(idx / size);
+      const col = idx % size;
+      hullPts.push({ x: col * res - half, z: row * res - half });
+    }
+    const hull = v3p5BuildConvexHull(hullPts);
+    if (hull.length < 3) continue;
+
+    rescuePlanes.push({
+      vertices: hull.map(p => ({ x: p.x, z: p.z })),
+      pitch: Math.round(fit.pitchDeg),
+      azimuth: Math.round(fit.azimuthDeg),
+      height: 0,
+      _rescue: {
+        area_m2: candidate.area_m2,
+        rmse: candidate.rmse,
+        height_above_ground: candidate.height_above_ground,
+        central_fraction: candidate.central_fraction,
+        origin: rescuePlanes.length === 0 ? 'main_mass' : 'secondary_cluster',
+        lidar_support_score: _r2(Math.min(1.0, (1.0 - fit.rmse / V3P5_MAX_FIT_RESIDUAL_M) * centralFraction * 2)),
+      },
+    });
+  }
+
+  if (rescuePlanes.length === 0) {
+    debug.rescue_rejected_reason = 'no_valid_planes_after_filtering';
+    return { planes: [], debug };
+  }
+
+  debug.rescue_succeeded = true;
+  debug.rescue_plane_count = rescuePlanes.length;
+  debug.rescue_type = rescuePlanes.length === 1 ? 'minimal_roof_mass' : 'multi_plane_rescue';
+  debug.rescue_reason_codes.push('v3_partial_build_rescue');
+  if (rescuePlanes.some(p => p._rescue.central_fraction < 0.5)) {
+    debug.rescue_reason_codes.push('v3_tree_obstruction_rescue');
+  }
+
+  return { planes: rescuePlanes, debug };
+}
+
+function v3p5ApplyPartialRescue(envelope, rescueResult, body) {
+  if (!rescueResult.debug.rescue_succeeded) return false;
+
+  const cr = envelope.crm_result || (envelope.crm_result = {});
+  const md = cr.metadata || (cr.metadata = {});
+
+  cr.roof_faces = rescueResult.planes.map(p => ({
+    vertices: p.vertices,
+    pitch: p.pitch,
+    azimuth: p.azimuth,
+    height: p.height,
+  }));
+
+  envelope.auto_build_status = 'needs_review';
+  envelope.disposition = 'needs_review';
+  const reasons = envelope.review_policy_reasons || [];
+  for (const code of rescueResult.debug.rescue_reason_codes) {
+    if (!reasons.includes(code)) reasons.push(code);
+  }
+  envelope.review_policy_reasons = reasons;
+
+  rescueResult.debug.v3_partial_rescue_applied = true;
+  rescueResult.debug.final_status_after_rescue = 'needs_review';
+
+  md.v3p5_partial_rescue = rescueResult.debug;
+  md.v3p5_partial_rescue.per_plane = rescueResult.planes.map((p, i) => ({
+    face_idx: i,
+    rescue_plane_flag: true,
+    rescue_support_score: p._rescue.lidar_support_score,
+    lidar_support_score: p._rescue.lidar_support_score,
+    height_above_ground: p._rescue.height_above_ground,
+    fit_residual: p._rescue.rmse,
+    rescue_origin: p._rescue.origin,
+    area_m2: p._rescue.area_m2,
+    central_fraction: p._rescue.central_fraction,
+  }));
+
+  return true;
+}
+
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
   const cr = (envelope && envelope.crm_result) || {};
   const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map((f, idx) => ({
@@ -29137,6 +29446,34 @@ app.post("/api/ml/auto-build", async (req, res) => {
   const _t = {}; // V2P5 timing accumulator
   const _t0_total = Date.now();
 
+  // V3P5: Partial Build Rescue — runs BEFORE all other processing when ML
+  // returned 0 faces (reject). Builds minimal roof hypothesis from LiDAR alone.
+  const _t0_v3p5 = Date.now();
+  try {
+    const cr = envelope.crm_result || (envelope.crm_result = {});
+    const roofFaces = cr.roof_faces || [];
+    const lidarPts = body.lidar && body.lidar.points;
+    const dc = body.design_center;
+    if (roofFaces.length === 0 && lidarPts && lidarPts.length > 0 && dc && dc.lat && dc.lng) {
+      const rescueResult = v3p5DetectRescuePlanes(lidarPts, +dc.lat, +dc.lng);
+      if (rescueResult.debug.rescue_succeeded) {
+        v3p5ApplyPartialRescue(envelope, rescueResult, body);
+        console.log(`[v3p5_rescue] RESCUED: ${rescueResult.debug.rescue_plane_count} plane(s), type=${rescueResult.debug.rescue_type}, reasons=[${rescueResult.debug.rescue_reason_codes.join(',')}]`);
+      } else {
+        const md = cr.metadata || (cr.metadata = {});
+        md.v3p5_partial_rescue = rescueResult.debug;
+        console.log(`[v3p5_rescue] not rescued: ${rescueResult.debug.rescue_rejected_reason}`);
+      }
+    } else if (roofFaces.length > 0) {
+      console.log('[v3p5_rescue] skipped: ML returned faces (not a reject case)');
+    } else {
+      console.log('[v3p5_rescue] skipped: no lidar data available');
+    }
+  } catch (e) {
+    console.log(`[v3p5_rescue] error: ${e.message}`);
+  }
+  _t.v3p5_rescue_ms = Date.now() - _t0_v3p5;
+
   // P3 solar cross-validation (non-blocking — failure skips silently)
   const _t0_p3 = Date.now();
   try {
@@ -29473,6 +29810,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
     const md = cr.metadata || (cr.metadata = {});
     const stages = [
       { name: 'ml_request', ms: _ml_request_ms },
+      { name: 'v3p5_rescue', ms: _t.v3p5_rescue_ms },
       { name: 'p3_p8_p9', ms: _t.p3_p8_p9_ms },
       { name: 'v2p0_v2p01', ms: _t.v2p0_v2p01_ms },
       { name: 'v3p1_lidar_fusion', ms: _t.v3p1_ms },
@@ -29499,6 +29837,7 @@ app.post("/api/ml/auto-build", async (req, res) => {
       v2p7_decision_ms: _t.v2p7_ms,
       v3p1_lidar_fusion_ms: _t.v3p1_ms,
       v3p2_polygon_construction_ms: _t.v3p2_ms,
+      v3p5_rescue_ms: _t.v3p5_rescue_ms,
       face_count: _cacheDebug.face_count,
       proximity_pairs_computed: _cacheDebug.proximity_pairs,
       bbox_pruned_pairs: _cacheDebug.bbox_pruned,

@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P4 structural enforcement engine banked)
+**Last updated:** 2026-04-21 (V3P5 partial build rescue banked — reject bucket reduced 6→4)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2297,16 +2297,41 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 - Iter 3: Added MAX_SPLITS=2, edge evidence gate → 74 Gates -0.39, net -0.41
 - Iter 4: AZ_VARIANCE=45, MIN_AREA=8, FUSED=0.65, IMPROVEMENT=0.20 → net stable, harmful splits blocked
 
-**KEEP (BANKED).** System enforces structural violations with conservative thresholds. Ground suppression and boundary enforcement are reliable. Multi-slope enforcement gates effectively against harmful splits. Small net cost on enforced cases justified by structural correctness.
+**KEEP (BANKED).** System enforces structural violations with conservative thresholds. Ground suppression and boundary enforcement are reliable. Multi-slope enforcement gates effectively against harmful splits. Small net cost on enforced cases justified by structural correctness. Superseded by §28 (V3P5).
 
 ---
 
-## 28. Related resources (renumbered from §27)
+## 28. V3P5 — Partial Build Rescue / Reject Reduction
 
-- `PROJECT_HANDOFF.md` — canonical source-of-truth.
-- `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
-- `GET /api/ml-drafts/:id` — full-detail row.
-- `data/ml-drafts.json` — append-only local audit log (gitignored).
+**Date:** 2026-04-21
+**Scope:** Reduce false total rejects by building conservative partial roofs from LiDAR when ML pipeline returns 0 faces.
+
+**What changed:**
+- New rescue path fires only on 0-face rejects with available LiDAR
+- Builds DSM grid, finds elevated clusters (2–15m above ground), fits planes via least-squares
+- Filters by pitch (3–60°), RMSE (≤1.2m), centrality (first plane ≥15% central), area (≥6m²)
+- Injects rescue planes into envelope → downstream V3P1/V2P0/V2P1-V7 validates them normally
+- Never touches cases where ML provided ≥1 face
+
+**Evidence (21-case replay, 2026-04-21):**
+
+| Case | Prior | After | Faces | Score | Type |
+|------|-------|-------|------:|------:|---|
+| 42 Tanager St | reject | needs_review | 1 | 0.77 | tree-obstructed rescue |
+| 52 Spaulding | reject | needs_review | 2 | 0.35 | partial rescue |
+| 94 C St | reject | reject | 0 | — | no valid planes |
+| 44 D St | reject | reject | 0 | — | no valid planes |
+| 12 Brown St | reject | reject | 0 | — | no valid planes |
+| Salem | reject | reject | 0 | — | no valid planes |
+| All 15 non-reject | — | — | — | — | zero regressions |
+
+2 of 6 rejects rescued (both labeled `reject_too_strict`). 4 remain rejected (all labeled `reject_correct` or `reject_edge`). RMSE threshold naturally separates "real roof plane" from "noisy blob."
+
+**KEEP (BANKED).** Conservative rescue fires only on clear LiDAR evidence. Zero regressions. Correctly distinguishes rescuable vs truly unrecoverable cases. Reject bucket reduced from 6 → 4.
+
+---
+
+## 29. Related resources (renumbered from §28)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).
