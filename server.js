@@ -29434,6 +29434,41 @@ const V3P7_MIN_MAIN_LENGTH_M = 1.5;
 const V3P7_MAIN_RIDGE_RATIO = 0.65;
 const V3P7_SECONDARY_RIDGE_RATIO = 0.30;
 
+// ── V3P8 Skeleton-Driven Geometry Correction thresholds ───────────────────
+// V3P8 is an ACTIVE correction layer gated on V3P7 skeleton trust. It only
+// fires on properties whose skeleton looks trustworthy (enough ridges, enough
+// coverage, not too many conflicts). Each correction action preserves the
+// dominant main body and leaves 0-skeleton properties untouched.
+//
+// Trust gate: V3P7 must have produced a main-level skeleton element, at least
+// V3P8_TRUST_MIN_RIDGE_COVERAGE of planes must be assigned to a skeleton,
+// and skeleton_conflicts must be at most V3P8_TRUST_MAX_CONFLICTS.
+const V3P8_TRUST_MIN_RIDGES = 1;
+const V3P8_TRUST_MIN_RIDGE_COVERAGE = 0.40;
+const V3P8_TRUST_MAX_CONFLICTS = 3;
+//
+// Path B — skeleton-backed slope correction. Lower dot threshold than V3P4.4
+// (0.55) because the skeleton-cluster provides stronger evidence than a
+// single V3P3 edge. Only fires on main/secondary attached polygons and only
+// when V3P4.4 did NOT already correct the polygon's slope.
+const V3P8_SLOPE_FLIP_DOT_THRESHOLD = 0.40;
+const V3P8_SLOPE_ELIGIBLE_HIERARCHY = new Set(['main', 'secondary']);
+//
+// Path D — off-skeleton detection + conservative suppression. Very narrow
+// gate: only small non-dominant polygons whose centroid is inside another
+// polygon's footprint are candidates for suppression. Cap at 2 per roof.
+const V3P8_OFF_SKELETON_SUPPRESS_MAX_AREA_M2 = 5.0;
+const V3P8_MAX_OFF_SKELETON_SUPPRESSIONS = 2;
+//
+// Path E — skeleton ridge opposition enforcement. A skeleton element that
+// V3P7 classified as 'ridge' (edge_type=ridge) expects its two attached
+// polygons to slope in opposite directions. If they are same-direction
+// (az_diff < V3P8_RIDGE_OPPOSITION_AZDIFF_MAX AND az_opp > V3P8_RIDGE_
+// OPPOSITION_AZOPP_MIN), flip the non-dominant one.
+const V3P8_RIDGE_OPPOSITION_AZDIFF_MAX = 30.0;
+const V3P8_RIDGE_OPPOSITION_AZOPP_MIN = 60.0;
+const V3P8_MAX_RIDGE_OPPOSITION_FLIPS = 2;
+
 // Angle distance between two undirected line angles (both 0–180°).
 function v3p7AngleDist180(a, b) {
   let d = Math.abs(a - b) % 180;
@@ -29885,6 +29920,458 @@ function v3p7RunSkeleton(polygons, edges) {
     debug.v3p7_warnings.push('planes_without_ridge_' + debug.planes_without_ridge_assignment);
   }
 
+  return debug;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V3P8 — Skeleton-Driven Geometry Correction
+//
+// Active correction layer that consumes V3P7's ridge skeleton and hierarchy
+// to improve user-visible roof correctness on properties where the skeleton
+// is trustworthy. Runs AFTER V3P7 (and therefore after V3P4.4). Three
+// correction paths, each dominant-preserving and skeleton-gated:
+//
+//   B. Skeleton-backed slope correction — flip non-dominant polygons attached
+//      to a main/secondary skeleton element whose downslope points toward
+//      (not away from) the ridge, in cases where V3P4.4 didn't already catch
+//      them (weaker single-edge evidence but strong skeleton-cluster backing).
+//   D. Off-skeleton plane detection + conservative suppression — flag
+//      polygons not attached to any skeleton; suppress only when small,
+//      non-dominant, and redundant against a skeleton-attached polygon.
+//   E. Skeleton ridge opposition enforcement — for skeleton elements whose
+//      V3P3 edge_type is 'ridge', force the two attached polygons to have
+//      opposing downslope directions; flip the non-dominant side when needed.
+//
+// Path A (hierarchy protection) is observational — it promotes a per-polygon
+// `v3p8_skeleton_protection` flag that downstream actions within V3P8 read.
+// Path C (full local rebuild) is deferred out of this packet.
+//
+// Zero behavior change on 0-skeleton properties by design: the trust gate
+// short-circuits when no main ridge exists or coverage is too low. The skip
+// reason is emitted explicitly so the result is inspectable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Point-to-segment distance + closest point on segment. Used to compute the
+// "centroid-to-ridge" vector for a polygon attached to a skeleton element.
+function v3p8ClosestPointOnSegment(p, p1, p2) {
+  const dx = p2.x - p1.x, dz = p2.z - p1.z;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-12) return { point: { x: p1.x, z: p1.z }, t: 0 };
+  const t = Math.max(0, Math.min(1, ((p.x - p1.x) * dx + (p.z - p1.z) * dz) / len2));
+  return { point: { x: p1.x + t * dx, z: p1.z + t * dz }, t };
+}
+
+// For a polygon attached to a skeleton ridge, find the closest point on ANY
+// of the ridge's member segments to the polygon's centroid. Returns the
+// vector FROM centroid TO that closest point (magnitude included). This is
+// the skeleton-cluster equivalent of V3P4.4 Path A's single-edge vector.
+function v3p8ComputeCentroidToRidgeVector(polyCentroid, ridge) {
+  if (!ridge || !Array.isArray(ridge.member_segments) || ridge.member_segments.length === 0) {
+    return null;
+  }
+  let bestDist2 = Infinity;
+  let bestClosest = null;
+  for (const seg of ridge.member_segments) {
+    const cp = v3p8ClosestPointOnSegment(polyCentroid, seg.p1, seg.p2);
+    const dx = cp.point.x - polyCentroid.x;
+    const dz = cp.point.z - polyCentroid.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      bestClosest = cp.point;
+    }
+  }
+  if (!bestClosest) return null;
+  const vx = bestClosest.x - polyCentroid.x;
+  const vz = bestClosest.z - polyCentroid.z;
+  const mag = Math.hypot(vx, vz);
+  return { vx, vz, mag, closest_point: bestClosest };
+}
+
+// Skeleton trust scoring. Returns { score, eligible, reason } where `reason`
+// is populated only when eligible === false.
+function v3p8ScoreSkeletonTrust(v3p7Debug, polygons) {
+  const out = { score: 0, eligible: false, reason: null, breakdown: {} };
+  if (!v3p7Debug || !v3p7Debug.v3p7_applied) {
+    out.reason = 'v3p7_not_applied';
+    return out;
+  }
+  const ridges = v3p7Debug.ridges || [];
+  const hierarchy = v3p7Debug.hierarchy_levels || {};
+  const ridgeCount = ridges.length;
+  const mainCount = hierarchy.main || 0;
+  const totalPlanes = polygons.filter(p => p && p.validation_decision !== 'suppress').length;
+  const withAssignment = v3p7Debug.planes_with_ridge_assignment || 0;
+  const coverage = totalPlanes > 0 ? withAssignment / totalPlanes : 0;
+  const conflicts = (v3p7Debug.skeleton_conflicts || []).length;
+  // Edge types breakdown — at least one structural skeleton edge required.
+  const etb = v3p7Debug.edge_type_breakdown || {};
+  const structuralEdges = (etb.ridge || 0) + (etb.valley || 0) + (etb.hip || 0);
+
+  out.breakdown = {
+    ridge_count: ridgeCount,
+    main_ridge_count: mainCount,
+    coverage: _r2(coverage),
+    planes_with_assignment: withAssignment,
+    total_planes: totalPlanes,
+    conflict_count: conflicts,
+    structural_edges: structuralEdges,
+  };
+
+  if (ridgeCount < V3P8_TRUST_MIN_RIDGES) {
+    out.reason = 'no_skeleton_elements';
+    return out;
+  }
+  if (mainCount === 0) {
+    out.reason = 'no_main_ridge';
+    return out;
+  }
+  if (coverage < V3P8_TRUST_MIN_RIDGE_COVERAGE) {
+    out.reason = 'coverage_too_low_' + _r2(coverage);
+    return out;
+  }
+  if (conflicts > V3P8_TRUST_MAX_CONFLICTS) {
+    out.reason = 'too_many_conflicts_' + conflicts;
+    return out;
+  }
+  if (structuralEdges === 0) {
+    out.reason = 'no_structural_edges';
+    return out;
+  }
+
+  // Composite trust score (0–1). Weighted average of the five signals above.
+  const s1 = Math.min(1, ridgeCount / 2);       // having 2+ ridges → full
+  const s2 = mainCount > 0 ? 1 : 0;
+  const s3 = Math.min(1, coverage / 0.80);      // 80% assignment → full
+  const s4 = Math.max(0, 1 - conflicts / (V3P8_TRUST_MAX_CONFLICTS + 1));
+  const s5 = Math.min(1, structuralEdges / 3);
+  out.score = _r2(0.20 * s1 + 0.25 * s2 + 0.25 * s3 + 0.15 * s4 + 0.15 * s5);
+  out.eligible = true;
+  return out;
+}
+
+// B. Skeleton-backed slope correction.
+// For each polygon assigned to a main/secondary RIDGE-type skeleton element
+// (NOT valley, NOT hip), compute the centroid-to-ridge vector and the
+// polygon's downslope. If downslope points toward the ridge
+// (dot > V3P8_SLOPE_FLIP_DOT_THRESHOLD) AND the polygon is not dominant AND
+// was not already flipped by V3P4.4, flip it.
+//
+// IMPORTANT: valleys and hips have INVERTED downslope conventions relative
+// to ridges:
+//   ridge: downslope should point AWAY from the line (dot < 0 is correct)
+//   valley: downslope should point TOWARD the line (dot > 0 is correct)
+//   hip: downslope should point AWAY (similar to ridge)
+// The "dot > threshold → flip" rule only makes sense for ridges. Valleys
+// and hips are deliberately out of scope for this V3P8 slope-flip path.
+function v3p8CorrectSlopeFromRidge(polygons, v3p7Debug) {
+  const corrections = [];
+  const ridges = (v3p7Debug && v3p7Debug.ridges) || [];
+  for (const poly of polygons) {
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    if (poly.dominant_plane_flag === true) continue;
+    const primaryId = poly.v3p7_primary_ridge_id;
+    if (primaryId == null) continue;
+    const ridge = ridges[primaryId];
+    if (!ridge) continue;
+    if (ridge.edge_type !== 'ridge') continue; // valleys/hips have inverted downslope convention
+    if (!V3P8_SLOPE_ELIGIBLE_HIERARCHY.has(ridge.hierarchy_level)) continue;
+    // Don't double-flip what V3P4.4 already corrected.
+    const reasons = poly.validation_reasons || [];
+    if (reasons.includes('v3p4_4_slope_direction_corrected')) continue;
+    const centroid = v3p2PolygonCentroid(poly.vertices || []);
+    const vec = v3p8ComputeCentroidToRidgeVector(centroid, ridge);
+    if (!vec || vec.mag < 1e-6) continue;
+    const azBefore = poly.azimuth || poly.original_azimuth || 0;
+    const ds = v3p4_4DownslopeXZ(azBefore);
+    const dot = (vec.vx * ds.x + vec.vz * ds.z) / vec.mag;
+    if (dot <= V3P8_SLOPE_FLIP_DOT_THRESHOLD) continue;
+    const azAfter = (azBefore + 180) % 360;
+    poly.v3p8_slope_before = _r2(azBefore);
+    poly.v3p8_slope_after = _r2(azAfter);
+    poly.v3p8_slope_corrected_by_skeleton = true;
+    poly.azimuth = azAfter;
+    poly.normal = v3p4_1OrientationToNormal(poly.pitch || 0, azAfter);
+    poly.validation_reasons = (poly.validation_reasons || []).concat(['v3p8_slope_corrected_by_skeleton']);
+    poly.v3p8_skeleton_correction_reason_codes = (poly.v3p8_skeleton_correction_reason_codes || []);
+    poly.v3p8_skeleton_correction_reason_codes.push('slope_flipped_' + ridge.hierarchy_level + '_ridge');
+    corrections.push({
+      polygon_idx: poly.polygon_idx,
+      ridge_id: primaryId,
+      hierarchy_level: ridge.hierarchy_level,
+      azimuth_before: _r2(azBefore),
+      azimuth_after: _r2(azAfter),
+      centroid_to_ridge_dot: _r2(dot),
+      centroid_to_ridge_dist_m: _r2(vec.mag),
+    });
+  }
+  return { corrections };
+}
+
+// Small helper: centroid of polygon A inside polygon B's footprint?
+function v3p8CentroidInside(polyInner, polyOuter) {
+  const c = v3p2PolygonCentroid(polyInner.vertices || []);
+  return v3p1PointInPolygon(c.x, c.z, polyOuter.vertices || []);
+}
+
+// D. Off-skeleton plane detection + conservative suppression. An off-skeleton
+// polygon is suppressed only when ALL of:
+//   - polygon is not dominant
+//   - area ≤ V3P8_OFF_SKELETON_SUPPRESS_MAX_AREA_M2
+//   - its centroid is inside another (skeleton-attached) polygon's footprint
+// Cap at V3P8_MAX_OFF_SKELETON_SUPPRESSIONS per roof.
+function v3p8DetectOffSkeletonPlanes(polygons) {
+  const flagged = [];
+  const suppressed = [];
+  for (const poly of polygons) {
+    if (!poly || poly.validation_decision === 'suppress') continue;
+    const assigned = Array.isArray(poly.v3p7_assigned_ridge_ids) && poly.v3p7_assigned_ridge_ids.length > 0;
+    if (assigned) {
+      poly.v3p8_skeleton_supported_flag = true;
+      poly.v3p8_off_skeleton_flag = false;
+      continue;
+    }
+    poly.v3p8_skeleton_supported_flag = false;
+    poly.v3p8_off_skeleton_flag = true;
+    flagged.push(poly);
+  }
+  for (const poly of flagged) {
+    if (suppressed.length >= V3P8_MAX_OFF_SKELETON_SUPPRESSIONS) break;
+    if (poly.dominant_plane_flag === true) {
+      poly.v3p8_off_skeleton_action = 'flagged_protected_dominant';
+      continue;
+    }
+    const area = v3p2_1ApproxArea(poly.vertices || []);
+    if (area > V3P8_OFF_SKELETON_SUPPRESS_MAX_AREA_M2) {
+      poly.v3p8_off_skeleton_action = 'flagged_only_area_' + _r2(area);
+      continue;
+    }
+    // Search for a skeleton-attached polygon that contains this one's centroid.
+    let containedBy = -1;
+    for (const outer of polygons) {
+      if (outer === poly) continue;
+      if (outer.validation_decision === 'suppress') continue;
+      if (!outer.v3p8_skeleton_supported_flag) continue;
+      if (v3p8CentroidInside(poly, outer)) {
+        containedBy = outer.polygon_idx != null ? outer.polygon_idx : -1;
+        break;
+      }
+    }
+    if (containedBy < 0) {
+      poly.v3p8_off_skeleton_action = 'flagged_only_not_redundant';
+      continue;
+    }
+    poly.v3p8_off_skeleton_action = 'suppressed_redundant';
+    poly.validation_decision = 'suppress';
+    poly.validation_reasons = (poly.validation_reasons || []).concat([
+      'v3p8_off_skeleton_suppressed_redundant_to_' + containedBy,
+    ]);
+    poly.v3p8_skeleton_correction_reason_codes = (poly.v3p8_skeleton_correction_reason_codes || []);
+    poly.v3p8_skeleton_correction_reason_codes.push('off_skeleton_redundant');
+    suppressed.push({
+      polygon_idx: poly.polygon_idx,
+      area_m2: _r2(area),
+      contained_by: containedBy,
+    });
+  }
+  return { flagged_count: flagged.length, suppressed };
+}
+
+// E. Skeleton ridge opposition enforcement. For each skeleton element whose
+// edge_type is 'ridge' (the V3P3 classification, carried through to the
+// V3P7 ridge), require its two attached polygons to oppose. If they are
+// same-direction, flip the non-dominant one.
+function v3p8EnforceRidgeOpposition(polygons, v3p7Debug) {
+  const flips = [];
+  const ridges = (v3p7Debug && v3p7Debug.ridges) || [];
+  for (const ridge of ridges) {
+    if (flips.length >= V3P8_MAX_RIDGE_OPPOSITION_FLIPS) break;
+    if (ridge.edge_type !== 'ridge') continue;
+    if (!V3P8_SLOPE_ELIGIBLE_HIERARCHY.has(ridge.hierarchy_level)) continue;
+    const members = (ridge.connected_plane_indices || []).filter(pi => {
+      const p = polygons[pi];
+      return p && p.validation_decision !== 'suppress';
+    });
+    if (members.length < 2) continue;
+    // Pick the two with the largest area (the "primary" pair for this ridge).
+    const sorted = members.slice().sort((a, b) => {
+      const pa = polygons[a], pb = polygons[b];
+      return v3p2_1ApproxArea(pb.vertices || []) - v3p2_1ApproxArea(pa.vertices || []);
+    });
+    const A = polygons[sorted[0]];
+    const B = polygons[sorted[1]];
+    const azA = A.azimuth || A.original_azimuth || 0;
+    const azB = B.azimuth || B.original_azimuth || 0;
+    const azDiff = v3p2AngularDistance(azA, azB);
+    const azOpp = v3p2AngularDistance(azA + 180, azB);
+    if (!(azDiff < V3P8_RIDGE_OPPOSITION_AZDIFF_MAX && azOpp > V3P8_RIDGE_OPPOSITION_AZOPP_MIN)) continue;
+    // Decide which side to flip: the NON-dominant one. If both or neither are
+    // dominant, flip the smaller-area one (less disruptive).
+    let flipTarget;
+    if (A.dominant_plane_flag === true && B.dominant_plane_flag !== true) flipTarget = B;
+    else if (B.dominant_plane_flag === true && A.dominant_plane_flag !== true) flipTarget = A;
+    else {
+      const areaA = v3p2_1ApproxArea(A.vertices || []);
+      const areaB = v3p2_1ApproxArea(B.vertices || []);
+      flipTarget = (areaA <= areaB) ? A : B;
+      if (flipTarget.dominant_plane_flag === true) continue; // can't flip dominant
+    }
+    // Don't double-flip what V3P4.4 / V3P8 Path B already corrected.
+    const reasons = flipTarget.validation_reasons || [];
+    if (reasons.includes('v3p4_4_slope_direction_corrected')) continue;
+    if (reasons.includes('v3p8_slope_corrected_by_skeleton')) continue;
+    const azBefore = flipTarget.azimuth || flipTarget.original_azimuth || 0;
+    const azAfter = (azBefore + 180) % 360;
+    flipTarget.v3p8_slope_before = _r2(azBefore);
+    flipTarget.v3p8_slope_after = _r2(azAfter);
+    flipTarget.v3p8_slope_corrected_by_skeleton = true;
+    flipTarget.azimuth = azAfter;
+    flipTarget.normal = v3p4_1OrientationToNormal(flipTarget.pitch || 0, azAfter);
+    flipTarget.validation_reasons = (flipTarget.validation_reasons || []).concat([
+      'v3p8_ridge_opposition_enforced'
+    ]);
+    flipTarget.v3p8_skeleton_correction_reason_codes = (flipTarget.v3p8_skeleton_correction_reason_codes || []);
+    flipTarget.v3p8_skeleton_correction_reason_codes.push('ridge_opposition_flip');
+    flips.push({
+      ridge_id: ridge.ridge_id,
+      polygon_idx: flipTarget.polygon_idx,
+      az_before: _r2(azBefore),
+      az_after: _r2(azAfter),
+      peer_polygon_idx: (flipTarget === A ? B : A).polygon_idx,
+      az_diff_before: _r2(azDiff),
+    });
+  }
+  return { flips };
+}
+
+// Orchestrator. Returns a debug block with build-level counters + per-action
+// details. Always writes the debug block (even when skipped) so downstream
+// reviewers can see the skip reason.
+function v3p8RunSkeletonCorrection(polygons, v3p7Debug) {
+  const debug = {
+    v3p8_applied: false,
+    v3p8_skeleton_correction_applied: false,
+    v3p8_skeleton_correction_skipped_reason: null,
+    v3p8_skeleton_trust_score: 0,
+    trust_breakdown: null,
+    ridge_driven_slope_corrections: 0,
+    hierarchy_corrections: 0,
+    off_skeleton_planes_flagged: 0,
+    off_skeleton_planes_removed: 0,
+    ridge_opposition_flips: 0,
+    skeleton_guided_local_rebuilds: 0, // Path C deferred out of this packet
+    slope_correction_details: [],
+    off_skeleton_details: { flagged_count: 0, suppressed: [] },
+    ridge_opposition_details: [],
+    skeleton_correction_warnings: [],
+    per_polygon: [],
+    thresholds: {
+      trust_min_ridges: V3P8_TRUST_MIN_RIDGES,
+      trust_min_ridge_coverage: V3P8_TRUST_MIN_RIDGE_COVERAGE,
+      trust_max_conflicts: V3P8_TRUST_MAX_CONFLICTS,
+      slope_flip_dot_threshold: V3P8_SLOPE_FLIP_DOT_THRESHOLD,
+      slope_eligible_hierarchy: Array.from(V3P8_SLOPE_ELIGIBLE_HIERARCHY),
+      off_skeleton_suppress_max_area_m2: V3P8_OFF_SKELETON_SUPPRESS_MAX_AREA_M2,
+      max_off_skeleton_suppressions: V3P8_MAX_OFF_SKELETON_SUPPRESSIONS,
+      ridge_opposition_azdiff_max: V3P8_RIDGE_OPPOSITION_AZDIFF_MAX,
+      ridge_opposition_azopp_min: V3P8_RIDGE_OPPOSITION_AZOPP_MIN,
+      max_ridge_opposition_flips: V3P8_MAX_RIDGE_OPPOSITION_FLIPS,
+    },
+  };
+  if (!Array.isArray(polygons) || polygons.length === 0) {
+    debug.v3p8_skeleton_correction_skipped_reason = 'no_polygons';
+    return debug;
+  }
+  debug.v3p8_applied = true;
+
+  const trust = v3p8ScoreSkeletonTrust(v3p7Debug, polygons);
+  debug.v3p8_skeleton_trust_score = trust.score;
+  debug.trust_breakdown = trust.breakdown;
+
+  if (!trust.eligible) {
+    debug.v3p8_skeleton_correction_skipped_reason = trust.reason || 'trust_gate_unspecified';
+    debug.skeleton_correction_warnings.push('skipped_' + debug.v3p8_skeleton_correction_skipped_reason);
+    // Still annotate polygons with v3p8_skeleton_supported_flag so downstream
+    // consumers know the per-polygon state even when correction was skipped.
+    for (const p of polygons) {
+      p.v3p8_skeleton_supported_flag =
+        Array.isArray(p.v3p7_assigned_ridge_ids) && p.v3p7_assigned_ridge_ids.length > 0;
+      p.v3p8_off_skeleton_flag = !p.v3p8_skeleton_supported_flag;
+      p.v3p8_off_skeleton_action = 'skeleton_correction_skipped';
+    }
+    debug.per_polygon = polygons.map(p => ({
+      polygon_idx: p.polygon_idx,
+      assigned_ridge_id: p.v3p7_primary_ridge_id,
+      assigned_hierarchy_level: p.v3p7_hierarchy_level,
+      skeleton_supported_flag: !!p.v3p8_skeleton_supported_flag,
+      slope_before: null,
+      slope_after: null,
+      slope_corrected_by_skeleton: false,
+      off_skeleton_flag: !!p.v3p8_off_skeleton_flag,
+      off_skeleton_action: p.v3p8_off_skeleton_action || null,
+      local_rebuild_applied: false,
+      skeleton_correction_reason_codes: [],
+    }));
+    return debug;
+  }
+  debug.v3p8_skeleton_correction_applied = true;
+
+  // Hierarchy protection: observational flag per polygon based on its primary
+  // ridge's hierarchy_level. Used by Path D below.
+  for (const p of polygons) {
+    if (p.v3p7_hierarchy_level === 'main') {
+      p.v3p8_skeleton_protection = 'main_ridge_attached';
+    } else if (p.v3p7_hierarchy_level === 'secondary') {
+      p.v3p8_skeleton_protection = 'secondary_ridge_attached';
+    }
+  }
+
+  // B. Skeleton-backed slope correction.
+  const slope = v3p8CorrectSlopeFromRidge(polygons, v3p7Debug);
+  debug.ridge_driven_slope_corrections = slope.corrections.length;
+  debug.slope_correction_details = slope.corrections;
+
+  // E. Ridge opposition enforcement.
+  const opp = v3p8EnforceRidgeOpposition(polygons, v3p7Debug);
+  debug.ridge_opposition_flips = opp.flips.length;
+  debug.ridge_opposition_details = opp.flips;
+
+  // D. Off-skeleton detection + suppression (runs last — uses the slope-
+  // corrected state and the skeleton protection tier from above).
+  const off = v3p8DetectOffSkeletonPlanes(polygons);
+  debug.off_skeleton_planes_flagged = off.flagged_count;
+  debug.off_skeleton_planes_removed = off.suppressed.length;
+  debug.off_skeleton_details = off;
+
+  // Hierarchy-observational count: polygons that gained a main_ridge /
+  // secondary_ridge protection flag.
+  debug.hierarchy_corrections = polygons.filter(p => p.v3p8_skeleton_protection).length;
+
+  // Per-polygon summary
+  debug.per_polygon = polygons.map(p => ({
+    polygon_idx: p.polygon_idx,
+    assigned_ridge_id: p.v3p7_primary_ridge_id,
+    assigned_hierarchy_level: p.v3p7_hierarchy_level,
+    skeleton_supported_flag: !!p.v3p8_skeleton_supported_flag,
+    skeleton_protection: p.v3p8_skeleton_protection || null,
+    slope_before: typeof p.v3p8_slope_before === 'number' ? p.v3p8_slope_before : null,
+    slope_after: typeof p.v3p8_slope_after === 'number' ? p.v3p8_slope_after : null,
+    slope_corrected_by_skeleton: p.v3p8_slope_corrected_by_skeleton === true,
+    off_skeleton_flag: !!p.v3p8_off_skeleton_flag,
+    off_skeleton_action: p.v3p8_off_skeleton_action || null,
+    local_rebuild_applied: false,
+    skeleton_correction_reason_codes: (p.v3p8_skeleton_correction_reason_codes || []).slice(),
+  }));
+
+  if (debug.ridge_driven_slope_corrections > 0) {
+    debug.skeleton_correction_warnings.push('ridge_driven_slope_corrections_' + debug.ridge_driven_slope_corrections);
+  }
+  if (debug.ridge_opposition_flips > 0) {
+    debug.skeleton_correction_warnings.push('ridge_opposition_flips_' + debug.ridge_opposition_flips);
+  }
+  if (debug.off_skeleton_planes_removed > 0) {
+    debug.skeleton_correction_warnings.push('off_skeleton_suppressed_' + debug.off_skeleton_planes_removed);
+  }
   return debug;
 }
 
@@ -31655,6 +32142,29 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     }
   }
 
+  // ── V3P8: Skeleton-driven geometry correction (active, trust-gated) ──────
+  // Runs AFTER V3P7 so it consumes the same polygon state the user will
+  // render. The trust gate short-circuits for 0-skeleton / low-coverage
+  // properties; the skip reason is recorded in the debug block. Path C
+  // (local rebuild) is deferred out of this packet.
+  const v3p8Debug = v3p4_1_rollback
+    ? { v3p8_applied: false, v3p8_skeleton_correction_skipped_reason: 'v3p4_1_rolled_back' }
+    : v3p8RunSkeletonCorrection(v3p4FinalPolygons, v3p7Debug);
+  if (v3p8Debug.v3p8_skeleton_correction_applied) {
+    if (v3p8Debug.ridge_driven_slope_corrections > 0) warnings.push('v3p8_slope_corrections_' + v3p8Debug.ridge_driven_slope_corrections);
+    if (v3p8Debug.ridge_opposition_flips > 0) warnings.push('v3p8_ridge_opposition_flips_' + v3p8Debug.ridge_opposition_flips);
+    if (v3p8Debug.off_skeleton_planes_removed > 0) warnings.push('v3p8_off_skeleton_removed_' + v3p8Debug.off_skeleton_planes_removed);
+  } else if (v3p8Debug.v3p8_applied && v3p8Debug.v3p8_skeleton_correction_skipped_reason) {
+    warnings.push('v3p8_skipped_' + v3p8Debug.v3p8_skeleton_correction_skipped_reason);
+  }
+
+  // After V3P8 path D may have suppressed polygons — filter them out of the
+  // final set and reindex.
+  if (v3p8Debug.off_skeleton_planes_removed > 0) {
+    v3p4FinalPolygons = v3p4FinalPolygons.filter(p => p.validation_decision !== 'suppress');
+    for (let i = 0; i < v3p4FinalPolygons.length; i++) v3p4FinalPolygons[i].polygon_idx = i;
+  }
+
   const totalSuppressed = v3p3Suppressed.size + v3p4Suppressed.size;
 
   return {
@@ -31794,6 +32304,10 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     // V3P7: roof skeletonization + hierarchy (observability-only). Present
     // on every run so we can review ridge graphs across the replay batch.
     v3p7_skeleton: v3p7Debug,
+    // V3P8: skeleton-driven active correction (trust-gated). Always present.
+    // When skipped, `v3p8_skeleton_correction_applied=false` + explicit
+    // `v3p8_skeleton_correction_skipped_reason`.
+    v3p8_skeleton_correction: v3p8Debug,
     // V3P4.2: dominant-lineage + rescue-metadata visibility (non-behavioral).
     v3p4_2_lineage: {
       pre_dominant_flag_count: preEnforcementSnapshot.filter(s => s.dominant_plane_flag && s.validation_decision !== 'suppress').length,
@@ -33177,4 +33691,12 @@ module.exports = {
   v3p7SegmentDist,
   v3p7PointToSegmentDist,
   v3p7RidgeSegmentBetween,
+  // V3P8 test surface
+  v3p8RunSkeletonCorrection,
+  v3p8ScoreSkeletonTrust,
+  v3p8CorrectSlopeFromRidge,
+  v3p8DetectOffSkeletonPlanes,
+  v3p8EnforceRidgeOpposition,
+  v3p8ComputeCentroidToRidgeVector,
+  v3p8ClosestPointOnSegment,
 };

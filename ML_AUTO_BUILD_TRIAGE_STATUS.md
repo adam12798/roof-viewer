@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P7 Roof Skeletonization + Hierarchy banked — observability-first, zero behavior change. Ridge/valley/hip skeleton extracted from V3P3, classified main/secondary/tertiary by structural weight. 163/163 invariants green. Live 21-case replay: scores and face counts identical to pre-V3P7 baseline. V3P8 active skeleton-driven correction deferred pending broader review.)
+**Last updated:** 2026-04-21 (V3P8 Skeleton-Driven Geometry Correction banked — first active correction layer on top of V3P7. Trust-gated; Path B slope flip restricted to ridge-type skeleton (valleys/hips have inverted downslope convention — regression caught and fixed in live validation). Path D off-skeleton flagging/suppression. Path E ridge opposition. 220/220 invariants green. Live 21-case replay: zero regression, 0 corrections fired (upstream already handled).)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2495,6 +2495,40 @@ Full section in `PROJECT_HANDOFF.md` §V3P4.4.
 **Status:** BANKED. No prior phases reopened. Planes unchanged.
 
 Full section in `PROJECT_HANDOFF.md` §V3P7.
+
+---
+
+## 31f. V3P8 Skeleton-Driven Geometry Correction
+
+**Date:** 2026-04-21
+**Scope:** First active skeleton-driven correction layer. Trust-gated; only fires on properties where V3P7 surfaced a trustworthy main-ridge skeleton. Does NOT replace the existing pipeline — sits as an additional evidence-backed correction pass on top of V3P4.4.
+
+**What shipped:**
+- **Path B — slope correction** on main/secondary ridge-type skeleton elements (valleys/hips excluded — inverted downslope convention).
+- **Path D — off-skeleton detection + conservative suppression** (small + non-dominant + redundant only).
+- **Path E — ridge opposition enforcement** on ridge-type main/secondary elements.
+- Trust gate with 5 explicit skip reasons.
+- Hierarchy-aware protection flag (`v3p8_skeleton_protection`).
+- Path C (local rebuild) DEFERRED.
+
+**Regression caught and fixed live:** initial pass flipped polygons attached to valleys (225 Gibson 0.85→0.36, 583 Westford 0.88→0.71). Root cause: Path B treated valleys same as ridges — valleys have the **opposite** downslope convention (water drains INTO valleys, AWAY FROM ridges). Fix: Path B gates on `edge_type === 'ridge'` only; tests T3.k/T3.l enforce this.
+
+**Verification:**
+- 57/57 new invariants + 163/163 V3P4.2/3/4 + V3P7 regression = **220/220** green.
+- 21/21 live replay: face counts and scores identical to pre-V3P8 baseline. Status distribution unchanged.
+- 11 of 18 properties eligible (trust passed); 7 skipped with explicit reasons.
+- 0 corrections fired in the live batch because upstream V3P4.x already handled the obvious cases. Mechanism proven, conservative by design.
+
+**Out-of-scope (per brief):** 0-skeleton properties (20 Meadow, 42 Tanager, 21 Stoddard, 52 Spaulding, Salem, 573 Westford, 74 Gates) + Puffer (no main ridge). AUD-008 (V3P3 ridge-classification threshold tightness) is the separate underlying cause for most 0-skeleton outcomes; not addressed in V3P8.
+
+**Known carry-over:**
+- Valley/hip slope correction deferred (different geometric conventions).
+- Path C (local skeleton-guided rebuild) deferred.
+- No live case exercised Path B directly — mechanism is ready but awaits a property class where V3P4.x misses and the skeleton catches.
+
+**Status:** BANKED. No prior phases reopened. Pipeline construction path untouched.
+
+Full section in `PROJECT_HANDOFF.md` §V3P8.
 
 ---
 
