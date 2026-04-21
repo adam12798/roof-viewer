@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P4.4 Roof Geometry Correction banked — active slope-flip, forced required split, missing-plane recovery, height-consistency alignment. First active-correction phase after V3P4.3's defensive packet. 105/105 invariants green. V2P4 score trades noted as truth-first over fewer-faces.)
+**Last updated:** 2026-04-21 (V3P7 Roof Skeletonization + Hierarchy banked — observability-first, zero behavior change. Ridge/valley/hip skeleton extracted from V3P3, classified main/secondary/tertiary by structural weight. 163/163 invariants green. Live 21-case replay: scores and face counts identical to pre-V3P7 baseline. V3P8 active skeleton-driven correction deferred pending broader review.)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2466,6 +2466,35 @@ Full section in `PROJECT_HANDOFF.md` §V3P4.3.
 **Status:** BANKED. No prior phases reopened. Visual verification pending.
 
 Full section in `PROJECT_HANDOFF.md` §V3P4.4.
+
+---
+
+## 31e. V3P7 Roof Skeletonization + Hierarchy (Observability-First)
+
+**Date:** 2026-04-21
+**Scope:** Observability-first, zero behavior change. Ridge/valley/hip skeleton extraction + main/secondary/tertiary hierarchy. **Planes are NOT rebuilt in this phase** — V3P7 is the diagnostic foundation for a future V3P8 skeleton-driven-correction decision.
+
+**What shipped:**
+- `v3p7ExtractRidges`, `v3p7RunSkeleton` + 6 helpers.
+- Skeleton segments from V3P3-classified edges (ridge + valley + hip), built via a 3-strategy fallback (near-shared vertices → closest pairs within 2 m → centroid-orthogonal).
+- Same-type collinear-close clustering (ridges never merge with valleys).
+- Hierarchy by `structural_weight = aggregate_length × connected_plane_area`.
+- Polygons gain 3 additive fields; debug at `md.v3p2_polygon_construction.v3p7_skeleton`.
+- Skeleton conflicts diagnosed but NOT acted on.
+
+**Verification:**
+- 58/58 new invariants + 105/105 V3P4.2/3/4 regression = **163/163** green.
+- 21/21 live replay: face counts and scores **identical** to pre-V3P7 baseline. Status distribution unchanged.
+- 8 of 12 key validation properties surface a meaningful skeleton. 4 (20 Meadow, 42 Tanager, Salem, 74 Gates) yield no skeleton — V3P3 classified all their edges as seam/uncertain (tracked under AUD-008).
+
+**V3P8 candidates, not committed:**
+- Use hierarchy_level as a gate for forced splits or recoveries.
+- Flag unassigned polygons with high pitch + central position as reconstruction candidates.
+- Ridge-direction-based plane rebuild (gated + evidence-driven).
+
+**Status:** BANKED. No prior phases reopened. Planes unchanged.
+
+Full section in `PROJECT_HANDOFF.md` §V3P7.
 
 ---
 

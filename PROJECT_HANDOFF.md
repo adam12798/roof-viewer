@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4.4 Roof Geometry Correction shipped — active slope-flip, forced required splits, missing-plane recovery, height-consistency alignment. Dominant main body preserved throughout. 33/33 new invariants + 72/72 V3P4.2/3 regression = 105/105. Live 8-property validation shows corrections firing on real data with strong evidence — V2P4 score trades noted as truth-first over fewer-faces.)
+**Last updated:** 2026-04-21 (V3P7 Roof Skeletonization + Hierarchy shipped — observability-only, zero behavior change. Extracts ridge/valley/hip skeleton from V3P3-classified edges, clusters collinear-close segments, classifies hierarchy (main/secondary/tertiary) by structural weight. 58 new invariants + 105 V3P4.2/3/4 regression = 163/163. Live 21-property replay: scores and face counts identical to pre-V3P7 baseline; 8 of 12 key properties surface a meaningful skeleton for V3P8 review.)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1778,6 +1778,129 @@ Validation reasons introduced:
 
 ---
 
+### V3P7 — Roof Skeletonization + Hierarchy (Observability-First) [BANKED]
+
+**Date:** 2026-04-21
+**Purpose:** Extract a trustworthy ridge/valley/hip skeleton from the V3P3-classified edges on every roof, group collinear-close segments into skeleton elements, and classify each element into a main/secondary/tertiary hierarchy by structural weight. **Zero behavior change** — no polygon is mutated beyond three additive debug fields. The output gives us a real picture of ridge graphs and hierarchy across the 21-property batch so we can decide whether V3P8 (active skeleton-driven correction) is warranted — and if so, exactly which polygons would benefit.
+
+**NOT this phase:** no plane rebuild, no suppression, no rebuild of `polygonConstructionAssessment`, no re-detection of edges. V3P7 consumes V3P3's classification and reorganizes it; the plane construction path is untouched.
+
+**Pipeline placement:** runs AFTER V3P4.4 (so it sees the final polygon set the user will render) and BEFORE the final return. Purely observational.
+
+**What it does:**
+
+1. **Skeleton edge collection.** For every edge with `edge_type_v3p3 ∈ {ridge, valley, hip}` between two distinct polygons, compute a physical XZ segment where the polygons meet.
+2. **Segment construction, 3-strategy fallback:**
+   - *Near-shared vertices* (≤ `V3P4_3_MERGE_SHARED_VERTEX_M = 0.40 m`) — used when polygons are snapped.
+   - *Closest vertex pairs within `V3P7_SEGMENT_FALLBACK_DIST_M = 2.0 m`* — used when polygons are adjacent but not snapped.
+   - *Centroid-orthogonal fallback* — line through the midpoint of the centroid pair, perpendicular to centroid-to-centroid direction. Used only when no vertex pair is within 2 m. Produces an approximate segment rather than silently dropping the edge. Every segment records its `strategy` so the debug consumer can distinguish snapped vs. approximate.
+3. **Cluster collinear-close same-type segments.** Two segments join the same skeleton element when their angles agree within `V3P7_RIDGE_MERGE_ANGLE_DEG = 15°` AND their nearest-point distance is within `V3P7_RIDGE_MERGE_DIST_M = 2.0 m` AND they share the same `edge_type`. Ridges, valleys, and hips never merge into the same element even when geometrically near — they are distinct structural features.
+4. **Aggregate properties per skeleton element.** `aggregate_length_m`, `mean_elevation_m`, `mean_angle_deg` (via doubled-angle averaging for undirected lines), `connected_plane_indices`, `connected_planes_total_area_m2`, `structural_weight = aggregate_length × connected_area`, bbox in XZ, per-segment details.
+5. **Hierarchy classification.** `main` = `structural_weight ≥ V3P7_MAIN_RIDGE_RATIO × max = 0.65 × max`; `secondary` = 0.30–0.65 × max; `tertiary` = everything else. Elements shorter than `V3P7_MIN_MAIN_LENGTH_M = 1.5 m` default to tertiary.
+6. **Polygon annotation.** Each polygon gains three fields: `v3p7_assigned_ridge_ids[]`, `v3p7_primary_ridge_id` (highest hierarchy level tied to it, weight as tiebreaker), `v3p7_hierarchy_level`.
+7. **Skeleton conflicts (diagnostic only, NOT acted on):** flags polygons with pitch < 3° attached to a ridge-type skeleton element, and flags polygons attached to multiple non-parallel (> 60° apart) skeleton elements. Pure warnings.
+
+**New thresholds (all in server.js):**
+`V3P7_RIDGE_MERGE_ANGLE_DEG = 15.0`, `V3P7_RIDGE_MERGE_DIST_M = 2.0`, `V3P7_SEGMENT_FALLBACK_DIST_M = 2.0`, `V3P7_MIN_MAIN_LENGTH_M = 1.5`, `V3P7_MAIN_RIDGE_RATIO = 0.65`, `V3P7_SECONDARY_RIDGE_RATIO = 0.30`.
+
+**New helpers (server.js):** `v3p7AngleDist180`, `v3p7AnglesCloseDeg`, `v3p7PointToSegmentDist`, `v3p7SegmentDist`, `v3p7RidgeSegmentBetween`, `v3p7ExtractRidges`, `v3p7AnnotatePolygonsWithRidges`, `v3p7RunSkeleton`. All seven are exposed via `module.exports` for testing.
+
+**Debug surface (`md.v3p2_polygon_construction.v3p7_skeleton`):**
+
+Build-level:
+- `v3p7_applied`, `ridges_detected`, `segments_detected`
+- `edge_type_breakdown: {ridge, valley, hip}`
+- `hierarchy_levels: {main, secondary, tertiary, unclassified}`
+- `planes_with_ridge_assignment`, `planes_without_ridge_assignment`
+- `primary_level_counts: {main, secondary, tertiary, none}`
+- `skeleton_conflicts[]` (per-conflict: `conflict_type`, polygon_idx, ridge_id, angle_delta_deg, etc.)
+- `ridges[]` — full per-skeleton-element record (id, edge_type, segment_count, aggregate_length_m, mean_elevation_m, mean_angle_deg, connected_plane_indices, connected_planes_total_area_m2, structural_weight, member_edge_indices, member_segments, strategy_counts, bbox_xz, hierarchy_level)
+- `per_polygon[]` — {polygon_idx, assigned_ridge_ids, primary_ridge_id, hierarchy_level, rebuilt_flag=false, removed_reason=null} — `rebuilt_flag` and `removed_reason` are always false/null in V3P7 (V3P8 will populate them)
+- `v3p7_warnings[]` (aggregate summary)
+- `thresholds` (all V3P7_* values + skeleton_edge_types)
+
+Polygon-level (additive, not mutating existing fields):
+- `v3p7_assigned_ridge_ids[]`
+- `v3p7_primary_ridge_id`
+- `v3p7_hierarchy_level`
+
+**Test harness:** `tools/v3p7_invariants_test.js` (run: `node tools/v3p7_invariants_test.js`). 58 assertions across 6 tests:
+
+| Test | Invariant |
+|---|---|
+| T1 (9) | Geometric helpers: undirected angle distance, point-to-segment, segment-to-segment |
+| T2 (8) | Ridge segment construction: near-shared strategy on snapped pair; fallback strategy on non-adjacent; null on <2 vertices |
+| T3 (13) | Orchestrator output shape + **zero behavior change** (deep equality check on polygon geometry pre/post) |
+| T4 (7) | Ridge grouping: single-edge → 1 ridge; far-apart → 2; close-parallel → merged; merged ridge connects all planes |
+| T4b (8) | Skeleton edge types: seam/eave/uncertain/step rejected; valley/hip accepted with correct `edge_type`; ridge+valley on same pair not merged |
+| T5 (5) | Hierarchy: biggest-weight → main; smaller → tertiary/secondary; hierarchy_levels populated |
+| T6 (8) | Polygon annotation: `v3p7_*` fields populated correctly; isolated polygon → unassigned |
+
+**Regression:** V3P4.2 (41/41) + V3P4.3 (31/31) + V3P4.4 (33/33) + V3P7 (58/58) = **163/163**. All existing invariants pass.
+
+**Live validation on 21-property replay batch:**
+
+| Property | Faces | Skeletons | R/V/H | Hierarchy (M/S/T) | W/o ridge | Notes |
+|---|---|---|---|---|---|---|
+| 15 Veteran Rd (clean) | 4 | 1 | 1/0/0 | 1/0/0 | 2 | Clean gable peak identified as main ridge |
+| 726 School St | 3 | 1 | 1/0/0 | 1/0/0 | 1 | Single main ridge |
+| 20 Meadow Dr | 5 | 0 | 0/0/0 | 0/0/0 | 5 | All V3P3 edges classified as seam/uncertain — no skeleton |
+| 225 Gibson St | 7 | 2 | 0/2/0 | 1/0/1 | 4 | Two valleys, one main + one tertiary |
+| 175 Warwick | 6 | 3 | 1/2/0 | 1/0/2 | 2 | Mixed skeleton; 2 conflicts flagged |
+| Lawrence | 4 | 1 | 0/0/1 | 1/0/0 | 2 | Single hip element as main |
+| 583 Westford St | 4 | 1 | 0/1/0 | 1/0/0 | 2 | Single valley as main |
+| 254 Foster St | 4 | 1 | 1/0/0 | 1/0/0 | 2 | Ridge captured correctly |
+| 42 Tanager St | 2 | 0 | 0/0/0 | 0/0/0 | 2 | Only 2 planes, no structural edges |
+| Salem | 2 | 0 | 0/0/0 | 0/0/0 | 2 | Only 2 planes, no structural edges |
+| 17 Church Ave | 8 | 3 | 0/1/2 | 1/1/1 | 4 | Full 3-level hierarchy, 1 conflict |
+| 74 Gates | 6 | 0 | 0/0/0 | 0/0/0 | 6 | All V3P3 edges uncertain — no skeleton |
+
+**Full 21-case replay:** 21/21 success. Face counts AND scores **identical** to the pre-V3P7 baseline. Status distribution unchanged (1 auto_accept, 17 needs_review, 3 reject). Confirmed zero behavioral change.
+
+**Observations for V3P8 scoping:**
+- **8 of 12 diverse properties surface a meaningful skeleton.** 4 (20 Meadow, 42 Tanager, Salem, 74 Gates) have no V3P3-classified ridge/valley/hip edges at all — they'd need V3P3 threshold tuning (AUD-008) before V3P7 could help them.
+- **Hierarchy works:** simple roofs get 1 main ridge, complex roofs get 3-level hierarchies (17 Church).
+- **Conflicts are rare but meaningful:** 2 on 175 Warwick (polygon spans non-parallel ridges — likely V3P3 overclassification) and 1 on 17 Church.
+- **`planes_without_ridge_assignment` is consistently high** (2–6 per roof). V3P8 must decide whether to attempt ridge-driven reconstruction for these (risky) or leave them unaltered (safe).
+- **`strategy_counts` in per-ridge debug** reveal that most segments came from `near_shared_vertices` or `closest_vertex_pairs_within_2m`; centroid fallbacks were rare — the skeleton geometry is reliable.
+
+**Files changed:**
+- `server.js` — V3P7 thresholds block, 8 new helpers, hook into `polygonConstructionAssessment` after V3P4.4, debug in return, `module.exports` extended.
+- `tools/v3p7_invariants_test.js` — new, 58 assertions.
+- `PROJECT_HANDOFF.md` — this section + milestone row.
+- `ML_AUTO_BUILD_TRIAGE_STATUS.md` — §31e (parallel record).
+
+**V3P7 success criteria check:**
+1. Ridges extracted where V3P3 classifies them — ✅ `near_shared_vertices` strategy dominates when polygons are snapped.
+2. Fallback strategy produces a usable segment when vertices aren't near-shared — ✅ `closest_vertex_pairs_within_2m` and `centroid_orthogonal_fallback` with explicit strategy records.
+3. Hierarchy classification is stable and inspectable — ✅ main/secondary/tertiary populated by structural weight; hierarchy thresholds explicit.
+4. Zero behavior change on live batch — ✅ 21/21 scores and face counts identical to pre-V3P7.
+5. Skeleton conflicts surfaced as diagnostic only — ✅ 2 properties flagged, no action taken.
+6. V3P8 has a trustworthy foundation to build on — ✅ 8 of 12 key properties surface a real skeleton; the 4 blanks are V3P3 threshold issues, not V3P7 issues.
+
+**Does V3P7 bank?** Yes. Success criteria all pass. Zero behavior change is proven.
+
+**Prior phases reopened?** None.
+
+**What V3P7 does NOT do** (intentional scope gate per prompt):
+- Does NOT rebuild planes from ridges. The existing polygon construction path is untouched.
+- Does NOT replace `polygonConstructionAssessment`. It runs AFTER it.
+- Does NOT suppress, split, merge, or refit any polygon. Polygons gain 3 additive debug fields; nothing else changes.
+- Does NOT re-run the ML pipeline or re-detect edges. It consumes V3P3's classification.
+
+**V3P8 scope candidates (for later, not now):**
+- Use `v3p7_hierarchy_level` as a gate for V3P4.4 corrections (e.g., force-split only when internal variance crosses a non-main skeleton element).
+- Detect and flag `planes_without_ridge_assignment` with high pitch + central position → likely needs attachment or has wrong orientation.
+- Selectively rebuild polygons based on ridge direction (gated by confidence + evidence).
+- None of these are committed behavior yet. V3P7 is the diagnostic foundation; V3P8 is the decision.
+
+**Known limitations / carry-over:**
+- 4 of 12 properties surface no skeleton because V3P3 classifies all their edges as seam/uncertain. AUD-008 (audit item) already tracks V3P3 ridge-classification threshold tightness.
+- The `centroid_orthogonal_fallback` strategy is rarely used today but would become important if polygons drift significantly from adjacency — monitor strategy_counts on new property classes.
+- Skeleton conflicts are observational; a later phase may want to turn them into active corrections.
+
+---
+
 These items are tracked but not tied to the active phase:
 - **Recover 7 missing labeled rows.** 0 missing clean confirmed. Low priority.
 - **Resolve §4.2 duplicate draft ID.** `mld_mo39na4r9jej` labels 74 Gates and 14 Warren Ave. One is a phantom.
@@ -1791,6 +1914,7 @@ These items are tracked but not tied to the active phase:
 
 | Date | Milestone |
 |---|---|
+| 2026-04-21 | V3P7 Roof Skeletonization + Hierarchy — banked. **Observability-first, zero behavior change.** Extracts skeleton edges (ridge/valley/hip) from V3P3-classified edges, builds physical segments via 3-strategy fallback (near-shared vertices → closest pairs within 2 m → centroid-orthogonal), clusters collinear-close same-type segments into skeleton elements, classifies each into main/secondary/tertiary by structural_weight = aggregate_length × total_connected_plane_area. Polygons gain 3 additive debug fields (`v3p7_assigned_ridge_ids`, `v3p7_primary_ridge_id`, `v3p7_hierarchy_level`). New debug block `md.v3p2_polygon_construction.v3p7_skeleton` with per-ridge details (connected planes, bbox, strategy counts), hierarchy counts, edge-type breakdown, skeleton conflicts (diagnostic only). New thresholds: `V3P7_RIDGE_MERGE_ANGLE_DEG=15`, `V3P7_RIDGE_MERGE_DIST_M=2.0`, `V3P7_SEGMENT_FALLBACK_DIST_M=2.0`, `V3P7_MIN_MAIN_LENGTH_M=1.5`, `V3P7_MAIN_RIDGE_RATIO=0.65`, `V3P7_SECONDARY_RIDGE_RATIO=0.30`. `tools/v3p7_invariants_test.js` — 58 assertions, all pass. Full regression 163/163 (V3P4.2 41+V3P4.3 31+V3P4.4 33+V3P7 58). Live 21-case replay: scores and face counts identical to pre-V3P7 baseline (1 auto_accept / 17 needs_review / 3 reject). Live skeleton results on 12 key properties: 8 surface a meaningful skeleton (main ridge on 15 Veteran / 254 Foster; multi-level hierarchy on 175 Warwick / 17 Church); 4 (20 Meadow, 42 Tanager, Salem, 74 Gates) have no skeleton because V3P3 classifies their edges as seam/uncertain — tracked under AUD-008. Polygon construction path untouched. V3P8 (active skeleton-driven correction) deferred until we review live skeletons across more properties. |
 | 2026-04-21 | V3P4.4 Roof Geometry Correction — banked. First ACTIVE correction phase (prior V3P4.x were defensive). Four correction paths shipped: **A. Slope direction correction** — flips non-dominant ridge-connected polygons whose downslope points toward (not away from) the ridge, gated by `fused_edge_score ≥ 0.60` and `centroid_to_edge_dot > 0.55`. **B. Required split enforcement** — V3P3-flagged polygons with internal az variance ≥ 90°, area ≥ 15 m², non-dominant, non-hip-signature get a V3P2.2 multi-angle split (X-median fallback still blocked per V3P4.3); requires post-split az diff ≥ 45° and improvement ≥ 0.20. **C. Missing major plane recovery** — DSM clusters elevated above ground (2.5–14 m), not inside any existing polygon, within 3 cells of one, ≥ 5 m², fit RMSE ≤ 0.8 m, pitch 5–55°; strictly additive; capped at 2 per roof; full geometry metadata and provenance `missing_plane_recovery_source: 'dsm_adjacent_cluster'`. **D. Height consistency correction** — ridge-adjacent pairs with base height diff 0.5–4.0 m aligned (dominant anchors when present; average otherwise; never touches step edges). Dominant main body preserved throughout — dominant polygons never flipped, never force-split, anchor height alignment. Debug surface `md.v3p2_polygon_construction.v3p4_4_geometry_correction` with build-level counters, per-correction details, `required_split_blocks[]` with reasons, and `dominant_main_body_preserved_count`. `tools/v3p4_4_invariants_test.js` — 33 assertions across 5 tests, all pass. V3P4.2 (41/41) + V3P4.3 (31/31) regression clean. Combined 105/105. Live 8-property validation: 15 Veteran clean control 3→4 faces (1 recovery, plausible porch/garage at 23.88 m² RMSE 0.73); 20 Meadow 4→5 (1 forced split + 1 recovery, matches brief expectation); 17 Church 6→8 (2 low-pitch recoveries 16–18 m²); 74 Gates 4→6 (1 forced split with az_variance 169.68° + improvement 0.80, textbook legitimate). V2P4 consistency score drops on correction cases (truth-first over fewer-faces — intended architectural tension with V2P4 fragmentation penalty). No prior phases reopened. Visual verification recommended before production push. |
 | 2026-04-21 | V3P4.3 Geometry Stabilization Packet — banked. Addresses GEOM-001/002/003/004/005/006 (+ GEOM-008 subsumed) from the V3 Geometry Audit using the smallest safe patch set. **A (GEOM-002/003):** ridge sanity moved to AFTER `v3p3ClassifyEdgeTypes`, now consults `edge_type_v3p3` with fallback, and when sanity fails reclassifies the edge to `seam` (not a warning). **B (GEOM-001/008):** new `v3p2SafeMergePair` requires at least one near-shared vertex (≤0.40 m) AND hull inflation ≤15% of source-area sum; unsafe merges are skipped with explicit reason. **C (GEOM-005):** `v3p4_3IsFallbackSplit` rejects `x_median_fallback` in both `v3p4EnforceInternalPlaneConsistency` and `v3p4EnforceStructuralBoundaries`; blocked splits recorded in `v3p4_3_blocked_x_median_splits[]`. **D (GEOM-004):** `v3p1DetectRidgeConflict` now tests 4 axes (x, z, 45°, 135°) and picks the strongest opposition; legacy X-axis behavior preserved for N-S ridges. **E (GEOM-006):** `v3p4_3HasHipSignature` detects 4-way-symmetric quadrant azimuths with consistent pitch; when a polygon's high az-variance is a genuine hip signature, the alarming variance warning is replaced with `v3p4_3_hip_signature_anchor_exempt` (anchor still blocks the averaging refit). New thresholds: V3P4_3_MERGE_SHARED_VERTEX_M=0.40, V3P4_3_MERGE_MAX_HULL_INFLATION=0.15, V3P4_3_HIP_PITCH_VARIANCE_DEG=10, V3P4_3_HIP_GAP_TOLERANCE_DEG=30, V3P4_3_HIP_MIN_SAMPLES=40. New debug surface `md.v3p2_polygon_construction.v3p4_3_stabilization` with build-level counters + per-edge / per-polygon reasoning. Test harness `tools/v3p4_3_invariants_test.js` (31 assertions across 5 invariants) all pass; V3P4.2 regression (41/41) also still passes. 72/72 combined. No prior phases reopened. Per-property replay revalidation deferred to next ML wrapper run. Audit items GEOM-007/009/010/011/012/013 remain open for a later packet. |
 | 2026-04-21 | V3 Geometry Audit — Report Only complete. 13 findings ranked: GEOM-001 CRITICAL (convex-hull merge over-extends into non-roof), GEOM-002/003/004/005/006 HIGH (ridge sanity flags-but-never-corrects + reads stale `edge_type_guess`; V3P1 ridge detection X-median only; enforcement internal splits use X-median fallback; orientation anchoring blocks hip-roof refits), GEOM-007/008/009/010/011/012 MEDIUM (cascade-snap vertex collapse; convex-hull merge destroys concavity; rescue-plane cell-center hull insets 0.125 m; post-split pitch allowed 19.9° drift toward flat; centroid-angle resort of cut output; no simplicity validation), GEOM-013 LOW (rescue `Math.round` instead of `_r2`). 10 confirmed-safe areas (V3P1 plane fit, V3P4.1 normal sign, V3P4.1 round-trip, V3P2.2 scoring, V3P2.1 fusion, V3P3 reclassify path, V3P4.2 lineage, V3P4.2 rescue metadata, V3P3 internal flag, V3P5/V3P6 RMSE gate). 7 watchlist items. Recommended V3P4.3 Geometry Stabilization phase bundling GEOM-001/002/003/004/005 + 008 (∼3–4 hr, low-risk). Feature work should pause for V3P4.3 before any new enforcement/policy is added. No code changed in this audit. |

@@ -29402,6 +29402,492 @@ function v3p4_4RunGeometryCorrection(polygons, edges, grid, v3p3Internal) {
   return debug;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V3P7 — Roof Skeletonization + Hierarchy (observability-first)
+//
+// Extracts a ridge-driven skeleton from V3P3's already-classified ridge edges
+// and classifies each ridge into a main/secondary/tertiary hierarchy. This
+// phase is PURELY OBSERVATIONAL — no polygon is suppressed, split, refit,
+// merged, or otherwise mutated. The only per-polygon changes are three
+// additive debug fields: v3p7_assigned_ridge_ids[], v3p7_primary_ridge_id,
+// v3p7_hierarchy_level. The aggregate report lives at
+// md.v3p2_polygon_construction.v3p7_skeleton.
+//
+// The point of V3P7 is to give us a trustworthy ridge graph and hierarchy
+// picture on real roofs, so we can decide whether a future V3P8
+// skeleton-driven correction phase is warranted — and if so, exactly which
+// polygons would benefit. V3P7 is safe to bank even if some reported
+// hierarchies are imperfect; it's a diagnostic, not a correction.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Two ridge segments are "collinear enough to merge" if their direction
+// angles agree within V3P7_RIDGE_MERGE_ANGLE_DEG (undirected, 0–180°) AND
+// their nearest-point distance is within V3P7_RIDGE_MERGE_DIST_M.
+const V3P7_RIDGE_MERGE_ANGLE_DEG = 15.0;
+const V3P7_RIDGE_MERGE_DIST_M = 2.0;
+// Segments shorter than this still get recorded but cannot be "main".
+const V3P7_MIN_MAIN_LENGTH_M = 1.5;
+// Hierarchy thresholds as a ratio of the max structural weight in the roof.
+// structural_weight = aggregate_length × total_connected_plane_area. A roof
+// with a dominant long ridge connected to large planes gets classified as
+// main; smaller but material ridges are secondary; everything else tertiary.
+const V3P7_MAIN_RIDGE_RATIO = 0.65;
+const V3P7_SECONDARY_RIDGE_RATIO = 0.30;
+
+// Angle distance between two undirected line angles (both 0–180°).
+function v3p7AngleDist180(a, b) {
+  let d = Math.abs(a - b) % 180;
+  if (d > 90) d = 180 - d;
+  return d;
+}
+
+function v3p7AnglesCloseDeg(a, b) {
+  return v3p7AngleDist180(a, b) <= V3P7_RIDGE_MERGE_ANGLE_DEG;
+}
+
+// XZ point-to-segment distance.
+function v3p7PointToSegmentDist(p, p1, p2) {
+  const dx = p2.x - p1.x, dz = p2.z - p1.z;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-12) return Math.hypot(p.x - p1.x, p.z - p1.z);
+  const t = Math.max(0, Math.min(1, ((p.x - p1.x) * dx + (p.z - p1.z) * dz) / len2));
+  const px = p1.x + t * dx, pz = p1.z + t * dz;
+  return Math.hypot(p.x - px, p.z - pz);
+}
+
+// Minimum XZ distance between two segments (each defined by p1/p2).
+function v3p7SegmentDist(segA, segB) {
+  return Math.min(
+    v3p7PointToSegmentDist(segA.p1, segB.p1, segB.p2),
+    v3p7PointToSegmentDist(segA.p2, segB.p1, segB.p2),
+    v3p7PointToSegmentDist(segB.p1, segA.p1, segA.p2),
+    v3p7PointToSegmentDist(segB.p2, segA.p1, segA.p2),
+  );
+}
+
+// V3P7 skeleton scope: ridges alone cover too little of real residential
+// roofs. Most V3P3-classified structural edges are valleys and hips, not
+// ridges. For the skeleton + hierarchy picture to be trustworthy we include
+// all three structural edge types (ridge, valley, hip). Each resulting
+// skeleton segment carries its original edge type so V3P8 can decide
+// whether to treat them differently.
+const V3P7_SKELETON_EDGE_TYPES = new Set(['ridge', 'valley', 'hip']);
+
+// Compute the physical segment where two polygons meet, given that V3P3 has
+// classified their shared edge as a skeleton edge (ridge / valley / hip).
+//
+// Strategy:
+//   1. Near-shared vertex pairs (≤ V3P4_3_MERGE_SHARED_VERTEX_M = 0.40 m).
+//      Best accuracy; used when polygons have been snapped.
+//   2. Closest vertex pairs within V3P7_SEGMENT_FALLBACK_DIST_M = 2.0 m.
+//      Used when polygons are adjacent but not yet snapped.
+//   3. Centroid-connecting midpoints along each polygon's closest edge.
+//      Last-resort when no vertex pair is close enough. Produces an
+//      approximate segment rather than dropping the edge entirely.
+//
+// Strategy is recorded per segment for diagnostics.
+const V3P7_SEGMENT_FALLBACK_DIST_M = 2.0;
+
+function v3p7RidgeSegmentBetween(polyA, polyB, edgeType) {
+  const vertsA = (polyA && polyA.vertices) || [];
+  const vertsB = (polyB && polyB.vertices) || [];
+  if (vertsA.length < 2 || vertsB.length < 2) return null;
+
+  // Gather all vertex pairs sorted by distance.
+  const pairs = [];
+  for (let ai = 0; ai < vertsA.length; ai++) {
+    for (let bi = 0; bi < vertsB.length; bi++) {
+      const d = Math.hypot(vertsA[ai].x - vertsB[bi].x, vertsA[ai].z - vertsB[bi].z);
+      pairs.push({
+        d,
+        mid: { x: (vertsA[ai].x + vertsB[bi].x) / 2, z: (vertsA[ai].z + vertsB[bi].z) / 2 },
+      });
+    }
+  }
+  if (pairs.length === 0) return null;
+  pairs.sort((p, q) => p.d - q.d);
+
+  // Strategy 1: near-shared vertex pairs.
+  let strategy = null;
+  let picked = [];
+  const nearShared = pairs.filter(p => p.d <= V3P4_3_MERGE_SHARED_VERTEX_M);
+  if (nearShared.length >= 2) {
+    picked = [nearShared[0]];
+    for (let k = 1; k < nearShared.length && picked.length < 2; k++) {
+      const prev = picked[picked.length - 1].mid;
+      const cur = nearShared[k].mid;
+      if (Math.hypot(prev.x - cur.x, prev.z - cur.z) > 0.05) picked.push(nearShared[k]);
+    }
+    if (picked.length === 2) strategy = 'near_shared_vertices';
+  }
+
+  // Strategy 2: closest vertex pairs within fallback distance.
+  if (strategy == null) {
+    const fallbackPairs = pairs.filter(p => p.d <= V3P7_SEGMENT_FALLBACK_DIST_M);
+    if (fallbackPairs.length >= 2) {
+      picked = [fallbackPairs[0]];
+      for (let k = 1; k < fallbackPairs.length && picked.length < 2; k++) {
+        const prev = picked[picked.length - 1].mid;
+        const cur = fallbackPairs[k].mid;
+        if (Math.hypot(prev.x - cur.x, prev.z - cur.z) > 0.05) picked.push(fallbackPairs[k]);
+      }
+      if (picked.length === 2) strategy = 'closest_vertex_pairs_within_2m';
+    }
+  }
+
+  // Strategy 3: centroid-orthogonal fallback. Line passes through the
+  // midpoint of the centroid pair, perpendicular to the centroid vector.
+  // Length is sized to the polygons' effective shared span.
+  if (strategy == null) {
+    const cA = v3p2PolygonCentroid(vertsA);
+    const cB = v3p2PolygonCentroid(vertsB);
+    const cx = (cA.x + cB.x) / 2;
+    const cz = (cA.z + cB.z) / 2;
+    const dx = cB.x - cA.x;
+    const dz = cB.z - cA.z;
+    const mag = Math.hypot(dx, dz) || 1e-9;
+    // Perpendicular unit vector to the centroid-to-centroid direction.
+    const perpDx = -dz / mag;
+    const perpDz = dx / mag;
+    // Segment length: smaller of the two polygons' diagonal extents — a
+    // reasonable proxy for the shared edge length.
+    function extent(verts) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const v of verts) {
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+        if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+      }
+      return Math.min(maxX - minX, maxZ - minZ);
+    }
+    const halfLen = Math.min(extent(vertsA), extent(vertsB)) / 2;
+    if (!(halfLen > 0.1)) return null;
+    picked = [
+      { mid: { x: cx - perpDx * halfLen, z: cz - perpDz * halfLen } },
+      { mid: { x: cx + perpDx * halfLen, z: cz + perpDz * halfLen } },
+    ];
+    strategy = 'centroid_orthogonal_fallback';
+  }
+
+  const p1 = picked[0].mid;
+  const p2 = picked[1].mid;
+  const dx = p2.x - p1.x, dz = p2.z - p1.z;
+  const length = Math.hypot(dx, dz);
+  if (length < 0.1) return null;
+  let angleDeg = Math.atan2(dz, dx) * 180 / Math.PI;
+  angleDeg = ((angleDeg % 180) + 180) % 180;
+  const meanElev = (((polyA && polyA.height) || 0) + ((polyB && polyB.height) || 0)) / 2;
+  return {
+    p1, p2,
+    direction_xz: { dx: dx / length, dz: dz / length },
+    angle_deg: _r2(angleDeg),
+    length_m: _r2(length),
+    mean_elevation_m: _r2(meanElev),
+    edge_type: edgeType || null,
+    strategy,
+  };
+}
+
+function v3p7ExtractRidges(polygons, edges) {
+  const { faceToPolyIdx } = v3p3BuildPolyAdjacency(edges, polygons);
+  // Step 1: per-edge skeleton segments (ridge + valley + hip).
+  const segments = [];
+  for (const edge of edges || []) {
+    if (!edge) continue;
+    const etype = edge.edge_type_v3p3;
+    if (!V3P7_SKELETON_EDGE_TYPES.has(etype)) continue;
+    const pAIdx = faceToPolyIdx.get(edge.face_a_idx);
+    const pBIdx = faceToPolyIdx.get(edge.face_b_idx);
+    if (pAIdx == null || pBIdx == null || pAIdx === pBIdx) continue;
+    const polyA = polygons[pAIdx];
+    const polyB = polygons[pBIdx];
+    if (!polyA || !polyB) continue;
+    const seg = v3p7RidgeSegmentBetween(polyA, polyB, etype);
+    if (!seg) continue;
+    segments.push({
+      edge_idx: edge.edge_idx,
+      poly_a_idx: pAIdx,
+      poly_b_idx: pBIdx,
+      edge_type: etype,
+      segment: seg,
+    });
+  }
+
+  // Step 2: cluster collinear/near segments into ridge groups via a simple
+  // iterative-merge loop. A segment joins an existing group when it is
+  // collinear-and-close with ANY member of that group AND shares the same
+  // structural edge_type. Mixing ridge/valley/hip would be incorrect —
+  // these are distinct roof-skeletal elements even when spatially near.
+  const groups = [];
+  const groupOf = new Array(segments.length).fill(-1);
+  for (let i = 0; i < segments.length; i++) {
+    if (groupOf[i] >= 0) continue;
+    const gi = groups.length;
+    groups.push([i]);
+    groupOf[i] = gi;
+    const groupType = segments[i].edge_type;
+    let growing = true;
+    while (growing) {
+      growing = false;
+      for (let j = 0; j < segments.length; j++) {
+        if (groupOf[j] >= 0) continue;
+        if (segments[j].edge_type !== groupType) continue;
+        const sJ = segments[j].segment;
+        let joined = false;
+        for (const memberIdx of groups[gi]) {
+          const sM = segments[memberIdx].segment;
+          if (!v3p7AnglesCloseDeg(sM.angle_deg, sJ.angle_deg)) continue;
+          if (v3p7SegmentDist(sM, sJ) > V3P7_RIDGE_MERGE_DIST_M) continue;
+          joined = true;
+          break;
+        }
+        if (joined) {
+          groups[gi].push(j);
+          groupOf[j] = gi;
+          growing = true;
+        }
+      }
+    }
+  }
+
+  // Step 3: aggregate ridge properties.
+  const ridges = groups.map((segmentIndices, ridgeId) => {
+    let totalLength = 0;
+    let elevSum = 0, elevCount = 0;
+    let angleSumSin = 0, angleSumCos = 0;
+    const connectedPlanes = new Set();
+    const memberEdges = [];
+    const memberSegments = [];
+    let bbMinX = Infinity, bbMaxX = -Infinity, bbMinZ = Infinity, bbMaxZ = -Infinity;
+    const groupEdgeType = segments[segmentIndices[0]].edge_type;
+    const strategyCounts = {};
+    for (const idx of segmentIndices) {
+      const s = segments[idx];
+      totalLength += s.segment.length_m;
+      elevSum += s.segment.mean_elevation_m;
+      elevCount++;
+      // Average angles via sin/cos to handle wraparound (doubled so undirected).
+      const rad = s.segment.angle_deg * 2 * Math.PI / 180;
+      angleSumSin += Math.sin(rad);
+      angleSumCos += Math.cos(rad);
+      connectedPlanes.add(s.poly_a_idx);
+      connectedPlanes.add(s.poly_b_idx);
+      memberEdges.push(s.edge_idx);
+      memberSegments.push({
+        edge_idx: s.edge_idx,
+        poly_a_idx: s.poly_a_idx,
+        poly_b_idx: s.poly_b_idx,
+        p1: s.segment.p1,
+        p2: s.segment.p2,
+        length_m: s.segment.length_m,
+        angle_deg: s.segment.angle_deg,
+        edge_type: s.edge_type,
+        strategy: s.segment.strategy,
+      });
+      strategyCounts[s.segment.strategy] = (strategyCounts[s.segment.strategy] || 0) + 1;
+      bbMinX = Math.min(bbMinX, s.segment.p1.x, s.segment.p2.x);
+      bbMaxX = Math.max(bbMaxX, s.segment.p1.x, s.segment.p2.x);
+      bbMinZ = Math.min(bbMinZ, s.segment.p1.z, s.segment.p2.z);
+      bbMaxZ = Math.max(bbMaxZ, s.segment.p1.z, s.segment.p2.z);
+    }
+    const meanElev = elevCount ? elevSum / elevCount : 0;
+    // Undirected angle via doubled-angle mean.
+    const meanAngleDeg = (Math.atan2(angleSumSin, angleSumCos) * 180 / Math.PI) / 2;
+    const connectedPlaneIdx = Array.from(connectedPlanes).sort((a, b) => a - b);
+    let connectedArea = 0;
+    for (const pi of connectedPlaneIdx) {
+      const p = polygons[pi];
+      if (p && Array.isArray(p.vertices)) connectedArea += v3p2_1ApproxArea(p.vertices);
+    }
+    const structuralWeight = totalLength * connectedArea;
+    return {
+      ridge_id: ridgeId,
+      edge_type: groupEdgeType, // ridge | valley | hip
+      segment_count: segmentIndices.length,
+      aggregate_length_m: _r2(totalLength),
+      mean_elevation_m: _r2(meanElev),
+      mean_angle_deg: _r2(((meanAngleDeg % 180) + 180) % 180),
+      connected_plane_indices: connectedPlaneIdx,
+      connected_planes_total_area_m2: _r2(connectedArea),
+      structural_weight: _r2(structuralWeight),
+      member_edge_indices: memberEdges,
+      member_segments: memberSegments,
+      strategy_counts: strategyCounts,
+      bbox_xz: {
+        min_x: _r2(bbMinX), max_x: _r2(bbMaxX),
+        min_z: _r2(bbMinZ), max_z: _r2(bbMaxZ),
+      },
+      hierarchy_level: 'unclassified',
+    };
+  });
+
+  // Step 4: hierarchy classification by structural weight.
+  const maxWeight = ridges.reduce((m, r) => (r.structural_weight > m ? r.structural_weight : m), 0);
+  for (const r of ridges) {
+    if (maxWeight <= 0 || r.aggregate_length_m < V3P7_MIN_MAIN_LENGTH_M) {
+      r.hierarchy_level = 'tertiary';
+      continue;
+    }
+    const ratio = r.structural_weight / maxWeight;
+    if (ratio >= V3P7_MAIN_RIDGE_RATIO) r.hierarchy_level = 'main';
+    else if (ratio >= V3P7_SECONDARY_RIDGE_RATIO) r.hierarchy_level = 'secondary';
+    else r.hierarchy_level = 'tertiary';
+  }
+
+  return { ridges, segments };
+}
+
+function v3p7AnnotatePolygonsWithRidges(polygons, ridges) {
+  const levelRank = { main: 3, secondary: 2, tertiary: 1, unclassified: 0 };
+  for (const p of polygons) {
+    p.v3p7_assigned_ridge_ids = [];
+    p.v3p7_primary_ridge_id = null;
+    p.v3p7_hierarchy_level = null;
+  }
+  for (const ridge of ridges) {
+    for (const pi of ridge.connected_plane_indices) {
+      const p = polygons[pi];
+      if (!p) continue;
+      p.v3p7_assigned_ridge_ids.push(ridge.ridge_id);
+    }
+  }
+  for (const p of polygons) {
+    if (!p.v3p7_assigned_ridge_ids.length) continue;
+    let bestRank = -1, bestWeight = -1, bestId = null, bestLevel = null;
+    for (const rid of p.v3p7_assigned_ridge_ids) {
+      const ridge = ridges[rid];
+      const rank = levelRank[ridge.hierarchy_level] || 0;
+      if (rank > bestRank || (rank === bestRank && ridge.structural_weight > bestWeight)) {
+        bestRank = rank;
+        bestWeight = ridge.structural_weight;
+        bestId = ridge.ridge_id;
+        bestLevel = ridge.hierarchy_level;
+      }
+    }
+    p.v3p7_primary_ridge_id = bestId;
+    p.v3p7_hierarchy_level = bestLevel;
+  }
+}
+
+// Orchestrator. Observational only — does NOT mutate polygon geometry, pitch,
+// azimuth, height, vertices, fit_rmse, dominant_plane_flag, or any
+// validation_decision. Only adds three v3p7_* fields per polygon.
+function v3p7RunSkeleton(polygons, edges) {
+  const debug = {
+    v3p7_applied: false,
+    ridges_detected: 0,
+    segments_detected: 0,
+    edge_type_breakdown: { ridge: 0, valley: 0, hip: 0 },
+    hierarchy_levels: { main: 0, secondary: 0, tertiary: 0, unclassified: 0 },
+    planes_with_ridge_assignment: 0,
+    planes_without_ridge_assignment: 0,
+    primary_level_counts: { main: 0, secondary: 0, tertiary: 0, none: 0 },
+    skeleton_conflicts: [],
+    ridges: [],
+    per_polygon: [],
+    v3p7_warnings: [],
+    thresholds: {
+      ridge_merge_angle_deg: V3P7_RIDGE_MERGE_ANGLE_DEG,
+      ridge_merge_dist_m: V3P7_RIDGE_MERGE_DIST_M,
+      min_main_length_m: V3P7_MIN_MAIN_LENGTH_M,
+      main_ridge_ratio: V3P7_MAIN_RIDGE_RATIO,
+      secondary_ridge_ratio: V3P7_SECONDARY_RIDGE_RATIO,
+      segment_fallback_dist_m: V3P7_SEGMENT_FALLBACK_DIST_M,
+      skeleton_edge_types: Array.from(V3P7_SKELETON_EDGE_TYPES),
+    },
+  };
+  if (!Array.isArray(polygons) || polygons.length === 0) return debug;
+  if (!Array.isArray(edges)) edges = [];
+
+  debug.v3p7_applied = true;
+  const { ridges, segments } = v3p7ExtractRidges(polygons, edges);
+  debug.ridges_detected = ridges.length;
+  debug.segments_detected = segments.length;
+  for (const r of ridges) {
+    debug.hierarchy_levels[r.hierarchy_level] = (debug.hierarchy_levels[r.hierarchy_level] || 0) + 1;
+    debug.edge_type_breakdown[r.edge_type] = (debug.edge_type_breakdown[r.edge_type] || 0) + 1;
+  }
+  debug.ridges = ridges;
+
+  v3p7AnnotatePolygonsWithRidges(polygons, ridges);
+
+  for (const p of polygons) {
+    if (p.v3p7_primary_ridge_id != null) {
+      debug.planes_with_ridge_assignment++;
+      const lvl = p.v3p7_hierarchy_level || 'unclassified';
+      debug.primary_level_counts[lvl] = (debug.primary_level_counts[lvl] || 0) + 1;
+    } else {
+      debug.planes_without_ridge_assignment++;
+      debug.primary_level_counts.none = (debug.primary_level_counts.none || 0) + 1;
+    }
+    debug.per_polygon.push({
+      polygon_idx: p.polygon_idx,
+      assigned_ridge_ids: (p.v3p7_assigned_ridge_ids || []).slice(),
+      primary_ridge_id: p.v3p7_primary_ridge_id,
+      hierarchy_level: p.v3p7_hierarchy_level,
+      // V3P8 will populate these; here they are always debug-only null/false.
+      rebuilt_flag: false,
+      removed_reason: null,
+    });
+  }
+
+  // Skeleton conflicts: diagnostic only, not acted on. Flag only ridges
+  // with near-flat planes — valleys and hips can legitimately connect to
+  // lower-pitch sections.
+  for (const p of polygons) {
+    const ridgeId = p.v3p7_primary_ridge_id;
+    if (ridgeId == null) continue;
+    const ridge = ridges[ridgeId];
+    if (!ridge || ridge.edge_type !== 'ridge') continue;
+    const pitch = p.pitch || p.original_pitch || 0;
+    if (pitch < 3) {
+      debug.skeleton_conflicts.push({
+        polygon_idx: p.polygon_idx,
+        ridge_id: ridgeId,
+        edge_type: ridge.edge_type,
+        conflict_type: 'low_pitch_on_ridge',
+        pitch_deg: _r2(pitch),
+      });
+    }
+  }
+  // Cross-ridge consistency: a single polygon attached to two ridges whose
+  // aggregate angles differ by > 60° is unusual — flag for review.
+  for (const p of polygons) {
+    const ids = p.v3p7_assigned_ridge_ids || [];
+    if (ids.length < 2) continue;
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = ridges[ids[i]].mean_angle_deg;
+        const b = ridges[ids[j]].mean_angle_deg;
+        const d = v3p7AngleDist180(a, b);
+        if (d > 60) {
+          debug.skeleton_conflicts.push({
+            polygon_idx: p.polygon_idx,
+            ridge_id_a: ids[i],
+            ridge_id_b: ids[j],
+            angle_delta_deg: _r2(d),
+            conflict_type: 'polygon_spans_non_parallel_ridges',
+          });
+        }
+      }
+    }
+  }
+
+  if (debug.ridges_detected === 0 && polygons.length >= 3) {
+    debug.v3p7_warnings.push('no_ridges_detected_despite_' + polygons.length + '_polygons');
+  }
+  if (debug.ridges_detected > 0 && debug.hierarchy_levels.main === 0) {
+    debug.v3p7_warnings.push('no_main_ridge_' + debug.ridges_detected + '_ridges_all_below_threshold');
+  }
+  if (debug.skeleton_conflicts.length > 0) {
+    debug.v3p7_warnings.push('skeleton_conflicts_' + debug.skeleton_conflicts.length);
+  }
+  if (debug.planes_without_ridge_assignment > 0) {
+    debug.v3p7_warnings.push('planes_without_ridge_' + debug.planes_without_ridge_assignment);
+  }
+
+  return debug;
+}
+
 function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
   const debug = {
     v3p4_enforcement_applied: false,
@@ -31155,6 +31641,20 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     if (v3p4_4Debug.height_consistency_corrections > 0) warnings.push('v3p4_4_height_aligned_' + v3p4_4Debug.height_consistency_corrections);
   }
 
+  // ── V3P7: Roof skeletonization + hierarchy (observability-first) ─────────
+  // Runs AFTER V3P4.4 so it sees the final polygon set the user will render.
+  // PURELY OBSERVATIONAL — adds v3p7_* fields to polygons and produces the
+  // md.v3p2_polygon_construction.v3p7_skeleton debug block. No suppression,
+  // split, merge, refit, or geometry mutation. Design intent: give the next
+  // phase (V3P8) a trustworthy ridge graph to act on.
+  const v3p7Debug = v3p7RunSkeleton(v3p4FinalPolygons, edges);
+  if (v3p7Debug.v3p7_applied) {
+    if (v3p7Debug.ridges_detected > 0) warnings.push('v3p7_ridges_' + v3p7Debug.ridges_detected);
+    if (v3p7Debug.skeleton_conflicts && v3p7Debug.skeleton_conflicts.length > 0) {
+      warnings.push('v3p7_skeleton_conflicts_' + v3p7Debug.skeleton_conflicts.length);
+    }
+  }
+
   const totalSuppressed = v3p3Suppressed.size + v3p4Suppressed.size;
 
   return {
@@ -31291,6 +31791,9 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     // missing-plane recovery, height consistency). Present only when not
     // skipped by the V3P4.1 rollback.
     v3p4_4_geometry_correction: v3p4_4Debug,
+    // V3P7: roof skeletonization + hierarchy (observability-only). Present
+    // on every run so we can review ridge graphs across the replay batch.
+    v3p7_skeleton: v3p7Debug,
     // V3P4.2: dominant-lineage + rescue-metadata visibility (non-behavioral).
     v3p4_2_lineage: {
       pre_dominant_flag_count: preEnforcementSnapshot.filter(s => s.dominant_plane_flag && s.validation_decision !== 'suppress').length,
@@ -32666,4 +33169,12 @@ module.exports = {
   v3p4_4RecoverMissingPlanes,
   v3p4_4RunGeometryCorrection,
   v3p4_4DownslopeXZ,
+  // V3P7 test surface
+  v3p7RunSkeleton,
+  v3p7ExtractRidges,
+  v3p7AngleDist180,
+  v3p7AnglesCloseDeg,
+  v3p7SegmentDist,
+  v3p7PointToSegmentDist,
+  v3p7RidgeSegmentBetween,
 };

@@ -1,6 +1,6 @@
 # V3P0 Replay Results
 
-Generated: 2026-04-21T17:31:32.251Z
+Generated: 2026-04-21T18:33:30.021Z
 Batch size: 21 — succeeded: 21, failed: 0
 
 ## Status distribution
@@ -15,10 +15,10 @@ Batch size: 21 — succeeded: 21, failed: 0
 
 | Metric | ms |
 |---|---:|
-| min | 3163 |
-| median | 4550 |
-| mean | 4503 |
-| max | 5955 |
+| min | 2681 |
+| median | 4220 |
+| mean | 4204 |
+| max | 6429 |
 
 ## Bucket counts
 
@@ -44,27 +44,27 @@ Batch size: 21 — succeeded: 21, failed: 0
 
 | Case | Prior→Final | Faces | V3P1 in→out veto/ridge | V3P2 sp/mg/fb/sn | Runtime | WholeRoof | FinalScore | V2P7 triggers | Reasons / errors |
 |---|---|---:|---|---|---:|---:|---:|---|---|
-| 15 Veteran Rd | auto_accept→auto_accept | 4 | 3→3 0/0 | 0/0/0/1 (H0/M1/L1) | 4316 | 0.86 | 0.93 | — | — |
-| 726 School St | needs_review→needs_review | 3 | 3→2 1/1 | 1/0/0/2 (H0/M1/L0) | 4564 | 0.77 | 0.84 | — | dense_roof_anomaly, majority_planes_need_review, google_solar_pitch_mismatch, v2p0_ground_surface_detected, v3_lidar_ground_veto, v3_ridge_conflict, v3_polygon_split_applied |
-| 20 Meadow Dr | needs_review→needs_review | 5 | 3→3 0/1 | 0/0/0/0 (H0/M1/L0) | 3610 | 0.77 | 0.79 | — | v2_ground_suppression_material, v2p0_ground_surface_detected, v2p0_ground_surface_suppressed, v3_ridge_conflict |
-| 225 Gibson St | needs_review→needs_review | 7 | 6→5 1/2 | 2/0/0/0 (H2/M3/L0) | 5406 | 0.69 | 0.85 | — | dense_roof_anomaly, google_solar_pitch_mismatch, google_solar_pitch_corrected, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied, v3p4_enforcement_applied |
-| 175 Warwick | needs_review→needs_review | 6 | 4→4 0/3 | 3/1/0/4 (H0/M6/L0) | 5315 | 0.85 | 0.93 | — | dense_roof_anomaly, majority_planes_need_review, google_solar_pitch_mismatch, v3_ridge_conflict, v3_polygon_split_applied, v3_polygon_merge_applied |
-| Lawrence | needs_review→needs_review | 4 | 6→3 3/2 | 0/0/0/0 (H0/M1/L0) | 5955 | 0.73 | 0.88 | — | dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict |
-| 583 Westford St | needs_review→needs_review | 4 | 5→4 1/0 | 0/0/0/2 (H1/M4/L0) | 4305 | 0.76 | 0.88 | — | dense_roof_anomaly, v3_lidar_plane_disagreement |
-| 13 Richardson St | needs_review→needs_review | 7 | 5→4 1/3 | 1/0/0/0 (H0/M3/L0) | 5319 | 0.71 | 0.81 | — | dense_roof_anomaly, build_tilt_quality_low, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
-| 11 Ash Road | needs_review→needs_review | 4 | 4→4 0/0 | 0/0/0/0 (H0/M3/L2) | 4922 | 0.94 | 0.97 | — | build_tilt_quality_low |
-| 254 Foster St | needs_review→needs_review | 4 | 3→3 0/1 | 1/0/0/0 (H1/M1/L0) | 5175 | 0.79 | 0.90 | — | crm_soft_gate_applied, dense_roof_anomaly, majority_planes_need_review, v3_ridge_conflict, v3_polygon_split_applied |
-| 42 Tanager St | needs_review→needs_review | 2 | 3→2 1/2 | 0/0/0/0 (H0/M0/L0) | 3580 | 0.71 | 0.87 | — | pipeline_reject, usable_gate_very_low, v3_partial_build_rescue, v3_tree_obstruction_rescue, p9_build_unmatched, v3_lidar_plane_disagreement, v3_ridge_conflict, v3p3_polygon_suppressed |
-| 21 Stoddard | needs_review→needs_review | 5 | 8→5 3/3 | 1/0/0/0 (H3/M2/L1) | 4984 | 0.70 | 0.79 | — | dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied, v3p3_polygon_suppressed |
-| 52 Spaulding | needs_review→needs_review | 2 | 2→2 0/1 | 0/0/0/0 (H0/M0/L0) | 3577 | 0.28 | 0.35 | main_body_weak, aggregate_risk_elevated | v2_low_consistency, v2_fragmented_main_body, pipeline_reject, usable_gate_very_low, v3_partial_build_rescue, p9_build_unmatched, v3_ridge_conflict |
-| 94 C St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 3163 | — | — | — | pipeline_reject, usable_gate_very_low |
-| 44 D St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 3337 | — | — | — | pipeline_reject, usable_gate_very_low |
-| 12 Brown St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 3478 | — | — | — | pipeline_reject, usable_gate_very_low |
-| Salem | needs_review→needs_review | 2 | 2→1 1/0 | 0/0/0/0 (H0/M0/L0) | 5246 | 0.90 | 0.97 | — | pipeline_reject, usable_gate_very_low, v3_hard_case_partial_rescue, v3_occlusion_rescue, google_solar_pitch_mismatch, v3_lidar_plane_disagreement |
-| 17 Church Ave | needs_review→needs_review | 8 | 5→4 1/3 | 2/0/0/1 (H0/M5/L0) | 5146 | 0.54 | 0.69 | — | v2_weak_pair_coverage, usable_gate_low, dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
-| Puffer | needs_review→needs_review | 4 | 3→3 0/2 | 1/0/1/0 (H1/M1/L0) | 4550 | 0.72 | 0.86 | — | dense_roof_anomaly, majority_planes_need_review, build_tilt_quality_low, v3_ridge_conflict, v3_polygon_split_applied, v3_polygon_fallback_applied |
-| 573 Westford St | needs_review→needs_review | 3 | 4→3 1/1 | 0/0/0/0 (H0/M0/L2) | 4337 | 0.76 | 0.79 | — | v2_ground_suppression_material, v2p0_ground_surface_detected, v2p0_ground_surface_suppressed, v3_lidar_ground_veto, v3_ridge_conflict |
-| 74 Gates | needs_review→needs_review | 6 | 5→3 2/2 | 2/0/0/0 (H0/M1/L0) | 4268 | 0.67 | 0.82 | — | dense_roof_anomaly, majority_planes_need_review, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
+| 15 Veteran Rd | auto_accept→auto_accept | 4 | 3→3 0/0 | 0/0/0/1 (H0/M1/L1) | 4220 | 0.86 | 0.93 | — | — |
+| 726 School St | needs_review→needs_review | 3 | 3→2 1/1 | 1/0/0/2 (H0/M1/L0) | 3826 | 0.77 | 0.84 | — | dense_roof_anomaly, majority_planes_need_review, google_solar_pitch_mismatch, v2p0_ground_surface_detected, v3_lidar_ground_veto, v3_ridge_conflict, v3_polygon_split_applied |
+| 20 Meadow Dr | needs_review→needs_review | 5 | 3→3 0/1 | 0/0/0/0 (H0/M1/L0) | 3704 | 0.77 | 0.79 | — | v2_ground_suppression_material, v2p0_ground_surface_detected, v2p0_ground_surface_suppressed, v3_ridge_conflict |
+| 225 Gibson St | needs_review→needs_review | 7 | 6→5 1/2 | 2/0/0/0 (H2/M3/L0) | 3465 | 0.69 | 0.85 | — | dense_roof_anomaly, google_solar_pitch_mismatch, google_solar_pitch_corrected, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied, v3p4_enforcement_applied |
+| 175 Warwick | needs_review→needs_review | 6 | 4→4 0/3 | 3/1/0/4 (H0/M6/L0) | 4072 | 0.85 | 0.93 | — | dense_roof_anomaly, majority_planes_need_review, google_solar_pitch_mismatch, v3_ridge_conflict, v3_polygon_split_applied, v3_polygon_merge_applied |
+| Lawrence | needs_review→needs_review | 4 | 6→3 3/2 | 0/0/0/0 (H0/M1/L0) | 4119 | 0.73 | 0.88 | — | dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict |
+| 583 Westford St | needs_review→needs_review | 4 | 5→4 1/0 | 0/0/0/2 (H1/M4/L0) | 4622 | 0.76 | 0.88 | — | dense_roof_anomaly, v3_lidar_plane_disagreement |
+| 13 Richardson St | needs_review→needs_review | 7 | 5→4 1/3 | 1/0/0/0 (H0/M3/L0) | 4554 | 0.71 | 0.81 | — | dense_roof_anomaly, build_tilt_quality_low, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
+| 11 Ash Road | needs_review→needs_review | 4 | 4→4 0/0 | 0/0/0/0 (H0/M3/L2) | 4775 | 0.94 | 0.97 | — | build_tilt_quality_low |
+| 254 Foster St | needs_review→needs_review | 4 | 3→3 0/1 | 1/0/0/0 (H1/M1/L0) | 5300 | 0.79 | 0.90 | — | crm_soft_gate_applied, dense_roof_anomaly, majority_planes_need_review, v3_ridge_conflict, v3_polygon_split_applied |
+| 42 Tanager St | needs_review→needs_review | 2 | 3→2 1/2 | 0/0/0/0 (H0/M0/L0) | 6429 | 0.71 | 0.87 | — | pipeline_reject, usable_gate_very_low, v3_partial_build_rescue, v3_tree_obstruction_rescue, p9_build_unmatched, v3_lidar_plane_disagreement, v3_ridge_conflict, v3p3_polygon_suppressed |
+| 21 Stoddard | needs_review→needs_review | 5 | 8→5 3/3 | 1/0/0/0 (H3/M2/L1) | 4455 | 0.70 | 0.79 | — | dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied, v3p3_polygon_suppressed |
+| 52 Spaulding | needs_review→needs_review | 2 | 2→2 0/1 | 0/0/0/0 (H0/M0/L0) | 3263 | 0.28 | 0.35 | main_body_weak, aggregate_risk_elevated | v2_low_consistency, v2_fragmented_main_body, pipeline_reject, usable_gate_very_low, v3_partial_build_rescue, p9_build_unmatched, v3_ridge_conflict |
+| 94 C St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 2834 | — | — | — | pipeline_reject, usable_gate_very_low |
+| 44 D St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 3000 | — | — | — | pipeline_reject, usable_gate_very_low |
+| 12 Brown St | —→reject | 0 | 0→0 0/0 | 0/0/0/0 (H0/M0/L0) | 4242 | — | — | — | pipeline_reject, usable_gate_very_low |
+| Salem | needs_review→needs_review | 2 | 2→1 1/0 | 0/0/0/0 (H0/M0/L0) | 2681 | 0.90 | 0.97 | — | pipeline_reject, usable_gate_very_low, v3_hard_case_partial_rescue, v3_occlusion_rescue, google_solar_pitch_mismatch, v3_lidar_plane_disagreement |
+| 17 Church Ave | needs_review→needs_review | 8 | 5→4 1/3 | 2/0/0/1 (H0/M5/L0) | 4358 | 0.54 | 0.69 | — | v2_weak_pair_coverage, usable_gate_low, dense_roof_anomaly, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
+| Puffer | needs_review→needs_review | 4 | 3→3 0/2 | 1/0/1/0 (H1/M1/L0) | 4771 | 0.72 | 0.86 | — | dense_roof_anomaly, majority_planes_need_review, build_tilt_quality_low, v3_ridge_conflict, v3_polygon_split_applied, v3_polygon_fallback_applied |
+| 573 Westford St | needs_review→needs_review | 3 | 4→3 1/1 | 0/0/0/0 (H0/M0/L2) | 6146 | 0.76 | 0.79 | — | v2_ground_suppression_material, v2p0_ground_surface_detected, v2p0_ground_surface_suppressed, v3_lidar_ground_veto, v3_ridge_conflict |
+| 74 Gates | needs_review→needs_review | 6 | 5→3 2/2 | 2/0/0/0 (H0/M1/L0) | 3452 | 0.67 | 0.82 | — | dense_roof_anomaly, majority_planes_need_review, v3_lidar_plane_disagreement, v3_ridge_conflict, v3_polygon_split_applied |
 
 ## Recommended cases for visual review
 
