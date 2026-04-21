@@ -28759,6 +28759,308 @@ function v3p5ApplyPartialRescue(envelope, rescueResult, body) {
   return true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V3P6 — Occlusion / Dense-Lot Rescue Hardening
+// ═══════════════════════════════════════════════════════════════════════════
+const V3P6_WINDOW_RADIUS_M = 12.0;
+const V3P6_MIN_HEIGHT_ABOVE_GROUND_M = 2.5;
+const V3P6_MAX_HEIGHT_ABOVE_GROUND_M = 14.0;
+const V3P6_MIN_CLUSTER_CELLS = 20;
+const V3P6_MIN_CLUSTER_AREA_M2 = 4.0;
+const V3P6_MAX_FIT_RESIDUAL_M = 1.8;
+const V3P6_MIN_PITCH_DEG = 1.0;
+const V3P6_MAX_PITCH_DEG = 55.0;
+const V3P6_FLAT_ROOF_MIN_HEIGHT_M = 3.0;
+const V3P6_MAX_RESCUE_PLANES = 2;
+const V3P6_MERGE_PITCH_TOL_DEG = 8.0;
+const V3P6_MERGE_AZ_TOL_DEG = 25.0;
+const V3P6_MERGE_GAP_CELLS = 4;
+
+function v3p6CentralWindowClusters(grid, groundElev, size, res, half) {
+  const windowCells = Math.round(V3P6_WINDOW_RADIUS_M / res);
+  const center = Math.floor(size / 2);
+  const minElev = groundElev + V3P6_MIN_HEIGHT_ABOVE_GROUND_M;
+  const maxElev = groundElev + V3P6_MAX_HEIGHT_ABOVE_GROUND_M;
+
+  const visited = new Uint8Array(size * size);
+  const clusters = [];
+
+  for (let row = center - windowCells; row <= center + windowCells; row++) {
+    for (let col = center - windowCells; col <= center + windowCells; col++) {
+      if (row < 0 || row >= size || col < 0 || col >= size) continue;
+      const dx = (col - center) * res;
+      const dz = (row - center) * res;
+      if (dx * dx + dz * dz > V3P6_WINDOW_RADIUS_M * V3P6_WINDOW_RADIUS_M) continue;
+      const idx = row * size + col;
+      if (visited[idx]) continue;
+      const e = grid[idx];
+      if (isNaN(e) || e < minElev || e > maxElev) { visited[idx] = true; continue; }
+
+      const cluster = [];
+      const stack = [idx];
+      while (stack.length > 0) {
+        const ci = stack.pop();
+        if (visited[ci]) continue;
+        const cr2 = Math.floor(ci / size);
+        const cc = ci % size;
+        const cdx = (cc - center) * res;
+        const cdz = (cr2 - center) * res;
+        if (cdx * cdx + cdz * cdz > (V3P6_WINDOW_RADIUS_M + 2) * (V3P6_WINDOW_RADIUS_M + 2)) {
+          visited[ci] = true; continue;
+        }
+        visited[ci] = true;
+        const ce = grid[ci];
+        if (isNaN(ce) || ce < minElev || ce > maxElev) continue;
+        cluster.push(ci);
+        if (cc > 0) stack.push(ci - 1);
+        if (cc < size - 1) stack.push(ci + 1);
+        if (cr2 > 0) stack.push(ci - size);
+        if (cr2 < size - 1) stack.push(ci + size);
+      }
+      if (cluster.length >= V3P6_MIN_CLUSTER_CELLS) {
+        clusters.push(cluster);
+      }
+    }
+  }
+  return clusters;
+}
+
+function v3p6MergeCompatibleClusters(clusters, grid, size, res, half) {
+  if (clusters.length <= 1) return clusters;
+
+  const fits = clusters.map(c => v3p5FitPlaneToCluster(grid, c, size, res, half));
+  const merged = new Array(clusters.length).fill(false);
+  const result = [];
+
+  for (let i = 0; i < clusters.length; i++) {
+    if (merged[i] || !fits[i]) continue;
+    let combined = clusters[i].slice();
+    for (let j = i + 1; j < clusters.length; j++) {
+      if (merged[j] || !fits[j]) continue;
+      const pitchDiff = Math.abs(fits[i].pitchDeg - fits[j].pitchDeg);
+      let azDiff = Math.abs(fits[i].azimuthDeg - fits[j].azimuthDeg);
+      if (azDiff > 180) azDiff = 360 - azDiff;
+      if (pitchDiff > V3P6_MERGE_PITCH_TOL_DEG || azDiff > V3P6_MERGE_AZ_TOL_DEG) continue;
+
+      let close = false;
+      const setA = new Set(clusters[i]);
+      for (const idx of clusters[j]) {
+        if (close) break;
+        const row = Math.floor(idx / size);
+        const col = idx % size;
+        for (let dr = -V3P6_MERGE_GAP_CELLS; dr <= V3P6_MERGE_GAP_CELLS && !close; dr++) {
+          for (let dc = -V3P6_MERGE_GAP_CELLS; dc <= V3P6_MERGE_GAP_CELLS && !close; dc++) {
+            const ni = (row + dr) * size + (col + dc);
+            if (setA.has(ni)) close = true;
+          }
+        }
+      }
+      if (close) {
+        combined = combined.concat(clusters[j]);
+        merged[j] = true;
+      }
+    }
+    result.push(combined);
+  }
+  for (let i = 0; i < clusters.length; i++) {
+    if (!merged[i] && !result.includes(clusters[i])) {
+      // already in result from the outer loop
+    }
+  }
+  return result;
+}
+
+function v3p6DetectHardCaseRescue(lidarPoints, centerLat, centerLng, v3p5Debug) {
+  const debug = {
+    v3_hard_case_rescue_applied: false,
+    hard_case_rescue_attempted: false,
+    hard_case_rescue_succeeded: false,
+    hard_case_rescue_type: null,
+    rescue_reason_codes: [],
+    candidate_cluster_count: 0,
+    central_target_bias_applied: true,
+    occlusion_tolerant_merge_applied: false,
+    final_rescue_plane_count: 0,
+    hard_case_rescue_warnings: [],
+    candidate_planes: [],
+    rescue_rejected_reason: null,
+    window_radius_m: V3P6_WINDOW_RADIUS_M,
+    ground_elevation: null,
+  };
+
+  if (!Array.isArray(lidarPoints) || lidarPoints.length < 500) {
+    debug.rescue_rejected_reason = 'insufficient_lidar_points';
+    return { planes: [], debug };
+  }
+
+  debug.hard_case_rescue_attempted = true;
+
+  const built = v2p0BuildElevationGrid(lidarPoints, centerLat, centerLng);
+  const grid = built.grid;
+  const size = V2P0_GRID_SIZE;
+  const res = V2P0_GRID_RES;
+  const half = V2P0_GRID_HALF;
+
+  const groundElev = v2p0EstimateLocalGround(grid, 0, 0, built.globalGroundP10);
+  debug.ground_elevation = _r2(groundElev);
+
+  let clusters = v3p6CentralWindowClusters(grid, groundElev, size, res, half);
+  debug.candidate_cluster_count = clusters.length;
+
+  if (clusters.length === 0) {
+    debug.rescue_rejected_reason = 'no_elevated_clusters_in_window';
+    return { planes: [], debug };
+  }
+
+  const preMergeCount = clusters.length;
+  clusters = v3p6MergeCompatibleClusters(clusters, grid, size, res, half);
+  if (clusters.length < preMergeCount) {
+    debug.occlusion_tolerant_merge_applied = true;
+  }
+
+  clusters.sort((a, b) => b.length - a.length);
+
+  const center = Math.floor(size / 2);
+  const rescuePlanes = [];
+
+  for (const cluster of clusters) {
+    if (rescuePlanes.length >= V3P6_MAX_RESCUE_PLANES) break;
+
+    const areaM2 = cluster.length * res * res;
+    if (areaM2 < V3P6_MIN_CLUSTER_AREA_M2) continue;
+
+    const fit = v3p5FitPlaneToCluster(grid, cluster, size, res, half);
+    if (!fit) continue;
+
+    const clusterCentroidDist = Math.sqrt(fit.centroid.x * fit.centroid.x + fit.centroid.z * fit.centroid.z);
+    const centralityScore = _r2(Math.max(0, 1 - clusterCentroidDist / V3P6_WINDOW_RADIUS_M));
+    const heightAboveGround = fit.centroid.e - groundElev;
+
+    const candidate = {
+      area_m2: _r2(areaM2),
+      cell_count: cluster.length,
+      pitch_deg: _r2(fit.pitchDeg),
+      azimuth_deg: _r2(fit.azimuthDeg),
+      rmse: _r2(fit.rmse),
+      height_above_ground: _r2(heightAboveGround),
+      centrality_score: centralityScore,
+      centroid_dist_m: _r2(clusterCentroidDist),
+      accepted: false,
+      reject_reason: null,
+    };
+
+    if (fit.rmse > V3P6_MAX_FIT_RESIDUAL_M) {
+      candidate.reject_reason = 'poor_plane_fit';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg > V3P6_MAX_PITCH_DEG) {
+      candidate.reject_reason = 'too_steep_wall_like';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg < V3P6_MIN_PITCH_DEG) {
+      candidate.reject_reason = 'too_flat';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (fit.pitchDeg < 3.0 && heightAboveGround < V3P6_FLAT_ROOF_MIN_HEIGHT_M) {
+      candidate.reject_reason = 'flat_not_elevated_enough';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (heightAboveGround < V3P6_MIN_HEIGHT_ABOVE_GROUND_M) {
+      candidate.reject_reason = 'too_low_ground_like';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+    if (centralityScore < 0.2 && rescuePlanes.length === 0) {
+      candidate.reject_reason = 'not_central_enough';
+      debug.candidate_planes.push(candidate);
+      continue;
+    }
+
+    candidate.accepted = true;
+    debug.candidate_planes.push(candidate);
+
+    const hullPts = [];
+    for (const idx of cluster) {
+      const row = Math.floor(idx / size);
+      const col = idx % size;
+      hullPts.push({ x: col * res - half, z: row * res - half });
+    }
+    const hull = v3p5BuildConvexHull(hullPts);
+    if (hull.length < 3) continue;
+
+    rescuePlanes.push({
+      vertices: hull.map(p => ({ x: p.x, z: p.z })),
+      pitch: Math.round(fit.pitchDeg),
+      azimuth: Math.round(fit.azimuthDeg),
+      height: 0,
+      _rescue: {
+        area_m2: candidate.area_m2,
+        rmse: candidate.rmse,
+        height_above_ground: candidate.height_above_ground,
+        centrality_score: centralityScore,
+        origin: rescuePlanes.length === 0 ? 'central_mass' : 'secondary_cluster',
+        lidar_support_score: _r2(Math.min(1.0, (1.0 - fit.rmse / V3P6_MAX_FIT_RESIDUAL_M) * centralityScore * 2)),
+      },
+    });
+  }
+
+  if (rescuePlanes.length === 0) {
+    debug.rescue_rejected_reason = 'no_valid_planes_in_central_window';
+    return { planes: [], debug };
+  }
+
+  debug.hard_case_rescue_succeeded = true;
+  debug.final_rescue_plane_count = rescuePlanes.length;
+  debug.hard_case_rescue_type = rescuePlanes.length === 1 ? 'central_mass_rescue' : 'multi_plane_hard_rescue';
+  debug.rescue_reason_codes.push('v3_hard_case_partial_rescue');
+  if (v3p5Debug && v3p5Debug.candidate_planes && v3p5Debug.candidate_planes.some(c => c.reject_reason === 'poor_plane_fit')) {
+    debug.rescue_reason_codes.push('v3_occlusion_rescue');
+  }
+
+  return { planes: rescuePlanes, debug };
+}
+
+function v3p6ApplyHardCaseRescue(envelope, rescueResult) {
+  if (!rescueResult.debug.hard_case_rescue_succeeded) return false;
+
+  const cr = envelope.crm_result || (envelope.crm_result = {});
+  const md = cr.metadata || (cr.metadata = {});
+
+  cr.roof_faces = rescueResult.planes.map(p => ({
+    vertices: p.vertices,
+    pitch: p.pitch,
+    azimuth: p.azimuth,
+    height: p.height,
+  }));
+
+  envelope.auto_build_status = 'needs_review';
+  envelope.disposition = 'needs_review';
+  const reasons = envelope.review_policy_reasons || [];
+  for (const code of rescueResult.debug.rescue_reason_codes) {
+    if (!reasons.includes(code)) reasons.push(code);
+  }
+  envelope.review_policy_reasons = reasons;
+
+  rescueResult.debug.v3_hard_case_rescue_applied = true;
+  md.v3p6_hard_case_rescue = rescueResult.debug;
+  md.v3p6_hard_case_rescue.per_plane = rescueResult.planes.map((p, i) => ({
+    face_idx: i,
+    rescue_plane_flag: true,
+    lidar_support_score: p._rescue.lidar_support_score,
+    height_above_ground: p._rescue.height_above_ground,
+    fit_residual: p._rescue.rmse,
+    rescue_origin: p._rescue.origin,
+    area_m2: p._rescue.area_m2,
+    centrality_score: p._rescue.centrality_score,
+  }));
+
+  return true;
+}
+
 function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLat, centerLng) {
   const cr = (envelope && envelope.crm_result) || {};
   const faces = Array.isArray(cr.roof_faces) ? cr.roof_faces.map((f, idx) => ({
@@ -29463,6 +29765,16 @@ app.post("/api/ml/auto-build", async (req, res) => {
         const md = cr.metadata || (cr.metadata = {});
         md.v3p5_partial_rescue = rescueResult.debug;
         console.log(`[v3p5_rescue] not rescued: ${rescueResult.debug.rescue_rejected_reason}`);
+
+        // V3P6: Hard-case rescue hardening — tighter central window, relaxed thresholds
+        const v3p6Result = v3p6DetectHardCaseRescue(lidarPts, +dc.lat, +dc.lng, rescueResult.debug);
+        if (v3p6Result.debug.hard_case_rescue_succeeded) {
+          v3p6ApplyHardCaseRescue(envelope, v3p6Result);
+          console.log(`[v3p6_rescue] RESCUED: ${v3p6Result.debug.final_rescue_plane_count} plane(s), type=${v3p6Result.debug.hard_case_rescue_type}, reasons=[${v3p6Result.debug.rescue_reason_codes.join(',')}]`);
+        } else {
+          md.v3p6_hard_case_rescue = v3p6Result.debug;
+          console.log(`[v3p6_rescue] not rescued: ${v3p6Result.debug.rescue_rejected_reason}`);
+        }
       }
     } else if (roofFaces.length > 0) {
       console.log('[v3p5_rescue] skipped: ML returned faces (not a reject case)');

@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P5 partial build rescue banked — reject bucket reduced 6→4)
+**Last updated:** 2026-04-21 (V3P6 hard-case rescue hardening banked — reject bucket reduced 6→3)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1286,6 +1286,60 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 **Status:** BANKED.
 
 **Reopen trigger:** False rescue on a case with no actual house; rescue plane is flat ground/driveway that escapes downstream filtering; rescue causes downstream pipeline crash; rescue fires on a case that already has ML faces.
+
+---
+
+### V3P6 — Occlusion / Dense-Lot Rescue Hardening [BANKED]
+
+**Purpose:** Improve rescue performance for remaining hard rejects where V3P5 failed due to oversized clusters spanning trees/neighbors. Uses a tighter spatial window around design center to isolate the target roof mass.
+
+**When it fires:** Only after V3P5 fails (rescue_attempted=true, rescue_succeeded=false). Second-stage fallback rescue.
+
+**Key differences from V3P5:**
+- Tight central window (12m radius vs full 35m grid)
+- Relaxed RMSE (1.8m vs 1.2m) — handles tree-noisy clusters
+- Lower min pitch (1° vs 3°) with elevated-height guard for flat roofs
+- Smaller min cluster (20 cells/4m² vs 40 cells/6m²)
+- Occlusion-tolerant cluster merging (nearby clusters with similar slope)
+- Centrality score based on distance from center (not fraction of cluster in center zone)
+
+**Functions added to server.js:**
+- `v3p6CentralWindowClusters(grid, groundElev, size, res, half)` — flood-fill within 12m radius of center only
+- `v3p6MergeCompatibleClusters(clusters, grid, size, res, half)` — merge nearby clusters with similar pitch/azimuth
+- `v3p6DetectHardCaseRescue(lidarPoints, centerLat, centerLng, v3p5Debug)` — orchestrator
+- `v3p6ApplyHardCaseRescue(envelope, rescueResult)` — injects rescue planes, sets status/reasons
+
+**Centralized thresholds:**
+`V3P6_WINDOW_RADIUS_M=12.0`, `V3P6_MIN_HEIGHT_ABOVE_GROUND_M=2.5`, `V3P6_MAX_HEIGHT_ABOVE_GROUND_M=14.0`, `V3P6_MIN_CLUSTER_CELLS=20`, `V3P6_MIN_CLUSTER_AREA_M2=4.0`, `V3P6_MAX_FIT_RESIDUAL_M=1.8`, `V3P6_MIN_PITCH_DEG=1.0`, `V3P6_MAX_PITCH_DEG=55.0`, `V3P6_FLAT_ROOF_MIN_HEIGHT_M=3.0`, `V3P6_MAX_RESCUE_PLANES=2`, `V3P6_MERGE_PITCH_TOL_DEG=8.0`, `V3P6_MERGE_AZ_TOL_DEG=25.0`, `V3P6_MERGE_GAP_CELLS=4`.
+
+**Debug fields in `md.v3p6_hard_case_rescue`:**
+- `v3_hard_case_rescue_applied`, `hard_case_rescue_attempted`, `hard_case_rescue_succeeded`
+- `hard_case_rescue_type`: `central_mass_rescue` | `multi_plane_hard_rescue`
+- `rescue_reason_codes[]`, `candidate_cluster_count`, `central_target_bias_applied`
+- `occlusion_tolerant_merge_applied`, `final_rescue_plane_count`
+- `candidate_planes[]`: area, pitch, rmse, centrality_score, height_above_ground, accepted/reject_reason
+- `per_plane[]`: face_idx, lidar_support_score, height_above_ground, fit_residual, rescue_origin, centrality_score
+
+**Validation (21-case batch, 2026-04-21):** 21/21 success.
+
+| Case | Prior Status | New Status | Faces | Score | Rescue | Notes |
+|------|---|---|---:|---:|---|---|
+| Salem | reject | needs_review | 1 | 0.72 | V3P6 | Central window found 288m² plane at RMSE 1.48 |
+| 94 C St | reject | reject | 0 | — | V3P6 fail | RMSE 2.15 in window (too noisy) |
+| 44 D St | reject | reject | 0 | — | V3P6 fail | RMSE 2.34 in window (too noisy) |
+| 12 Brown St | reject | reject | 0 | — | V3P6 fail | RMSE >2.4 in window (too noisy) |
+| 42 Tanager | needs_review | needs_review | 1 | 0.77 | V3P5 (stable) | unchanged |
+| 52 Spaulding | needs_review | needs_review | 2 | 0.35 | V3P5 (stable) | unchanged |
+| All 15 original non-rejects | — | — | — | — | — | **zero regressions** |
+
+**Why remaining 3 still reject:**
+- 94 C St (`reject_edge`): even 12m window cluster has RMSE 2.15 — tree canopy too dense
+- 44 D St (`reject_correct`): central cluster RMSE 2.34 — genuinely poor geometry
+- 12 Brown St (`reject_correct`): all clusters RMSE >2.4 — no usable roof signal
+
+**Status:** BANKED.
+
+**Reopen trigger:** V3P6 rescues a neighbor/driveway instead of the target house; central window catches wrong building in tight-lot scenarios; rescue fires when V3P5 already succeeded.
 
 ---
 

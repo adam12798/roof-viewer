@@ -2,7 +2,7 @@
 
 Status log for the ML Auto Build ugly-case triage pass. This file is the working record; `PROJECT_HANDOFF.md` remains the canonical source-of-truth.
 
-**Last updated:** 2026-04-21 (V3P5 partial build rescue banked — reject bucket reduced 6→4)
+**Last updated:** 2026-04-21 (V3P6 hard-case rescue hardening banked — reject bucket reduced 6→3)
 **Pass status:** Complete — 32 rows bucketed (94 C St excluded as duplicate/mismatch).
 **Bucket counts are operator-authoritative.** The labeled row table (§5) has 25 unique draft IDs; 7 rows were lost to paste truncation and need recovery (see §4.3).
 
@@ -2327,11 +2327,41 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 
 2 of 6 rejects rescued (both labeled `reject_too_strict`). 4 remain rejected (all labeled `reject_correct` or `reject_edge`). RMSE threshold naturally separates "real roof plane" from "noisy blob."
 
-**KEEP (BANKED).** Conservative rescue fires only on clear LiDAR evidence. Zero regressions. Correctly distinguishes rescuable vs truly unrecoverable cases. Reject bucket reduced from 6 → 4.
+**KEEP (BANKED).** Conservative rescue fires only on clear LiDAR evidence. Zero regressions. Correctly distinguishes rescuable vs truly unrecoverable cases. Reject bucket reduced from 6 → 4. Superseded by §29 (V3P6).
 
 ---
 
-## 29. Related resources (renumbered from §28)
+## 29. V3P6 — Occlusion / Dense-Lot Rescue Hardening
+
+**Date:** 2026-04-21
+**Scope:** Second-stage hard-case rescue for rejects where V3P5 failed. Uses tight central window (12m radius) and relaxed thresholds to handle tree-noisy / dense-lot cases.
+
+**What changed:**
+- Central-window clustering: flood-fill only within 12m of design center (vs full 35m grid)
+- Relaxed RMSE: 1.8m (vs V3P5's 1.2m) — handles tree canopy noise
+- Lower min pitch: 1° with height guard (vs 3°) — allows flat roofs
+- Smaller min cluster: 20 cells / 4m² (vs 40/6) — catches fragmented roof mass
+- Occlusion-tolerant merge: nearby clusters with similar pitch/azimuth combine
+- Centrality scoring: distance-from-center metric (vs fraction-in-zone)
+
+**Evidence (21-case replay, 2026-04-21):**
+
+| Case | Prior | After | Faces | Score | Rescue |
+|------|-------|-------|------:|------:|---|
+| Salem | reject | needs_review | 1 | 0.72 | V3P6 (288m², RMSE 1.48, centrality 0.56) |
+| 94 C St | reject | reject | 0 | — | V3P6 fail (RMSE 2.15) |
+| 44 D St | reject | reject | 0 | — | V3P6 fail (RMSE 2.34) |
+| 12 Brown St | reject | reject | 0 | — | V3P6 fail (RMSE >2.4) |
+| V3P5 rescues (42 Tanager, 52 Spaulding) | — | — | — | — | stable |
+| All 15 non-reject | — | — | — | — | zero regressions |
+
+1 additional reject rescued. Remaining 3 have genuinely poor LiDAR geometry (RMSE > 1.8m even in tight window).
+
+**KEEP (BANKED).** Central windowing successfully isolates target roof mass from neighborhood noise. Salem rescued at 0.72 score from usable_gate 0.001 (lowest in set). Remaining rejects have objectively unrecoverable geometry. Reject bucket: 6 → 4 (V3P5) → 3 (V3P6).
+
+---
+
+## 30. Related resources (renumbered from §29)
 
 - `PROJECT_HANDOFF.md` — canonical source-of-truth.
 - `GET /api/ml-drafts?projectId=<id>&limit=N&disposition=&order=` — read-only triage surface (summarized).

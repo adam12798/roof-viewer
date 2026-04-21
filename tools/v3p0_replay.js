@@ -280,6 +280,13 @@ function normalize_replay_result(r) {
     v3p5_rescue_plane_count: 0,
     v3p5_rescue_reason_codes: [],
     v3p5_rescue_rejected_reason: null,
+    // V3P6: hard-case rescue hardening
+    v3p6_rescue_attempted: false,
+    v3p6_rescue_succeeded: false,
+    v3p6_rescue_type: null,
+    v3p6_rescue_plane_count: 0,
+    v3p6_rescue_reason_codes: [],
+    v3p6_rescue_rejected_reason: null,
   };
 
   if (!r.replay_success || !r.raw_response) return row;
@@ -446,6 +453,15 @@ function normalize_replay_result(r) {
   row.v3p5_rescue_reason_codes = v3p5.rescue_reason_codes || [];
   row.v3p5_rescue_rejected_reason = v3p5.rescue_rejected_reason || null;
 
+  // V3P6 hard-case rescue hardening fields
+  const v3p6 = md.v3p6_hard_case_rescue || {};
+  row.v3p6_rescue_attempted = !!v3p6.hard_case_rescue_attempted;
+  row.v3p6_rescue_succeeded = !!v3p6.hard_case_rescue_succeeded;
+  row.v3p6_rescue_type = v3p6.hard_case_rescue_type || null;
+  row.v3p6_rescue_plane_count = v3p6.final_rescue_plane_count || 0;
+  row.v3p6_rescue_reason_codes = v3p6.rescue_reason_codes || [];
+  row.v3p6_rescue_rejected_reason = v3p6.rescue_rejected_reason || null;
+
   return row;
 }
 
@@ -508,8 +524,9 @@ function bucket_replay_result(row) {
   if (row.p9_fallback_reason === 'p9_low_match_fraction') buckets.push('p9_low_match_fraction');
   if (row.p9_fallback_reason === 'p9_low_match_confidence') buckets.push('p9_low_match_confidence');
 
-  // V3P5 rescue bucket
+  // V3P5/V3P6 rescue bucket
   if (row.v3p5_rescue_succeeded) buckets.push('v3p5_rescued');
+  if (row.v3p6_rescue_succeeded) buckets.push('v3p6_rescued');
 
   // Decision-layer change
   if (row.v2p7_decision_change_applied) buckets.push('v2p7_escalation_applied');
