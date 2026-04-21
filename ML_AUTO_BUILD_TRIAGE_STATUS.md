@@ -2361,33 +2361,34 @@ Fires on 3/15 active-face cases. Conservative thresholds (iteration 4) successfu
 
 ---
 
-## 30. V3P4.1 — Enforcement Stabilization Patch
+## 30. V3P4.1 — Geometry Stabilization / Orientation Correction Patch
 
 **Batch date:** 2026-04-21
-**Purpose:** Fix regressions where V3 pipeline damages valid roof geometry (20 Meadow lost main face, 583 Westford slopes corrupted).
+**Purpose:** Full geometry stabilization fixing flipped faces, post-split drift, dominant plane loss, ridge sanity, and destructive merge/suppress.
 
-**Root cause found:** NOT V3P4 enforcement (it wasn't firing on these cases). The actual problem: V3P2 refit adopts garbage orientations from internally-inconsistent DSM data. When multiple quadrants of a polygon's footprint point in wildly different directions (145° azimuth variance), averaging them produces a near-flat garbage pitch.
+**Root cause:** V3P2 refit adopts garbage orientations from internally-inconsistent DSM data. Normal sign-ambiguity uncorrected. Split children drift freely. No quality regression guard.
 
-**Patch mechanisms:**
-1. Orientation anchoring — block refit adoption when internal az variance >60°
-2. Dominant plane protection — prevent V3P1 veto / V3P4 suppression of large (≥35% area) structural planes
-3. Regression guard — rollback V3P4 if quality drops >15%
+**Six mechanisms implemented:**
+1. Orientation anchoring — block refit when internal az variance >60°
+2. Dominant plane protection — continuous scoring, V3P1+V3P4 guards
+3. Normal direction consistency — enforce upward-pointing, track flips
+4. Post-split pitch anchoring — children bounded ±20° from parent pitch
+5. Ridge perpendicularity sanity — flag same-direction ridge pairs
+6. Anti-collapse regression guard — rollback on score/diversity/dominant loss
 
 **Key results:**
 
 | Case | Before | After | Δ |
 |------|---:|---:|---:|
 | 20 Meadow Dr | 0.20 | **0.80** | +0.60 |
-| 583 Westford St | 0.84 | **0.88** | +0.04 |
+| 74 Gates | 0.75 | **0.90** | +0.15 |
 | 17 Church Ave | 0.77 | **0.89** | +0.12 |
-| 74 Gates | 0.75 | **0.86** | +0.11 |
+| 583 Westford St | 0.84 | **0.88** | +0.04 |
 | 15 Veteran Rd | 0.94 | 0.97 | +0.03 |
 | 11 Ash Road | 0.94 | 0.97 | +0.03 |
 | All 21 cases | — | — | zero regressions |
 
-Mean runtime: 11292ms → 7097ms (−37%). `slow_over_15s`: 7 → 1.
-
-**KEEP (BANKED).** Surgical stabilization — preserves V3P4 structural enforcement while preventing quality loss on valid dominant roof geometry. The single biggest quality improvement across the 21-case set (+0.60 on worst case).
+**KEEP (BANKED).** Full geometry stabilization. Largest single-case improvement (+0.60 on 20 Meadow). 74 Gates improved +0.15. All patch areas validated. No regressions.
 
 ---
 

@@ -2,7 +2,7 @@
 
 Single source of truth for resuming this project on a fresh machine or new session. For general CRM setup (Node, npm, login accounts), see `SETUP.md`. This covers the ML Auto Build slice end-to-end.
 
-**Last updated:** 2026-04-21 (V3P4.1 enforcement stabilization banked — 20 Meadow 0.20→0.80, runtime -37%)
+**Last updated:** 2026-04-21 (V3P4.1 full geometry stabilization banked — 6 mechanisms, 20 Meadow +0.60, 74 Gates +0.15)
 **Repos:** CRM at `adam12798/roof-viewer`, ML at `adam12798/ML`
 **Active triage log:** `ML_AUTO_BUILD_TRIAGE_STATUS.md` (complete — 32 rows bucketed)
 
@@ -1343,56 +1343,59 @@ Informational only for V3P3: adds validation reasons (`v3p3_suspect_multi_plane`
 
 ---
 
-### V3P4.1 — Enforcement Stabilization Patch [BANKED]
+### V3P4.1 — Geometry Stabilization / Orientation Correction Patch [BANKED]
 
-**Purpose:** Fix regressions where V3 pipeline damages valid roof geometry. Two primary regression cases (20 Meadow Dr: score 0.20, 583 Westford: 0.84 with corrupted slopes) were caused by V3P2 refit adopting garbage orientations from internally-inconsistent DSM data, not by V3P4 enforcement itself.
+**Purpose:** Full geometry stabilization addressing flipped/inverted faces, post-split drift, dominant plane loss, ridge relationship corruption, and destructive merge/suppress behavior.
 
-**Three stabilization mechanisms:**
+**Six stabilization mechanisms:**
 
-1. **Orientation anchoring** (V3P2 refit adoption) — Before adopting a refit orientation, checks quadrant-based internal azimuth variance. Blocks refit when:
-   - Internal az variance > 60° (DSM data is self-contradictory)
-   - Pitch drifts >15° toward flat (<12°) (averaging artifact)
-   - Azimuth drifts >45° with moderate internal variance (>30°)
+1. **Orientation anchoring** (V3P2 refit) — Blocks refit adoption when internal azimuth variance >60°, pitch drifts >15° toward flat, or azimuth drifts >45° with moderate variance. Per-polygon debug with original/refit/final orientations.
 
-2. **Dominant plane protection** (V3P1 veto + V3P4 suppression) — Planes with ≥35% of total roof area AND area ≥12m² AND fit_residual ≤1.5m are protected from:
-   - V3P1 slope-disagreement suppression (downgraded to 'uncertain' instead)
-   - V3P4 enforcement suppression (skipped entirely)
+2. **Dominant plane protection** (V3P1 + V3P4) — Continuous scoring (area ratio 40%, RMSE 25%, LiDAR support 20%, pitch 15%). Protects planes with ≥35% roof area share from V3P1 suppress→uncertain rescue and V3P4 enforcement suppression.
 
-3. **Regression guard** (V3P4 wrapper) — Scores polygon set quality before/after V3P4 enforcement. Rolls back all enforcement changes if:
-   - Quality drops >15% (score = Σ area × pitchOk / rmse)
-   - Plane count collapses below minimum (1)
+3. **Plane normal direction consistency** — All plane fits pass through `v3p4_1NormalizeNormal` ensuring upward-pointing normal (ny≥0). Flips tracked per polygon. Consistent conversion between normal↔orientation via `v3p4_1NormalToOrientation`/`v3p4_1OrientationToNormal`.
+
+4. **Post-split orientation anchoring** — Split children bounded by `V3P4_1_CHILD_MAX_PITCH_DEV_DEG=20` relative to parent. Azimuth NOT anchored (splits legitimately produce opposing directions). Guards against children drifting to flat (<5°) when parent was pitched (>12°).
+
+5. **Ridge perpendicularity sanity** — Post-refit validation of ridge-adjacent polygon pairs. Requires fused_edge_score ≥0.75 for action. Flags (does not revert) same-direction pairs across classified ridges.
+
+6. **No-regression enforcement guard + anti-collapse** — Compares pre/post V3P4 quality, structural diversity, plane count, and dominant plane preservation. Rolls back enforcement if score drops >15%, diversity collapses >50%, or a dominant plane disappears. Merge guard blocks merging away dominant targets.
 
 **Functions added to server.js:**
-- `v3p4_1GetInternalAzVariance(polygonVerts, grid)` — quadrant-fit az variance for a polygon
-- `v3p4_1IsDominantPlane(poly, allPolygons)` — area/RMSE/ratio check
-- `v3p4_1ScorePolygonSet(polygons)` — quality scoring for regression comparison
+- `v3p4_1GetInternalAzVariance(polygonVerts, grid)` — quadrant-fit az variance
+- `v3p4_1NormalizeNormal(fit)` — ensure upward-pointing normal
+- `v3p4_1NormalToOrientation(normal)` — normal→pitch/azimuth
+- `v3p4_1OrientationToNormal(pitchDeg, azDeg)` — pitch/azimuth→normal
+- `v3p4_1ScoreDominantPlane(poly, allPolygons, lidarSupport)` — continuous dominance score
+- `v3p4_1IsDominantPlane(poly, allPolygons)` — boolean dominant check
+- `v3p4_1AnchorChildRefit(childRefit, parentPitch, parentAz)` — bounded pitch drift
+- `v3p4_1ValidateRidgeSanity(polyA, polyB, edgeType)` — ridge pair validation
+- `v3p4_1ScorePolygonSet(polygons)` — quality+diversity scoring
+- `v3p4_1CheckAntiCollapse(prePoly, postPoly)` — structural collapse detection
 
 **Centralized thresholds:**
-`V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG=60`, `V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG=15`, `V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG=45`, `V3P4_1_DOMINANT_MIN_AREA_M2=12.0`, `V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M=1.5`, `V3P4_1_DOMINANT_AREA_RATIO=0.35`, `V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP=0.15`, `V3P4_1_ANTICOLLAPSE_MIN_PLANES=1`.
+`V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG=60`, `V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG=15`, `V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG=45`, `V3P4_1_CHILD_MAX_PITCH_DEV_DEG=20`, `V3P4_1_CHILD_MAX_AZ_DEV_DEG=60`, `V3P4_1_DOMINANT_MIN_AREA_M2=12.0`, `V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M=1.5`, `V3P4_1_DOMINANT_AREA_RATIO=0.35`, `V3P4_1_DOMINANT_LIDAR_SUPPORT_MIN=0.40`, `V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP=0.15`, `V3P4_1_ANTICOLLAPSE_MIN_PLANES=1`, `V3P4_1_ANTICOLLAPSE_DIVERSITY_LOSS_MAX=0.50`, `V3P4_1_RIDGE_MIN_AZ_OPPOSITION_DEG=90`, `V3P4_1_RIDGE_SANITY_PENALTY=0.25`.
 
-**Debug fields in polygon construction return:**
-- `v3p4_1_stabilization.refit_anchor_applied`
-- `v3p4_1_stabilization.regression_guard_active`
-- `v3p4_1_stabilization.rollback_triggered`
-- `v3p4_1_stabilization.pre_enforcement_score` / `post_enforcement_score`
-- `v3p4_1_stabilization.pre_enforcement_plane_count` / `post_enforcement_plane_count`
+**Debug fields (`md.v3p2_polygon_construction.v3p4_1_stabilization`):**
+- Build-level: `v3p4_stabilization_applied`, `normal_flip_count`, `anchored_refit_count`, `ridge_sanity_rejections`, `regression_guard_trigger_count`, `dominant_plane_count`, `dominant_plane_protection_events`, `anti_collapse_block_count`, `stabilization_warnings[]`, `pre/post_enforcement_score`, `pre/post_enforcement_diversity`
+- Per-polygon: `polygon_idx`, `source`, `refit_pitch/azimuth/normal`, `original_pitch/azimuth`, `final_pitch/azimuth/normal`, `was_flipped`, `inherited_parent_orientation`, `anchored_refit_applied`, `anchor_block_reason`, `internal_az_variance`, `pitch_drift`, `az_drift`
+- Final polygons: `dominant_plane_flag`, `dominant_plane_score`
 
 **Validation (21-case batch, 2026-04-21):** 21/21 success.
 
-| Case | Before Score/Faces | After Score/Faces | Delta | Mechanism |
+| Case | Before Score/Faces | After Score/Faces | Delta | Key Mechanism |
 |------|---|---|---|---|
 | 20 Meadow Dr | 0.20 / 2 | **0.80 / 3** | **+0.60** | Dominant protection + refit anchoring |
-| 583 Westford St | 0.84 / 3 | **0.88 / 4** | +0.04 | Refit anchoring (slope preserved) |
-| 15 Veteran Rd | 0.94 / 3 | 0.97 / 3 | +0.03 | Refit anchoring |
-| 17 Church Ave | 0.77 / 5 | 0.89 / 5 | +0.12 | Refit anchoring |
-| 74 Gates | 0.75 / 4 | 0.86 / 4 | +0.11 | Refit anchoring |
-| All others | — | — | — | Stable or improved |
-
-**Runtime improvement:** mean 11292ms → 7097ms (37% faster). The orientation anchoring prevents wasteful V3P3/V3P4 cycles on bad refits. `slow_over_15s` bucket: 7 → 1.
+| 74 Gates | 0.75 / 4 | **0.90 / 4** | **+0.15** | Normal consistency + pitch anchoring |
+| 583 Westford St | 0.84 / 3 | **0.88 / 4** | +0.04 | Refit anchoring |
+| 17 Church Ave | 0.77 / 5 | **0.89 / 5** | +0.12 | Refit anchoring + ridge sanity |
+| 15 Veteran Rd | 0.94 / 3 | 0.97 / 3 | +0.03 | Normal consistency |
+| 11 Ash Road | 0.94 / 4 | 0.97 / 4 | +0.03 | Normal consistency |
+| All others | — | — | — | Stable |
 
 **Status:** BANKED.
 
-**Reopen trigger:** Orientation anchoring blocks a valid refit (legitimate roof that just happens to have high quadrant variance — e.g., a real hip with 4 distinct slopes); regression guard falsely rolls back enforcement that was correct; dominant plane protection prevents ground-detection from working on a genuinely wrong large flat area.
+**Reopen trigger:** Orientation anchoring blocks a valid refit on a real hip roof; post-split pitch clamp damages a legitimate steep child; ridge sanity flags a correct relationship; anti-collapse guard blocks needed enforcement.
 
 ---
 

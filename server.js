@@ -26962,11 +26962,11 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
     perFace.push(plane);
   }
 
-  // V3P4.1: Dominant plane protection — rescue large/central planes from aggressive veto
-  // when veto is based on slope disagreement (not ground). The logic: if a plane has
-  // the largest area share and its suppression comes from LiDAR fit disagreement,
-  // downgrade to 'uncertain' so it survives into polygon construction.
+  // V3P4.1: Dominant plane protection — rescue large/central planes from aggressive veto.
+  // In V3P1 context, fit_residual is ML-vs-LiDAR disagreement, NOT plane fit quality.
+  // Use area ratio + lidar support for dominance, not fit_residual.
   let dominantRescueApplied = false;
+  let v3p4_1_dominantProtectionEvents = 0;
   if (perFace.length >= 2) {
     const areas = perFace.map(p => {
       const f = faces[p.face_idx];
@@ -26975,13 +26975,18 @@ function lidarFusionAssessment(envelope, v2p0Data, lidarPoints, centerLat, cente
     const totalArea = areas.reduce((a, b) => a + b, 0);
     for (let di = 0; di < perFace.length; di++) {
       const p = perFace[di];
+      const areaRatio = totalArea > 0 ? areas[di] / totalArea : 0;
+      const isDom = areas[di] >= V3P4_1_DOMINANT_MIN_AREA_M2 && areaRatio >= V3P4_1_DOMINANT_AREA_RATIO;
+      const domScore = _r2(areaRatio * 0.5 + ((p.lidar_support_score || 0) >= V3P4_1_DOMINANT_LIDAR_SUPPORT_MIN ? 0.3 : 0.1) + ((p.pitch || 0) >= 5 && (p.pitch || 0) <= 55 ? 0.2 : 0.05));
+      p.dominant_plane_flag = isDom;
+      p.dominant_plane_score = domScore;
       if (p.fusion_decision !== 'suppress') continue;
       if (p.ground_veto_flag) continue;
-      if (totalArea <= 0 || areas[di] / totalArea < V3P4_1_DOMINANT_AREA_RATIO) continue;
-      if (areas[di] < V3P4_1_DOMINANT_MIN_AREA_M2) continue;
+      if (!isDom) continue;
       p.fusion_decision = 'uncertain';
       p.fusion_reasons = [...(p.fusion_reasons || []), 'v3p4_1_dominant_plane_protected'];
       dominantRescueApplied = true;
+      v3p4_1_dominantProtectionEvents++;
     }
   }
 
@@ -27438,14 +27443,25 @@ const V3P4_INVALID_REL_SUPPRESS_MIN_FUSED = 0.50;
 const V3P4_ENFORCEMENT_IMPROVEMENT_MIN = 0.20;
 
 // ── V3P4.1: Enforcement Stabilization Patch ─────────────────────────────────
-const V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG = 60;    // Don't adopt refit if internal az variance exceeds this
-const V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG = 15;    // Reject refit if pitch drifts more than this from ML
-const V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG = 45;       // Reject refit if azimuth drifts more than this from ML
-const V3P4_1_DOMINANT_MIN_AREA_M2 = 12.0;          // Minimum area to be considered a dominant plane
-const V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M = 1.5;    // Max fit residual for dominant protection
-const V3P4_1_DOMINANT_AREA_RATIO = 0.35;            // Plane must be ≥35% of total roof area
-const V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP = 0.15; // Rollback if quality drops by this much
-const V3P4_1_ANTICOLLAPSE_MIN_PLANES = 1;           // Never suppress below this many planes
+// Orientation anchoring
+const V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG = 60;
+const V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG = 15;
+const V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG = 45;
+// Post-split child anchoring
+const V3P4_1_CHILD_MAX_PITCH_DEV_DEG = 20;
+const V3P4_1_CHILD_MAX_AZ_DEV_DEG = 60;
+// Dominant plane protection
+const V3P4_1_DOMINANT_MIN_AREA_M2 = 12.0;
+const V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M = 1.5;
+const V3P4_1_DOMINANT_AREA_RATIO = 0.35;
+const V3P4_1_DOMINANT_LIDAR_SUPPORT_MIN = 0.40;
+// Regression / anti-collapse
+const V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP = 0.15;
+const V3P4_1_ANTICOLLAPSE_MIN_PLANES = 1;
+const V3P4_1_ANTICOLLAPSE_DIVERSITY_LOSS_MAX = 0.50;
+// Ridge sanity
+const V3P4_1_RIDGE_MIN_AZ_OPPOSITION_DEG = 90;
+const V3P4_1_RIDGE_SANITY_PENALTY = 0.25;
 
 function v3p4_1GetInternalAzVariance(polygonVerts, grid) {
   if (!grid || !polygonVerts || polygonVerts.length < 3) return 0;
@@ -27480,20 +27496,102 @@ function v3p4_1GetInternalAzVariance(polygonVerts, grid) {
   return maxVar;
 }
 
-function v3p4_1IsDominantPlane(poly, allPolygons) {
+function v3p4_1NormalizeNormal(fit) {
+  if (!fit || !fit.normal) return { flipped: false, normal: fit ? fit.normal : null };
+  const n = fit.normal;
+  if (n.ny >= 0) return { flipped: false, normal: n };
+  return { flipped: true, normal: { nx: -n.nx, ny: -n.ny, nz: -n.nz } };
+}
+
+function v3p4_1NormalToOrientation(normal) {
+  const horizMag = Math.hypot(normal.nx, normal.nz);
+  const pitch = Math.atan2(horizMag, Math.max(normal.ny, 1e-9)) * 180 / Math.PI;
+  const dsX = -normal.nx, dsZ = -normal.nz;
+  const mag = Math.hypot(dsX, dsZ) || 1e-9;
+  let az = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
+  if (az < 0) az += 360;
+  return { pitch: _r2(pitch), azimuth: _r2(az) };
+}
+
+function v3p4_1OrientationToNormal(pitchDeg, azDeg) {
+  const pRad = pitchDeg * Math.PI / 180;
+  const aRad = azDeg * Math.PI / 180;
+  const ny = Math.cos(pRad);
+  const horizMag = Math.sin(pRad);
+  const nx = -horizMag * Math.sin(aRad);
+  const nz = horizMag * Math.cos(aRad);
+  return { nx, ny, nz };
+}
+
+function v3p4_1ScoreDominantPlane(poly, allPolygons, lidarSupport) {
   const area = v3p2_1ApproxArea(poly.vertices || []);
-  if (area < V3P4_1_DOMINANT_MIN_AREA_M2) return false;
-  if ((poly.fit_rmse || 0) > V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M) return false;
   let totalArea = 0;
   for (const p of allPolygons) {
     if (p.validation_decision !== 'suppress') totalArea += v3p2_1ApproxArea(p.vertices || []);
   }
-  if (totalArea <= 0) return false;
-  return (area / totalArea) >= V3P4_1_DOMINANT_AREA_RATIO;
+  if (totalArea <= 0) return { score: 0, isDominant: false, area, areaRatio: 0 };
+  const areaRatio = area / totalArea;
+  const rmse = poly.fit_rmse || 1.0;
+  const rmseFactor = rmse <= 0.6 ? 1.0 : rmse <= 1.0 ? 0.8 : rmse <= 1.5 ? 0.5 : 0.2;
+  const lidarFactor = (lidarSupport || 0) >= 0.6 ? 1.0 : (lidarSupport || 0) >= 0.4 ? 0.7 : 0.3;
+  const pitchVal = poly.pitch || poly.original_pitch || 0;
+  const pitchFactor = (pitchVal >= 5 && pitchVal <= 55) ? 1.0 : 0.4;
+  const score = _r2(areaRatio * 0.4 + rmseFactor * 0.25 + lidarFactor * 0.2 + pitchFactor * 0.15);
+  const isDominant = area >= V3P4_1_DOMINANT_MIN_AREA_M2
+    && rmse <= V3P4_1_DOMINANT_MAX_FIT_RESIDUAL_M
+    && areaRatio >= V3P4_1_DOMINANT_AREA_RATIO;
+  return { score, isDominant, area: _r2(area), areaRatio: _r2(areaRatio) };
+}
+
+function v3p4_1IsDominantPlane(poly, allPolygons) {
+  const s = v3p4_1ScoreDominantPlane(poly, allPolygons, null);
+  return s.isDominant;
+}
+
+function v3p4_1AnchorChildRefit(childRefit, parentPitch, parentAz) {
+  if (!childRefit) return { anchored: false, refit: childRefit, reason: 'no_refit' };
+  const pitchDev = Math.abs(childRefit.pitch - parentPitch);
+  // Only anchor pitch. Azimuth is NOT anchored for split children because splits
+  // legitimately produce opposing-direction children (gable ridges, etc).
+  if (pitchDev <= V3P4_1_CHILD_MAX_PITCH_DEV_DEG) {
+    return { anchored: false, refit: childRefit, reason: 'within_bounds' };
+  }
+  // Guard against children drifting to near-flat (averaging artifact) when parent was pitched
+  if (childRefit.pitch < 5 && parentPitch > 12) {
+    return {
+      anchored: true,
+      refit: { ...childRefit, pitch: _r2(parentPitch - V3P4_1_CHILD_MAX_PITCH_DEV_DEG) },
+      reason: 'pitch_clamped_from_flat',
+      original_pitch: childRefit.pitch,
+      original_azimuth: childRefit.azimuth,
+    };
+  }
+  const clampedPitch = parentPitch + Math.sign(childRefit.pitch - parentPitch) * V3P4_1_CHILD_MAX_PITCH_DEV_DEG;
+  return {
+    anchored: true,
+    refit: { ...childRefit, pitch: _r2(clampedPitch) },
+    reason: 'pitch_clamped',
+    original_pitch: childRefit.pitch,
+    original_azimuth: childRefit.azimuth,
+  };
+}
+
+function v3p4_1ValidateRidgeSanity(polyA, polyB, edgeType) {
+  if (edgeType !== 'ridge_candidate' && edgeType !== 'ridge') return { valid: true, reason: 'not_ridge' };
+  const azA = polyA.azimuth || polyA.original_azimuth || 0;
+  const azB = polyB.azimuth || polyB.original_azimuth || 0;
+  const azOpp = v3p2AngularDistance(azA + 180, azB);
+  if (azOpp <= V3P3_RIDGE_AZ_OPP_MAX_DEG) return { valid: true, reason: 'ridge_opposition_ok', az_opposition: _r2(azOpp) };
+  const azSame = v3p2AngularDistance(azA, azB);
+  if (azSame < V3P4_1_RIDGE_MIN_AZ_OPPOSITION_DEG) {
+    return { valid: false, reason: 'ridge_same_direction', az_same: _r2(azSame), az_opp: _r2(azOpp) };
+  }
+  return { valid: true, reason: 'ridge_oblique_acceptable', az_opp: _r2(azOpp) };
 }
 
 function v3p4_1ScorePolygonSet(polygons) {
-  let score = 0, count = 0;
+  let score = 0, count = 0, ridgeCount = 0;
+  const azimuths = [];
   for (const p of polygons) {
     if (p.validation_decision === 'suppress') continue;
     const area = v3p2_1ApproxArea(p.vertices || []);
@@ -27501,9 +27599,32 @@ function v3p4_1ScorePolygonSet(polygons) {
     const pitch = p.pitch || p.original_pitch || 0;
     const pitchOk = pitch >= 5 && pitch <= 55 ? 1.0 : 0.5;
     score += area * pitchOk / Math.max(rmse, 0.3);
+    azimuths.push(p.azimuth || p.original_azimuth || 0);
     count++;
   }
-  return { score: _r2(score), count };
+  let diversity = 0;
+  for (let i = 0; i < azimuths.length; i++) {
+    for (let j = i + 1; j < azimuths.length; j++) {
+      const d = v3p2AngularDistance(azimuths[i], azimuths[j]);
+      if (d > diversity) diversity = d;
+    }
+  }
+  return { score: _r2(score), count, diversity: _r2(diversity) };
+}
+
+function v3p4_1CheckAntiCollapse(prePoly, postPoly) {
+  const pre = v3p4_1ScorePolygonSet(prePoly);
+  const post = v3p4_1ScorePolygonSet(postPoly);
+  if (post.count < V3P4_1_ANTICOLLAPSE_MIN_PLANES && pre.count >= V3P4_1_ANTICOLLAPSE_MIN_PLANES) {
+    return { blocked: true, reason: 'plane_count_collapse', pre_count: pre.count, post_count: post.count };
+  }
+  if (pre.diversity > 0 && post.diversity / pre.diversity < (1 - V3P4_1_ANTICOLLAPSE_DIVERSITY_LOSS_MAX)) {
+    return { blocked: true, reason: 'diversity_collapse', pre_diversity: pre.diversity, post_diversity: post.diversity };
+  }
+  if (pre.score > 0 && (pre.score - post.score) / pre.score > V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP) {
+    return { blocked: true, reason: 'score_regression', pre_score: pre.score, post_score: post.score };
+  }
+  return { blocked: false };
 }
 
 function v3p2_2EstimateSplitLine(face, grid, v3p1PerFace, bestEdge, faces) {
@@ -27749,22 +27870,17 @@ function v3p2RefitPlaneInPolygon(polygonVerts, grid) {
   if (samples.length < V3P2_REFIT_MIN_SAMPLES) return null;
   const fit = v3p1FitLocalPlane(samples);
   if (!fit) return null;
-  // Convert fit normal to pitch/azimuth (compass: 0=N, 90=E).
-  const { normal } = fit;
-  const horizMag = Math.hypot(normal.nx, normal.nz);
-  const pitchDeg = Math.atan2(horizMag, Math.max(normal.ny, 1e-9)) * 180 / Math.PI;
-  // Downslope horizontal direction is -(nx, nz) normalized (points away from up-normal).
-  const dsX = -normal.nx, dsZ = -normal.nz;
-  const mag = Math.hypot(dsX, dsZ) || 1e-9;
-  // Compass azimuth (0=N, CW). CRM frame: +x=east, +z=south. N corresponds to -z direction.
-  // So az = atan2(east_component, north_component) = atan2(dsX/mag, -dsZ/mag).
-  let azDeg = Math.atan2(dsX / mag, -dsZ / mag) * 180 / Math.PI;
-  if (azDeg < 0) azDeg += 360;
+  // V3P4.1: Enforce upward-pointing normal (ny > 0). Sign-ambiguity guard.
+  const norm = v3p4_1NormalizeNormal(fit);
+  const normal = norm.normal;
+  const ori = v3p4_1NormalToOrientation(normal);
   return {
-    pitch: _r2(pitchDeg),
-    azimuth: _r2(azDeg),
+    pitch: ori.pitch,
+    azimuth: ori.azimuth,
     rmse: _r2(fit.rmse),
     sample_count: samples.length,
+    normal: { nx: _r2(normal.nx), ny: _r2(normal.ny), nz: _r2(normal.nz) },
+    was_flipped: norm.flipped,
   };
 }
 
@@ -28462,8 +28578,15 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
     const origPoly = polygons[pi];
     if (!origPoly || origPoly.validation_decision === 'suppress') continue;
 
-    const refitA = split.refits[0];
-    const refitB = split.refits[1];
+    const rawRefitA = split.refits[0];
+    const rawRefitB = split.refits[1];
+    // V3P4.1: Post-split orientation anchoring for enforcement splits
+    const parentP = origPoly.pitch || origPoly.original_pitch || 0;
+    const parentA = origPoly.azimuth || origPoly.original_azimuth || 0;
+    const ancA = v3p4_1AnchorChildRefit(rawRefitA, parentP, parentA);
+    const ancB = v3p4_1AnchorChildRefit(rawRefitB, parentP, parentA);
+    const refitA = ancA.refit;
+    const refitB = ancB.refit;
     const childA = {
       polygon_idx: -1,
       source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
@@ -28473,10 +28596,14 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
       original_pitch: origPoly.original_pitch || origPoly.pitch,
       original_azimuth: origPoly.original_azimuth || origPoly.azimuth,
       fit_rmse: refitA.rmse, fit_sample_count: refitA.sample_count,
+      normal: refitA.normal || null,
+      was_flipped: refitA.was_flipped || false,
+      inherited_parent_orientation: ancA.anchored,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'v3p4_enforced_split_a',
       validation_reasons: ['v3p4_' + split.reason],
     };
+    if (ancA.anchored) childA.validation_reasons.push('v3p4_1_child_anchored_' + ancA.reason);
     const childB = {
       polygon_idx: -1,
       source_face_indices: origPoly.source_face_indices ? origPoly.source_face_indices.slice() : [],
@@ -28486,10 +28613,14 @@ function v3p4RunEnforcement(polygons, edges, grid, v3p3Internal) {
       original_pitch: origPoly.original_pitch || origPoly.pitch,
       original_azimuth: origPoly.original_azimuth || origPoly.azimuth,
       fit_rmse: refitB.rmse, fit_sample_count: refitB.sample_count,
+      normal: refitB.normal || null,
+      was_flipped: refitB.was_flipped || false,
+      inherited_parent_orientation: ancB.anchored,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'v3p4_enforced_split_b',
       validation_reasons: ['v3p4_' + split.reason],
     };
+    if (ancB.anchored) childB.validation_reasons.push('v3p4_1_child_anchored_' + ancB.reason);
     polygons.splice(pi, 1, childA, childB);
     debug.enforced_split_count++;
     debug.per_polygon.push({
@@ -29388,14 +29519,22 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
 
     // Split succeeded — record and apply.
     const parts = splitResult.parts;
-    const refitA = splitResult.refits[0];
-    const refitB = splitResult.refits[1];
+    let refitA = splitResult.refits[0];
+    let refitB = splitResult.refits[1];
     if (splitResult.fallbackUsed) fallbackSplitCount++;
     splitKeptCount++;
     if (splitResult.splitLine) {
       const t = splitResult.splitLine.type;
       splitTypeCounts[t] = (splitTypeCounts[t] || 0) + 1;
     }
+
+    // V3P4.1: Post-split orientation anchoring — bound children relative to parent
+    const parentPitch = origFace.pitch || 0;
+    const parentAz = origFace.azimuth || 0;
+    const anchorA = v3p4_1AnchorChildRefit(refitA, parentPitch, parentAz);
+    const anchorB = v3p4_1AnchorChildRefit(refitB, parentPitch, parentAz);
+    refitA = anchorA.refit;
+    refitB = anchorB.refit;
 
     splitGeometryDebug.push({
       source_polygon_idx: poly.polygon_idx,
@@ -29414,6 +29553,8 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       split_improvement_score: splitResult.improvement.score,
       split_validation_decision: 'keep',
       split_rejection_reasons: [],
+      v3p4_1_anchor_a: anchorA.anchored ? anchorA.reason : null,
+      v3p4_1_anchor_b: anchorB.anchored ? anchorB.reason : null,
     });
 
     const polyLo = {
@@ -29423,10 +29564,14 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       pitch: refitA.pitch, azimuth: refitA.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
       fit_rmse: refitA.rmse, fit_sample_count: refitA.sample_count,
+      normal: refitA.normal || null,
+      was_flipped: refitA.was_flipped || false,
+      inherited_parent_orientation: anchorA.anchored,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_a',
       validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
     };
+    if (anchorA.anchored) polyLo.validation_reasons.push('v3p4_1_child_anchored_' + anchorA.reason);
     const polyHi = {
       polygon_idx: polygons.length + toReplace.length + 1,
       source_face_indices: poly.source_face_indices.slice(),
@@ -29434,10 +29579,14 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       pitch: refitB.pitch, azimuth: refitB.azimuth, height: poly.height,
       original_pitch: origFace.pitch, original_azimuth: origFace.azimuth,
       fit_rmse: refitB.rmse, fit_sample_count: refitB.sample_count,
+      normal: refitB.normal || null,
+      was_flipped: refitB.was_flipped || false,
+      inherited_parent_orientation: anchorB.anchored,
       ridge_crossing_flag: false, ground_veto_flag: false,
       validation_decision: 'split_half_b',
       validation_reasons: ['split_from_face_' + poly.polygon_idx, 'split_type_' + (splitResult.splitLine ? splitResult.splitLine.type : 'unknown')],
     };
+    if (anchorB.anchored) polyHi.validation_reasons.push('v3p4_1_child_anchored_' + anchorB.reason);
     toReplace.push({ idx: i, replacements: [polyLo, polyHi] });
     splitCount++;
   }
@@ -29450,40 +29599,127 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   for (let i = 0; i < polygons.length; i++) polygons[i].polygon_idx = i;
 
   // 2) Refit plane for non-split polygons that don't already have a refit.
+  // V3P4.1: Full stabilization with normal consistency, orientation anchoring, per-polygon debug.
+  let v3p4_1_normalFlipCount = 0;
+  let v3p4_1_anchoredRefitCount = 0;
+  const v3p4_1_perPolygon = [];
   if (grid) {
     for (const poly of polygons) {
-      if (poly.fit_rmse != null) continue;
+      if (poly.fit_rmse != null) {
+        // Already refit (split child) — record existing state
+        v3p4_1_perPolygon.push({
+          polygon_idx: poly.polygon_idx,
+          source: 'split_child',
+          was_flipped: poly.was_flipped || false,
+          inherited_parent_orientation: poly.inherited_parent_orientation || false,
+        });
+        if (poly.was_flipped) v3p4_1_normalFlipCount++;
+        continue;
+      }
       const refit = v3p2RefitPlaneInPolygon(poly.vertices, grid);
+      const polyDebug = { polygon_idx: poly.polygon_idx, source: 'refit' };
       if (refit) {
         poly.fit_rmse = refit.rmse;
         poly.fit_sample_count = refit.sample_count;
+        poly.normal = refit.normal;
+        polyDebug.refit_pitch = refit.pitch;
+        polyDebug.refit_azimuth = refit.azimuth;
+        polyDebug.refit_normal = refit.normal;
+        polyDebug.was_flipped = refit.was_flipped;
+        if (refit.was_flipped) v3p4_1_normalFlipCount++;
         // V3P4.1: Orientation anchoring — check internal consistency before adopting refit.
         const mlPitch = poly.original_pitch || poly.pitch || 0;
         const mlAz = poly.original_azimuth || poly.azimuth || 0;
+        polyDebug.original_pitch = mlPitch;
+        polyDebug.original_azimuth = mlAz;
         const refitPitchDrift = Math.abs(refit.pitch - mlPitch);
         const refitAzDrift = v3p2AngularDistance(refit.azimuth, mlAz);
-        // Check internal azimuth variance from quadrant fits
         const internalAzVar = v3p4_1GetInternalAzVariance(poly.vertices, grid);
+        polyDebug.internal_az_variance = _r2(internalAzVar);
+        polyDebug.pitch_drift = _r2(refitPitchDrift);
+        polyDebug.az_drift = _r2(refitAzDrift);
         let anchorBlocked = false;
+        let blockReason = null;
         if (internalAzVar > V3P4_1_REFIT_ANCHOR_AZ_VARIANCE_DEG) {
           anchorBlocked = true;
+          blockReason = 'internal_variance_' + Math.round(internalAzVar);
           poly.validation_reasons.push('v3p4_1_refit_blocked_internal_variance_' + Math.round(internalAzVar));
         } else if (refitPitchDrift > V3P4_1_REFIT_ANCHOR_PITCH_DRIFT_DEG && refit.pitch < 12) {
           anchorBlocked = true;
+          blockReason = 'pitch_drift_to_flat';
           poly.validation_reasons.push('v3p4_1_refit_blocked_pitch_drift_to_flat');
         } else if (refitAzDrift > V3P4_1_REFIT_ANCHOR_AZ_DRIFT_DEG && internalAzVar > 30) {
           anchorBlocked = true;
+          blockReason = 'az_drift_' + Math.round(refitAzDrift);
           poly.validation_reasons.push('v3p4_1_refit_blocked_az_drift_' + Math.round(refitAzDrift));
         }
+        polyDebug.anchored_refit_applied = anchorBlocked;
+        polyDebug.anchor_block_reason = blockReason;
+        if (anchorBlocked) v3p4_1_anchoredRefitCount++;
         if (!anchorBlocked && refit.rmse <= V3P2_REFIT_MAX_RMSE_M) {
           poly.pitch = refit.pitch;
           poly.azimuth = refit.azimuth;
+          poly.normal = refit.normal;
+          polyDebug.final_pitch = refit.pitch;
+          polyDebug.final_azimuth = refit.azimuth;
+          polyDebug.final_normal = refit.normal;
         } else if (!anchorBlocked) {
           poly.validation_reasons.push('refit_rmse_high_kept_ml_orientation');
+          polyDebug.final_pitch = mlPitch;
+          polyDebug.final_azimuth = mlAz;
+          poly.normal = v3p4_1OrientationToNormal(mlPitch, mlAz);
+          polyDebug.final_normal = poly.normal;
+        } else {
+          polyDebug.final_pitch = mlPitch;
+          polyDebug.final_azimuth = mlAz;
+          poly.normal = v3p4_1OrientationToNormal(mlPitch, mlAz);
+          polyDebug.final_normal = poly.normal;
         }
       } else {
         poly.validation_reasons.push('refit_insufficient_samples');
+        const mlP = poly.original_pitch || poly.pitch || 0;
+        const mlA = poly.original_azimuth || poly.azimuth || 0;
+        poly.normal = v3p4_1OrientationToNormal(mlP, mlA);
+        polyDebug.final_pitch = mlP;
+        polyDebug.final_azimuth = mlA;
+        polyDebug.final_normal = poly.normal;
       }
+      v3p4_1_perPolygon.push(polyDebug);
+    }
+  }
+
+  // V3P4.1: Ridge sanity pass — validate ridge-adjacent polygon pairs after refits.
+  // Conservative: only flag, don't revert, unless edge has very high fused score AND
+  // the polygon pair is clearly same-direction across a ridge.
+  let v3p4_1_ridgeSanityRejections = 0;
+  const v3p4_1_ridgeSanityDebug = [];
+  for (const edge of edges) {
+    if (!edge.edge_type_guess || (!edge.edge_type_guess.includes('ridge'))) continue;
+    if (!edge.fused_edge_score || edge.fused_edge_score < 0.75) continue;
+    const fA = faces[edge.face_a_idx];
+    const fB = faces[edge.face_b_idx];
+    if (!fA || !fB) continue;
+    let polyAIdx = -1, polyBIdx = -1;
+    for (let pi = 0; pi < polygons.length; pi++) {
+      const src = polygons[pi].source_face_indices || [];
+      if (src.includes(edge.face_a_idx) && polyAIdx < 0) polyAIdx = pi;
+      if (src.includes(edge.face_b_idx) && polyBIdx < 0) polyBIdx = pi;
+    }
+    if (polyAIdx < 0 || polyBIdx < 0 || polyAIdx === polyBIdx) continue;
+    const polyA = polygons[polyAIdx];
+    const polyB = polygons[polyBIdx];
+    if (!polyA || !polyB) continue;
+    const sanity = v3p4_1ValidateRidgeSanity(polyA, polyB, edge.edge_type_guess);
+    if (!sanity.valid) {
+      v3p4_1_ridgeSanityRejections++;
+      v3p4_1_ridgeSanityDebug.push({
+        edge_idx: edge.edge_idx,
+        poly_a: polyAIdx, poly_b: polyBIdx,
+        reason: sanity.reason,
+        az_same: sanity.az_same, az_opp: sanity.az_opp,
+      });
+      polyA.validation_reasons.push('v3p4_1_ridge_sanity_warning');
+      polyB.validation_reasons.push('v3p4_1_ridge_sanity_warning');
     }
   }
 
@@ -29539,6 +29775,11 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
         pi.validation_reasons.push('merge_rejected_refit_worse');
         continue;
       }
+      // V3P4.1: Anti-collapse merge guard — don't merge away a dominant plane.
+      if (v3p4_1IsDominantPlane(pj, polygons)) {
+        pi.validation_reasons.push('v3p4_1_merge_blocked_dominant_target');
+        continue;
+      }
       // V3P2.1: mark the shared edge as used for merge.
       if (blockingEdge) {
         const scoreEntry = edgeScores.find(s => s.edge_idx === blockingEdge.edge_idx);
@@ -29549,6 +29790,7 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
       pi.azimuth = refit.azimuth;
       pi.fit_rmse = refit.rmse;
       pi.fit_sample_count = refit.sample_count;
+      pi.normal = refit.normal || null;
       pi.validation_decision = 'merge';
       pi.validation_reasons.push('merged_with_polygon_' + j);
       pi.source_face_indices = pi.source_face_indices.concat(pj.source_face_indices);
@@ -29683,19 +29925,44 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
   let v3p4FinalPolygons = v3p3FinalPolygons.filter((_, i) => !v3p4Suppressed.has(i));
   for (let i = 0; i < v3p4FinalPolygons.length; i++) v3p4FinalPolygons[i].polygon_idx = i;
 
-  // V3P4.1: Regression guard — rollback if enforcement materially degraded quality
+  // V3P4.1: Regression guard + anti-collapse — rollback if enforcement degraded quality
   let v3p4_1_rollback = false;
+  let v3p4_1_rollback_reason = null;
   const postScore = v3p4_1ScorePolygonSet(v3p4FinalPolygons);
   if (v3p4Debug.v3p4_enforcement_applied && preScore.score > 0) {
-    const scoreDrop = (preScore.score - postScore.score) / preScore.score;
-    // Anti-collapse: never let enforcement reduce below minimum plane count
-    const collapsedTooFar = postScore.count < V3P4_1_ANTICOLLAPSE_MIN_PLANES && preScore.count >= V3P4_1_ANTICOLLAPSE_MIN_PLANES;
-    if (scoreDrop > V3P4_1_REGRESSION_GUARD_MIN_SCORE_DROP || collapsedTooFar) {
+    const antiCollapse = v3p4_1CheckAntiCollapse(
+      preEnforcementSnapshot.filter(p => p.validation_decision !== 'suppress'),
+      v3p4FinalPolygons
+    );
+    if (antiCollapse.blocked) {
       v3p4_1_rollback = true;
+      v3p4_1_rollback_reason = antiCollapse.reason;
+    }
+    // Also check dominant plane preservation
+    if (!v3p4_1_rollback) {
+      for (const snap of preEnforcementSnapshot) {
+        if (snap.validation_decision === 'suppress') continue;
+        const dom = v3p4_1ScoreDominantPlane(snap, preEnforcementSnapshot.filter(s => s.validation_decision !== 'suppress'), null);
+        if (dom.isDominant) {
+          const stillPresent = v3p4FinalPolygons.some(p =>
+            p.source_face_indices && snap.source_face_indices &&
+            p.source_face_indices.some(f => snap.source_face_indices.includes(f))
+          );
+          if (!stillPresent) {
+            v3p4_1_rollback = true;
+            v3p4_1_rollback_reason = 'dominant_plane_lost_idx_' + snap.polygon_idx;
+            break;
+          }
+        }
+      }
+    }
+    if (v3p4_1_rollback) {
       v3p4Debug.v3p4_1_rollback = true;
-      v3p4Debug.v3p4_1_rollback_reason = collapsedTooFar ? 'anti_collapse' : 'score_regression_' + Math.round(scoreDrop * 100) + 'pct';
+      v3p4Debug.v3p4_1_rollback_reason = v3p4_1_rollback_reason;
       v3p4Debug.v3p4_1_pre_score = preScore.score;
       v3p4Debug.v3p4_1_post_score = postScore.score;
+      v3p4Debug.v3p4_1_pre_diversity = preScore.diversity;
+      v3p4Debug.v3p4_1_post_diversity = postScore.diversity;
       // Restore pre-enforcement state
       v3p3FinalPolygons.length = 0;
       for (const snap of preEnforcementSnapshot) {
@@ -29790,16 +30057,38 @@ function polygonConstructionAssessment(envelope, v3p1Data, lidarPoints, centerLa
     v3p4_enforcement: v3p4Debug,
     // V3P4.1: stabilization patch
     v3p4_1_stabilization: {
-      refit_anchor_applied: true,
+      v3p4_stabilization_applied: true,
+      normal_flip_count: v3p4_1_normalFlipCount,
+      anchored_refit_count: v3p4_1_anchoredRefitCount,
+      ridge_sanity_rejections: v3p4_1_ridgeSanityRejections,
+      ridge_sanity_details: v3p4_1_ridgeSanityDebug,
       regression_guard_active: true,
+      regression_guard_trigger_count: v3p4_1_rollback ? 1 : 0,
       rollback_triggered: v3p4_1_rollback,
+      rollback_reason: v3p4_1_rollback_reason,
       pre_enforcement_score: preScore.score,
       post_enforcement_score: postScore.score,
       pre_enforcement_plane_count: preScore.count,
       post_enforcement_plane_count: postScore.count,
+      pre_enforcement_diversity: preScore.diversity,
+      post_enforcement_diversity: postScore.diversity,
+      dominant_plane_count: v3p4FinalPolygons.filter(p => v3p4_1IsDominantPlane(p, v3p4FinalPolygons)).length,
+      dominant_plane_protection_events: v3p4Debug.enforcement_warnings ? v3p4Debug.enforcement_warnings.filter(w => w.includes('dominant')).length : 0,
+      anti_collapse_block_count: v3p4_1_rollback && v3p4_1_rollback_reason && v3p4_1_rollback_reason.includes('collapse') ? 1 : 0,
+      stabilization_warnings: [
+        ...(v3p4_1_rollback ? ['enforcement_rolled_back_' + v3p4_1_rollback_reason] : []),
+        ...(v3p4_1_ridgeSanityRejections > 0 ? ['ridge_sanity_corrections_' + v3p4_1_ridgeSanityRejections] : []),
+        ...(v3p4_1_normalFlipCount > 0 ? ['normals_flipped_' + v3p4_1_normalFlipCount] : []),
+      ],
+      per_polygon: v3p4_1_perPolygon,
     },
     edges,
-    polygons: v3p4FinalPolygons,
+    polygons: v3p4FinalPolygons.map(p => {
+      const dom = v3p4_1ScoreDominantPlane(p, v3p4FinalPolygons, null);
+      p.dominant_plane_flag = dom.isDominant;
+      p.dominant_plane_score = dom.score;
+      return p;
+    }),
   };
 }
 
