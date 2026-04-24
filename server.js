@@ -7359,6 +7359,10 @@ app.get("/design", (req, res) => {
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
               ML Auto Build</div><span class="lp-subitem-key">M</span>
             </div>
+            <div class="lp-subitem" id="btnLineAudit"><div class="lp-subitem-left">
+              <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L22 4"/><path d="M2 4h20"/><path d="M22 20L12 12"/></svg>
+              Line Audit</div><span class="lp-subitem-key">L</span>
+            </div>
             <div class="lp-subitem" id="btnSmartRoof"><div class="lp-subitem-left">
               <svg class="lp-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v9a2 2 0 002 2h10a2 2 0 002-2v-9"/></svg>
               Smart roof</div><span class="lp-subitem-key">R</span>
@@ -8587,6 +8591,7 @@ app.get("/design", (req, res) => {
     var roofTempLines = null;
     var roofSnapGuides = [];       // THREE.Line objects for snap guide lines
     var ridgeLines3d = [];         // THREE.Line objects for detected ridge lines
+    var auditLines3d = [];         // THREE.Line objects for line-audit overlays
     var roofSnappedPos = null;     // snapped cursor position {x, z} or null
     var roofSelectedFace = -1;
     var roofSelectedSection = -1;
@@ -16444,6 +16449,210 @@ app.get("/design", (req, res) => {
       });
     }
 
+    // ── Line Audit — extract and overlay classified roof lines ──────────
+    // Separate from ML Auto Build. Does NOT clear roof faces, push undo,
+    // save, or mutate any design state. Preview/audit overlay only.
+
+    function clearAuditLines() {
+      auditLines3d.forEach(function(l) { scene3d.remove(l); });
+      auditLines3d = [];
+    }
+
+    function auditLineY(worldX, worldZ, grid) {
+      if (!grid) return 0.3;
+      var lidarOffX = lidarPoints ? lidarPoints.position.x : 0;
+      var lidarOffZ = lidarPoints ? lidarPoints.position.z : 0;
+      var lx = worldX - lidarOffX;
+      var lz = worldZ - lidarOffZ;
+      var bestElev = -Infinity;
+      for (var dr = -2; dr <= 2; dr++) {
+        for (var dc = -2; dc <= 2; dc++) {
+          var r = Math.round((lz - grid.minZ) / grid.cellSize) + dr;
+          var c = Math.round((lx - grid.minX) / grid.cellSize) + dc;
+          if (r >= 0 && r < grid.rows && c >= 0 && c < grid.cols) {
+            var e = grid.elev[r][c];
+            if (e > bestElev) bestElev = e;
+          }
+        }
+      }
+      if (bestElev === -Infinity) return 0.3;
+      var groundThreshold = grid.groundElev + 1.0;
+      var lyOff = lidarPoints ? lidarPoints.position.y : -0.75;
+      return (bestElev - groundThreshold) * vertExag + lyOff;
+    }
+
+    function renderAuditLines(lines) {
+      clearAuditLines();
+      var AUDIT_COLORS = {
+        ridge:     0xFF0044,
+        eave:      0x00FF66,
+        rake:      0xFF8800,
+        hip:       0xFFFF00,
+        valley:    0xFF00FF,
+        uncertain: 0x00FFFF
+      };
+      var grid = (lidarRawPoints && lidarRawPoints.length > 0) ? buildElevGrid(lidarRawPoints) : null;
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        var color = AUDIT_COLORS[ln.type] || 0xFFFFFF;
+        var y1 = auditLineY(ln.p1.x, ln.p1.z, grid);
+        var y2 = auditLineY(ln.p2.x, ln.p2.z, grid);
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+          ln.p1.x, y1, ln.p1.z,
+          ln.p2.x, y2, ln.p2.z
+        ]), 3));
+        var mat;
+        if (ln.source === 'boundary_trace') {
+          mat = new THREE.LineDashedMaterial({ color: color, linewidth: 4, dashSize: 0.3, gapSize: 0.15, depthTest: false });
+        } else {
+          mat = new THREE.LineBasicMaterial({ color: color, linewidth: 6, depthTest: false });
+        }
+        var line = new THREE.Line(geo, mat);
+        if (ln.source === 'boundary_trace') line.computeLineDistances();
+        line.renderOrder = 999;
+        line.userData = { auditLine: true, lineType: ln.type, source: ln.source };
+        scene3d.add(line);
+        auditLines3d.push(line);
+      }
+    }
+
+    function lineAudit() {
+      if (roofDrawingMode) toggleRoofDrawingMode();
+      if (treePlacingMode) toggleTreeMode();
+
+      var banner = document.getElementById('roofModeBanner');
+      _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L22 4"/><path d="M2 4h20"/><path d="M22 20L12 12"/></svg> Line Audit: loading LiDAR...');
+
+      if (!lidarRawPoints || lidarRawPoints.length === 0) {
+        if (!lidarFetched && !lidarLoading) {
+          loadLidarPoints(true);
+        }
+        var waitCount = 0;
+        var waitInterval = setInterval(function() {
+          waitCount++;
+          if (lidarRawPoints && lidarRawPoints.length > 0) {
+            clearInterval(waitInterval);
+            lineAuditContinue(false);
+          } else if (waitCount > 20 || lidarLoadError) {
+            clearInterval(waitInterval);
+            _mlBanner(banner, 'warning', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/></svg> Line Audit: LiDAR unavailable, running image-only...');
+            lineAuditContinue(true);
+          }
+        }, 500);
+      } else {
+        lineAuditContinue(false);
+      }
+    }
+
+    function lineAuditContinue(withoutLidar) {
+      var banner = document.getElementById('roofModeBanner');
+      if (!withoutLidar) {
+        _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L22 4"/><path d="M2 4h20"/><path d="M22 20L12 12"/></svg> Line Audit: extracting roof lines...');
+      }
+
+      var pId = (typeof projectId !== 'undefined' && projectId) ? projectId : 'unknown';
+      var calibOffsetX = 0, calibOffsetZ = 0;
+      if (calibSavedTransform) {
+        calibOffsetX = calibSavedTransform.tx || 0;
+        calibOffsetZ = calibSavedTransform.tz || 0;
+      } else if (lidarPoints) {
+        calibOffsetX = lidarPoints.position.x || 0;
+        calibOffsetZ = lidarPoints.position.z || 0;
+      }
+
+      var lidarPts = [];
+      if (lidarRawPoints) {
+        for (var i = 0; i < lidarRawPoints.length; i++) lidarPts.push(lidarRawPoints[i]);
+      }
+
+      var anchorDots = [];
+      if (calibSavedTransform && calibSavedTransform.controlPoints) {
+        anchorDots = calibSavedTransform.controlPoints.map(function(cp, i) {
+          return {
+            id: 'dot_' + i,
+            x: cp.sat.x,
+            z: cp.sat.z,
+            lat: designLat + (cp.sat.z / -111320),
+            lng: designLng + (cp.sat.x / (111320 * Math.cos(designLat * Math.PI / 180))),
+            label: 'calib_' + i
+          };
+        });
+      }
+
+      var payload = {
+        projectId: pId,
+        designId: currentDesignId || null,
+        anchor_dots: anchorDots,
+        calibration_offset: { tx: calibOffsetX, tz: calibOffsetZ },
+        lidar: {
+          points: lidarPts,
+          bounds: [-35, -35, 35, 35],
+          resolution: 0.25,
+          source: 'google_solar_dsm'
+        },
+        image: {
+          url: '/api/satellite?lat=' + designLat + '&lng=' + designLng + '&zoom=20&size=640',
+          width_px: 640,
+          height_px: 640,
+          geo_bounds: [designLat - 0.000315, designLng - 0.000420, designLat + 0.000315, designLng + 0.000420],
+          resolution_m_per_px: 0.109375
+        },
+        design_center: { lat: designLat, lng: designLng },
+        options: { pipeline_mode: 'ml_v2' }
+      };
+
+      fetch('/api/line-audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          console.log('Line Audit error:', data);
+          var extras = [data.detail, data.hint].filter(Boolean).join(' -- ');
+          _mlBanner(banner, 'error', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Line Audit: ' + data.error + (extras ? ' -- ' + extras : ''));
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 9000);
+          return;
+        }
+        var lines = data.audit_lines || [];
+        var summary = data.summary || {};
+        console.log('[line-audit] result:', summary, 'debug:', data.debug);
+
+        if (lines.length === 0) {
+          _mlBanner(banner, 'neutral', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L22 4"/><path d="M2 4h20"/><path d="M22 20L12 12"/></svg> Line Audit: no roof lines detected.' + (data.debug && data.debug.status ? ' (status: ' + data.debug.status + ')' : ''));
+          clearAuditLines();
+          setTimeout(function() { if (banner) banner.style.display = 'none'; }, 6000);
+          return;
+        }
+
+        renderAuditLines(lines);
+
+        if (data.cell_labels_grid && data.grid_info) {
+          recolorLidarByClassification(data.cell_labels_grid, data.grid_info);
+        }
+
+        var parts = [];
+        if (summary.ridge) parts.push(summary.ridge + ' ridge');
+        if (summary.eave) parts.push(summary.eave + ' eave');
+        if (summary.rake) parts.push(summary.rake + ' rake');
+        if (summary.hip) parts.push(summary.hip + ' hip');
+        if (summary.valley) parts.push(summary.valley + ' valley');
+        if (summary.uncertain) parts.push(summary.uncertain + ' uncertain');
+        var btCount = lines.filter(function(l) { return l.source === 'boundary_trace'; }).length;
+        var fusionInfo = data.debug && data.debug.fusion;
+        if (btCount > 0) parts.push(btCount + ' boundary');
+        if (fusionInfo && fusionInfo.lines_reclassified > 0) parts.push(fusionInfo.lines_reclassified + ' reclassified');
+        _mlBanner(banner, 'success', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L22 4"/><path d="M2 4h20"/><path d="M22 20L12 12"/></svg> Line Audit: ' + parts.join(', ') + '.');
+        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 8000);
+      })
+      .catch(function(err) {
+        _mlBanner(banner, 'error', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Line Audit failed: ' + err.message);
+        setTimeout(function() { if (banner) banner.style.display = 'none'; }, 5000);
+      });
+    }
+
     function autoGenerateRoof() {
       if (roofDrawingMode) toggleRoofDrawingMode();
       if (treePlacingMode) toggleTreeMode();
@@ -17187,6 +17396,15 @@ app.get("/design", (req, res) => {
           mlAutoBuild();
           return;
         }
+        if ((e.key === 'l' || e.key === 'L') &&
+            !e.metaKey && !e.ctrlKey && !e.altKey &&
+            document.activeElement &&
+            document.activeElement.tagName !== 'INPUT' &&
+            document.activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          lineAudit();
+          return;
+        }
         if ((e.key === 'Delete' || e.key === 'Backspace') && roofSelectedFace >= 0 && !roofDrawingMode) {
           e.preventDefault();
           if (roofSelectedSection >= 0) {
@@ -17211,6 +17429,11 @@ app.get("/design", (req, res) => {
       if (btnMlAuto) btnMlAuto.addEventListener('click', function(e) {
         e.stopPropagation();
         mlAutoBuild();
+      });
+      var btnLineAudit = document.getElementById('btnLineAudit');
+      if (btnLineAudit) btnLineAudit.addEventListener('click', function(e) {
+        e.stopPropagation();
+        lineAudit();
       });
       if (btnManual) btnManual.addEventListener('click', function(e) {
         e.stopPropagation();
@@ -32937,6 +33160,402 @@ app.post("/api/ml/auto-build", async (req, res) => {
     reviewPolicyReasons: row.reviewPolicyReasons,
     crmResult: envelope.crm_result || null
   });
+});
+
+// ── Line Audit fusion helpers ──────────────────────────────────────────────
+// Used by /api/line-audit to score ML lines against LiDAR point labels and
+// trace ROOF→GROUND boundaries for rake/eave detection.
+
+const LA_LABELS = { UNSURE:0, GROUND:1, ROOF:2, LOWER_ROOF:3, FLAT_ROOF:4,
+  RIDGE_DOT:5, NEAR_RIDGE:6, TREE:7, EAVE_DOT:8, RIDGE_EDGE_DOT:9,
+  VALLEY_DOT:10, STEP_EDGE:11, OBSTRUCTION_DOT:12 };
+const LA_LABEL_NAMES = Object.keys(LA_LABELS);
+const LA_ROOF_SET = new Set([LA_LABELS.ROOF, LA_LABELS.LOWER_ROOF, LA_LABELS.FLAT_ROOF]);
+const LA_GROUND_SET = new Set([LA_LABELS.GROUND, LA_LABELS.UNSURE, LA_LABELS.TREE]);
+
+function _laGridCell(x, z, gi) {
+  return {
+    col: Math.floor((x - gi.x_origin) / gi.resolution),
+    row: Math.floor((z - gi.z_origin) / gi.resolution)
+  };
+}
+
+function _laGridLabel(grid, gi, row, col) {
+  if (row < 0 || row >= gi.rows || col < 0 || col >= gi.cols) return -1;
+  return grid[row][col];
+}
+
+function _laSampleLine(grid, gi, p1, p2, bandCells) {
+  const dx = p2.x - p1.x, dz = p2.z - p1.z;
+  const len = Math.sqrt(dx * dx + dz * dz);
+  if (len < 0.01) return [];
+  const steps = Math.max(Math.ceil(len / gi.resolution), 1);
+  const nx = -dz / len, nz = dx / len;
+  const samples = [];
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const cx = p1.x + dx * t, cz = p1.z + dz * t;
+    for (let b = -bandCells; b <= bandCells; b++) {
+      const sx = cx + nx * b * gi.resolution;
+      const sz = cz + nz * b * gi.resolution;
+      const { row, col } = _laGridCell(sx, sz, gi);
+      const label = _laGridLabel(grid, gi, row, col);
+      if (label >= 0) samples.push({ label, row, col, band: b });
+    }
+  }
+  return samples;
+}
+
+function _laComputeSupport(line, grid, gi, ridgeDir) {
+  const samples = _laSampleLine(grid, gi, line.p1, line.p2, 2);
+  const center = _laSampleLine(grid, gi, line.p1, line.p2, 0);
+  if (samples.length === 0) return { ridge_support:0, eave_support:0, rake_support:0, roof_transition:0, cells_sampled:0, dominant_label:"NONE" };
+  const cLen = Math.max(center.length, 1);
+
+  let ridgeCells = 0, eaveCells = 0, ridgeEdgeCells = 0, valleyCells = 0;
+  let transitions = 0;
+  const labelCounts = {};
+  for (const s of samples) {
+    const name = LA_LABEL_NAMES[s.label] || "UNKNOWN";
+    labelCounts[name] = (labelCounts[name] || 0) + 1;
+    if (s.label === LA_LABELS.RIDGE_DOT || s.label === LA_LABELS.NEAR_RIDGE) ridgeCells++;
+    if (s.label === LA_LABELS.EAVE_DOT) eaveCells++;
+    if (s.label === LA_LABELS.RIDGE_EDGE_DOT) ridgeEdgeCells++;
+    if (s.label === LA_LABELS.VALLEY_DOT) valleyCells++;
+  }
+
+  for (const s of center) {
+    const r = s.row, c = s.col;
+    const here = _laGridLabel(grid, gi, r, c);
+    const isRoof = LA_ROOF_SET.has(here);
+    if (!isRoof) continue;
+    for (const [dr, dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+      const nb = _laGridLabel(grid, gi, r+dr, c+dc);
+      if (LA_GROUND_SET.has(nb)) { transitions++; break; }
+    }
+  }
+
+  const ridge_support = Math.min(ridgeCells / Math.max(cLen * 2, 1), 1.0);
+  const eave_support_raw = (eaveCells + transitions * 0.5) / Math.max(cLen, 1);
+  const eave_support = Math.min(eave_support_raw, 1.0);
+
+  let rake_support = 0;
+  if (ridgeDir) {
+    const dx = line.p2.x - line.p1.x, dz = line.p2.z - line.p1.z;
+    const len = Math.sqrt(dx*dx + dz*dz) || 1;
+    const slopeX = -ridgeDir.dz, slopeZ = ridgeDir.dx;
+    const slopeDot = Math.abs((dx/len) * slopeX + (dz/len) * slopeZ);
+    if (slopeDot > 0.5) rake_support += 0.4;
+    if (ridgeEdgeCells > 0) rake_support += 0.3;
+    if (transitions > 0) rake_support += Math.min(transitions / Math.max(cLen * 0.5, 1), 0.3);
+  }
+  const roof_transition = Math.min(transitions / Math.max(cLen * 0.5, 1), 1.0);
+
+  let dominant = "NONE"; let maxC = 0;
+  for (const [k,v] of Object.entries(labelCounts)) { if (v > maxC) { maxC = v; dominant = k; } }
+
+  return { ridge_support: Math.round(ridge_support*1000)/1000, eave_support: Math.round(eave_support*1000)/1000,
+    rake_support: Math.round(rake_support*1000)/1000, roof_transition: Math.round(roof_transition*1000)/1000,
+    cells_sampled: samples.length, dominant_label: dominant };
+}
+
+function _laFindRidgeDirection(grid, gi) {
+  const pts = [];
+  for (let r = 0; r < gi.rows; r++) {
+    for (let c = 0; c < gi.cols; c++) {
+      if (grid[r][c] === LA_LABELS.RIDGE_DOT) {
+        pts.push({ x: gi.x_origin + c * gi.resolution, z: gi.z_origin + r * gi.resolution });
+      }
+    }
+  }
+  if (pts.length < 3) return null;
+  let mx = 0, mz = 0;
+  for (const p of pts) { mx += p.x; mz += p.z; }
+  mx /= pts.length; mz /= pts.length;
+  let cxx = 0, cxz = 0, czz = 0;
+  for (const p of pts) {
+    const dx = p.x - mx, dz = p.z - mz;
+    cxx += dx*dx; cxz += dx*dz; czz += dz*dz;
+  }
+  const trace = cxx + czz;
+  const det = cxx * czz - cxz * cxz;
+  const l1 = trace/2 + Math.sqrt(Math.max(trace*trace/4 - det, 0));
+  let vx = cxz, vz = l1 - cxx;
+  const vlen = Math.sqrt(vx*vx + vz*vz);
+  if (vlen < 1e-6) return { dx: 1, dz: 0 };
+  return { dx: vx/vlen, dz: vz/vlen };
+}
+
+function _laTraceBoundaries(grid, gi, ridgeDir, mlLines) {
+  const visited = Array.from({length: gi.rows}, () => new Uint8Array(gi.cols));
+  const clusters = [];
+
+  for (let r = 1; r < gi.rows - 1; r++) {
+    for (let c = 1; c < gi.cols - 1; c++) {
+      if (visited[r][c]) continue;
+      const label = grid[r][c];
+      if (!LA_ROOF_SET.has(label)) continue;
+      let isBoundary = false;
+      for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        const nb = _laGridLabel(grid, gi, r+dr, c+dc);
+        if (nb === LA_LABELS.GROUND || nb === LA_LABELS.UNSURE) { isBoundary = true; break; }
+      }
+      if (!isBoundary) continue;
+      const cluster = [];
+      const stack = [[r, c]];
+      visited[r][c] = 1;
+      while (stack.length > 0) {
+        const [cr, cc] = stack.pop();
+        cluster.push({ r: cr, c: cc });
+        for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+          const nr = cr+dr, nc = cc+dc;
+          if (nr < 0 || nr >= gi.rows || nc < 0 || nc >= gi.cols) continue;
+          if (visited[nr][nc]) continue;
+          if (!LA_ROOF_SET.has(grid[nr][nc])) continue;
+          let adjGround = false;
+          for (const [dr2,dc2] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+            const nb2 = _laGridLabel(grid, gi, nr+dr2, nc+dc2);
+            if (nb2 === LA_LABELS.GROUND || nb2 === LA_LABELS.UNSURE) { adjGround = true; break; }
+          }
+          if (!adjGround) continue;
+          visited[nr][nc] = 1;
+          stack.push([nr, nc]);
+        }
+      }
+      if (cluster.length >= 3) clusters.push(cluster);
+    }
+  }
+
+  const btLines = [];
+  for (const cluster of clusters) {
+    let mx = 0, mz = 0;
+    const worldPts = cluster.map(p => {
+      const wx = gi.x_origin + p.c * gi.resolution;
+      const wz = gi.z_origin + p.r * gi.resolution;
+      mx += wx; mz += wz;
+      return { x: wx, z: wz };
+    });
+    mx /= cluster.length; mz /= cluster.length;
+
+    let cxx = 0, cxz = 0, czz = 0;
+    for (const p of worldPts) {
+      const dx = p.x - mx, dz = p.z - mz;
+      cxx += dx*dx; cxz += dx*dz; czz += dz*dz;
+    }
+    const trace = cxx + czz;
+    const det = cxx * czz - cxz * cxz;
+    const l1 = trace/2 + Math.sqrt(Math.max(trace*trace/4 - det, 0));
+    let vx = cxz, vz = l1 - cxx;
+    const vlen = Math.sqrt(vx*vx + vz*vz);
+    if (vlen < 1e-6) continue;
+    vx /= vlen; vz /= vlen;
+
+    let minProj = Infinity, maxProj = -Infinity;
+    for (const p of worldPts) {
+      const proj = (p.x - mx) * vx + (p.z - mz) * vz;
+      if (proj < minProj) minProj = proj;
+      if (proj > maxProj) maxProj = proj;
+    }
+    const length_m = maxProj - minProj;
+    if (length_m < 1.0) continue;
+
+    const p1 = { x: mx + vx * minProj, z: mz + vz * minProj };
+    const p2 = { x: mx + vx * maxProj, z: mz + vz * maxProj };
+
+    let lineType = "eave";
+    let slopeDot = 0;
+    if (ridgeDir) {
+      const slopeX = -ridgeDir.dz, slopeZ = ridgeDir.dx;
+      slopeDot = Math.abs(vx * slopeX + vz * slopeZ);
+      if (slopeDot > 0.5) lineType = "rake";
+    }
+
+    let ridgeEdgeNearby = false;
+    for (const p of cluster) {
+      for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) {
+        const nb = _laGridLabel(grid, gi, p.r+dr, p.c+dc);
+        if (nb === LA_LABELS.RIDGE_EDGE_DOT) { ridgeEdgeNearby = true; break; }
+      }
+      if (ridgeEdgeNearby) break;
+    }
+    if (ridgeEdgeNearby && lineType === "eave") lineType = "rake";
+
+    let isDup = false;
+    const bmx = (p1.x + p2.x) / 2, bmz = (p1.z + p2.z) / 2;
+    for (const ml of mlLines) {
+      const mmx = (ml.p1.x + ml.p2.x) / 2, mmz = (ml.p1.z + ml.p2.z) / 2;
+      const dist = Math.sqrt((bmx-mmx)**2 + (bmz-mmz)**2);
+      if (dist > 2.0) continue;
+      const mdx = ml.p2.x - ml.p1.x, mdz = ml.p2.z - ml.p1.z;
+      const mlen = Math.sqrt(mdx*mdx + mdz*mdz) || 1;
+      const angleDot = Math.abs((vx * mdx + vz * mdz) / mlen);
+      if (angleDot > 0.94) { isDup = true; break; }
+    }
+    if (isDup) continue;
+
+    let conf = 0.30;
+    if (ridgeEdgeNearby) conf += 0.15;
+    if (cluster.length >= 8) conf += 0.10;
+    conf = Math.min(conf, 0.65);
+
+    btLines.push({
+      line_id: "bt_" + btLines.length,
+      type: lineType,
+      p1, p2,
+      confidence: Math.round(conf * 1000) / 1000,
+      length_m: Math.round(length_m * 100) / 100,
+      source: "boundary_trace",
+      source_signals: {
+        boundary_cells: cluster.length,
+        slope_dot: Math.round(slopeDot * 1000) / 1000,
+        ridge_edge_nearby: ridgeEdgeNearby,
+        dominant_side_label: "GROUND"
+      },
+      target_building_supported: true
+    });
+  }
+  return btLines;
+}
+
+// ── Line Audit endpoint — forwards to ML + Roof Geometry in parallel ──────
+// Separate from ML Auto Build. Returns classified line segments (ridge/eave/
+// rake) for overlay rendering. Does NOT build roof faces, save drafts, or
+// mutate any design state.
+// V2: LiDAR point labels used as scoring evidence for ML lines + boundary
+// trace for rake/eave detection. RoofGeom edges NOT merged as equal output.
+app.post("/api/line-audit", async (req, res) => {
+  const ML_URL = process.env.ML_ENGINE_URL || ML_ENGINE_URL_DEFAULT;
+  const ML_URL_SOURCE = process.env.ML_ENGINE_URL ? "env" : "default";
+  const ROOF_SERVICE = process.env.ROOF_SERVICE_URL || "http://localhost:8000";
+
+  const body = req.body || {};
+  const projectId = body.projectId;
+  if (!projectId) return res.status(400).json({ error: "projectId required" });
+
+  const roofGeomPayload = {
+    project_id: body.projectId,
+    anchor_dots: body.anchor_dots || [],
+    calibration_offset: body.calibration_offset || { tx: 0, tz: 0 },
+    lidar: body.lidar,
+    image: body.image,
+    design_center: body.design_center,
+    options: {
+      confidence_threshold: 0.5,
+      max_planes: 20,
+      image_engine_profile: 'high_recall'
+    }
+  };
+
+  const [mlResult, rgResult] = await Promise.allSettled([
+    fetch(`${ML_URL}/api/crm/line-audit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(r => {
+      if (!r.ok) return r.json().catch(() => ({})).then(e => Promise.reject(e));
+      return r.json();
+    }),
+    fetch(`${ROOF_SERVICE}/roof/parse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(roofGeomPayload)
+    }).then(r => {
+      if (!r.ok) return Promise.reject(new Error(`RoofGeom ${r.status}`));
+      return r.json();
+    })
+  ]);
+
+  if (mlResult.status === "rejected") {
+    const err = mlResult.reason || {};
+    return res.status(503).json({
+      error: err.error || err.detail || "ML engine unreachable for line audit",
+      detail: `tried ${ML_URL}/api/crm/line-audit (${ML_URL_SOURCE})`,
+      hint: ML_URL_SOURCE === "default"
+        ? `Start the ML wrapper on ${ML_ENGINE_URL_DEFAULT} or set ML_ENGINE_URL in .env`
+        : `Check the ML wrapper is running at ${ML_URL}`
+    });
+  }
+
+  const envelope = mlResult.value;
+  const mlLineCount = (envelope.audit_lines || []).length;
+  if (!envelope.debug) envelope.debug = {};
+
+  let btLineCount = 0;
+  const fusionDebug = { lines_boosted: 0, lines_demoted: 0, lines_reclassified: 0,
+    boundary_trace_emitted: 0, boundary_trace_deduped: 0 };
+
+  if (rgResult.status === "fulfilled" && rgResult.value) {
+    const rgData = rgResult.value;
+    const grid = rgData.cell_labels_grid;
+    const gi = rgData.grid_info;
+
+    if (grid && gi && gi.rows && gi.cols) {
+      envelope.cell_labels_grid = grid;
+      envelope.grid_info = gi;
+      envelope.debug.lidar_classification_available = true;
+
+      const labelCounts = {};
+      for (const row of grid) for (const v of row) {
+        const name = LA_LABEL_NAMES[v] || 'UNKNOWN';
+        labelCounts[name] = (labelCounts[name] || 0) + 1;
+      }
+      envelope.debug.lidar_label_counts = labelCounts;
+
+      const ridgeDir = _laFindRidgeDirection(grid, gi);
+      const mlLines = envelope.audit_lines || [];
+
+      for (const line of mlLines) {
+        const scores = _laComputeSupport(line, grid, gi, ridgeDir);
+        if (!line.source_signals) line.source_signals = {};
+        line.source_signals.lidar_support = scores;
+
+        let boost = 0;
+        const origType = line.type;
+        if (line.type === "ridge" && scores.ridge_support > 0.3) boost += 0.10;
+        if (line.type === "eave" && scores.eave_support > 0.3) boost += 0.10;
+        if (line.type === "ridge" && scores.ridge_support < 0.1 && scores.roof_transition < 0.2) boost -= 0.10;
+        if (line.type === "uncertain") {
+          if (scores.ridge_support > 0.5) { line.type = "ridge"; boost += 0.15; }
+          else if (scores.eave_support > 0.5) { line.type = "eave"; boost += 0.15; }
+          else if (scores.rake_support > 0.5) { line.type = "rake"; boost += 0.15; }
+        }
+        if (boost !== 0) {
+          line.confidence = Math.round(Math.max(0, Math.min(1, line.confidence + boost)) * 1000) / 1000;
+          if (boost > 0) fusionDebug.lines_boosted++;
+          else fusionDebug.lines_demoted++;
+        }
+        if (line.type !== origType) fusionDebug.lines_reclassified++;
+      }
+
+      const btLines = _laTraceBoundaries(grid, gi, ridgeDir, mlLines);
+      fusionDebug.boundary_trace_emitted = btLines.length;
+
+      if (btLines.length > 0) {
+        if (!envelope.audit_lines) envelope.audit_lines = [];
+        envelope.audit_lines.push(...btLines);
+        btLineCount = btLines.length;
+        if (!envelope.summary) envelope.summary = {};
+        for (const line of btLines) {
+          envelope.summary[line.type] = (envelope.summary[line.type] || 0) + 1;
+          envelope.summary.total = (envelope.summary.total || 0) + 1;
+        }
+      }
+    } else {
+      envelope.debug.lidar_classification_available = false;
+    }
+  } else {
+    envelope.debug.lidar_classification_available = false;
+    if (rgResult.status === "rejected") {
+      envelope.debug.roof_geometry_error = String(rgResult.reason);
+    }
+  }
+  envelope.debug.fusion = fusionDebug;
+
+  const lines = envelope.audit_lines || [];
+  const summary = envelope.summary || {};
+  console.log(`[line-audit] project=${projectId} lines=${lines.length} ridge=${summary.ridge||0} eave=${summary.eave||0} rake=${summary.rake||0} hip=${summary.hip||0} valley=${summary.valley||0} uncertain=${summary.uncertain||0} ml=${mlLineCount} bt=${btLineCount} boosted=${fusionDebug.lines_boosted} reclass=${fusionDebug.lines_reclassified}`);
+
+  res.json(envelope);
 });
 
 // ── ML drafts read endpoints (read-only triage surface) ────────────────────

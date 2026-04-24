@@ -124,7 +124,48 @@
       "name": "[draft - needs review] MA - Eversource Energy - Interconnection Documents Only",
       "utility": "Eversource Energy",
       "state": "Massachusetts",
-      "createdAt": "2029-04-09T00:00:00.000Z"
+      "createdAt": "2029-04-09T00:00:00.000Z",
+      "pdfFile": "1776639514099-eversource_schedule_z.pdf",
+      "pdfOriginalName": "eversource schedule z.pdf",
+      "description": "",
+      "fields": [
+        {
+          "type": "fullName",
+          "signer": "customer",
+          "page": 1,
+          "xPct": 0.3159041394335512,
+          "yPct": 0.34595959595959597,
+          "wPct": 0.17429193899782136,
+          "hPct": 0.020202020202020204
+        },
+        {
+          "type": "signature",
+          "signer": "customer",
+          "page": 6,
+          "xPct": 0.12200435729847495,
+          "yPct": 0.5521885521885522,
+          "wPct": 0.17429193899782136,
+          "hPct": 0.020202020202020204
+        },
+        {
+          "type": "fullName",
+          "signer": "customer",
+          "page": 6,
+          "xPct": 0.12200435729847495,
+          "yPct": 0.6161616161616161,
+          "wPct": 0.17429193899782136,
+          "hPct": 0.020202020202020204
+        },
+        {
+          "type": "dateSigned",
+          "signer": "customer",
+          "page": 6,
+          "xPct": 0.13616557734204793,
+          "yPct": 0.6885521885521886,
+          "wPct": 0.10893246187363835,
+          "hPct": 0.020202020202020204
+        }
+      ]
     }
   ]
 }

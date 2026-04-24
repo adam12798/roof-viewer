@@ -1,0 +1,538 @@
+{
+    "audit_lines": [
+        {
+            "confidence": 0.51,
+            "length_m": 2.84,
+            "line_id": "la_0",
+            "p1": {
+                "x": -5.125,
+                "z": -8.236
+            },
+            "p2": {
+                "x": -2.288,
+                "z": -8.236
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_00",
+                "raw_confidence": 0.51
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.613,
+            "length_m": 19.46,
+            "line_id": "la_1",
+            "p1": {
+                "x": -9.059,
+                "z": 10.615
+            },
+            "p2": {
+                "x": -7.595,
+                "z": -8.785
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_01",
+                "raw_confidence": 0.613
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.599,
+            "length_m": 1.13,
+            "line_id": "la_2",
+            "p1": {
+                "x": -8.876,
+                "z": 9.425
+            },
+            "p2": {
+                "x": -8.602,
+                "z": 10.524
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_02",
+                "raw_confidence": 0.599
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.608,
+            "length_m": 11.01,
+            "line_id": "la_3",
+            "p1": {
+                "x": -11.439,
+                "z": 9.975
+            },
+            "p2": {
+                "x": -0.458,
+                "z": 10.707
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_03",
+                "raw_confidence": 0.608
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.468,
+            "length_m": 2.1,
+            "line_id": "la_4",
+            "p1": {
+                "x": -1.83,
+                "z": -7.87
+            },
+            "p2": {
+                "x": -1.83,
+                "z": -5.765
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_04",
+                "raw_confidence": 0.468
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.491,
+            "length_m": 2,
+            "line_id": "la_5",
+            "p1": {
+                "x": -1.19,
+                "z": 7.87
+            },
+            "p2": {
+                "x": -0.641,
+                "z": 5.948
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_05",
+                "raw_confidence": 0.491
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.475,
+            "length_m": 3.07,
+            "line_id": "la_6",
+            "p1": {
+                "x": -0.732,
+                "z": 11.988
+            },
+            "p2": {
+                "x": -0.183,
+                "z": 8.968
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_06",
+                "raw_confidence": 0.475
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.623,
+            "length_m": 4.04,
+            "line_id": "la_7",
+            "p1": {
+                "x": 1.739,
+                "z": -0.275
+            },
+            "p2": {
+                "x": 2.013,
+                "z": -4.301
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_07",
+                "raw_confidence": 0.623
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.414,
+            "length_m": 2.66,
+            "line_id": "la_8",
+            "p1": {
+                "x": -1.281,
+                "z": -5.491
+            },
+            "p2": {
+                "x": 1.373,
+                "z": -5.399
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_08",
+                "raw_confidence": 0.414
+            },
+            "target_building_supported": true,
+            "type": "uncertain"
+        },
+        {
+            "confidence": 0.421,
+            "length_m": 4.15,
+            "line_id": "la_9",
+            "p1": {
+                "x": -9.425,
+                "z": -4.484
+            },
+            "p2": {
+                "x": -8.419,
+                "z": -8.51
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_09",
+                "raw_confidence": 0.421
+            },
+            "target_building_supported": false,
+            "type": "uncertain"
+        },
+        {
+            "confidence": 0.479,
+            "length_m": 1.92,
+            "line_id": "la_10",
+            "p1": {
+                "x": -11.53,
+                "z": 8.053
+            },
+            "p2": {
+                "x": -11.439,
+                "z": 9.975
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "eave",
+                "edge_id": "se_10",
+                "raw_confidence": 0.479
+            },
+            "target_building_supported": false,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.691,
+            "length_m": 16.69,
+            "line_id": "la_11",
+            "p1": {
+                "x": -5.033,
+                "z": 10.615
+            },
+            "p2": {
+                "x": -1.83,
+                "z": -5.765
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "ridge",
+                "edge_id": "se_11",
+                "raw_confidence": 0.691
+            },
+            "target_building_supported": true,
+            "type": "ridge"
+        },
+        {
+            "confidence": 0.502,
+            "length_m": 4,
+            "line_id": "la_12",
+            "p1": {
+                "x": -3.752,
+                "z": 5.125
+            },
+            "p2": {
+                "x": 0.183,
+                "z": 5.857
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "ridge",
+                "edge_id": "se_12",
+                "raw_confidence": 0.502
+            },
+            "target_building_supported": true,
+            "type": "ridge"
+        },
+        {
+            "confidence": 0.616,
+            "length_m": 2.95,
+            "line_id": "la_13",
+            "p1": {
+                "x": -4.209,
+                "z": 7.961
+            },
+            "p2": {
+                "x": -1.281,
+                "z": 8.327
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "ridge",
+                "edge_id": "se_13",
+                "raw_confidence": 0.616
+            },
+            "target_building_supported": true,
+            "type": "ridge"
+        },
+        {
+            "confidence": 0.44,
+            "length_m": 12.71,
+            "line_id": "la_14",
+            "p1": {
+                "x": -11.53,
+                "z": 8.053
+            },
+            "p2": {
+                "x": -9.425,
+                "z": -4.484
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "ridge",
+                "edge_id": "se_14",
+                "raw_confidence": 0.44
+            },
+            "target_building_supported": false,
+            "type": "uncertain"
+        },
+        {
+            "confidence": 0.563,
+            "length_m": 3.16,
+            "line_id": "la_15",
+            "p1": {
+                "x": -4.484,
+                "z": 7.229
+            },
+            "p2": {
+                "x": -1.556,
+                "z": 8.419
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "valley",
+                "edge_id": "se_15",
+                "raw_confidence": 0.563
+            },
+            "target_building_supported": true,
+            "type": "valley"
+        },
+        {
+            "confidence": 0.418,
+            "length_m": 1.13,
+            "line_id": "la_16",
+            "p1": {
+                "x": -1.556,
+                "z": 8.419
+            },
+            "p2": {
+                "x": -0.458,
+                "z": 8.693
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "rake",
+                "edge_id": "se_16",
+                "raw_confidence": 0.418
+            },
+            "target_building_supported": true,
+            "type": "uncertain"
+        },
+        {
+            "confidence": 0.502,
+            "length_m": 6.16,
+            "line_id": "la_17",
+            "p1": {
+                "x": 0.549,
+                "z": 5.765
+            },
+            "p2": {
+                "x": 1.739,
+                "z": -0.275
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "rake",
+                "edge_id": "se_17",
+                "raw_confidence": 0.502
+            },
+            "target_building_supported": true,
+            "type": "rake"
+        },
+        {
+            "confidence": 0.509,
+            "length_m": 1.27,
+            "line_id": "la_18",
+            "p1": {
+                "x": 1.373,
+                "z": -5.399
+            },
+            "p2": {
+                "x": 2.013,
+                "z": -4.301
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "rake",
+                "edge_id": "se_18",
+                "raw_confidence": 0.509
+            },
+            "target_building_supported": true,
+            "type": "rake"
+        },
+        {
+            "confidence": 0.31,
+            "length_m": 2.1,
+            "line_id": "la_19",
+            "p1": {
+                "x": -4.758,
+                "z": 7.595
+            },
+            "p2": {
+                "x": -6.863,
+                "z": 7.595
+            },
+            "source": "semantic_edge",
+            "source_signals": {
+                "class_label": "hip",
+                "edge_id": "se_19",
+                "raw_confidence": 0.31
+            },
+            "target_building_supported": true,
+            "type": "uncertain"
+        },
+        {
+            "confidence": 0.39,
+            "length_m": 2.47,
+            "line_id": "la_20",
+            "p1": {
+                "x": -5.765,
+                "z": -8.785
+            },
+            "p2": {
+                "x": -5.902,
+                "z": -6.314
+            },
+            "source": "outline_edge",
+            "source_signals": {
+                "inferred_type": "eave",
+                "outline_confidence": 0.976
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.39,
+            "length_m": 9.72,
+            "line_id": "la_21",
+            "p1": {
+                "x": -5.902,
+                "z": -6.314
+            },
+            "p2": {
+                "x": -8.099,
+                "z": 3.157
+            },
+            "source": "outline_edge",
+            "source_signals": {
+                "inferred_type": "eave",
+                "outline_confidence": 0.976
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.39,
+            "length_m": 5.11,
+            "line_id": "la_22",
+            "p1": {
+                "x": -8.099,
+                "z": 3.157
+            },
+            "p2": {
+                "x": -8.648,
+                "z": 8.236
+            },
+            "source": "outline_edge",
+            "source_signals": {
+                "inferred_type": "eave",
+                "outline_confidence": 0.976
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        },
+        {
+            "confidence": 0.39,
+            "length_m": 9.28,
+            "line_id": "la_23",
+            "p1": {
+                "x": -8.785,
+                "z": 11.256
+            },
+            "p2": {
+                "x": 0.412,
+                "z": 12.491
+            },
+            "source": "outline_edge",
+            "source_signals": {
+                "inferred_type": "eave",
+                "outline_confidence": 0.976
+            },
+            "target_building_supported": true,
+            "type": "eave"
+        }
+    ],
+    "debug": {
+        "dsm_available": false,
+        "half_h": 17.57,
+        "half_w": 17.57,
+        "image_source": "google:staticmap",
+        "outline_confidence": 0.976,
+        "outline_edge_candidates": 4,
+        "pipeline_time_s": 6.14,
+        "plane_count": 7,
+        "semantic_edge_count_filtered": 20,
+        "semantic_edge_count_raw": 20,
+        "status": "usable",
+        "true_mpp": 0.05491,
+        "usable_gate_score": 0.992,
+        "lidar_classification_available": false,
+        "fusion": {
+            "lines_boosted": 0,
+            "lines_demoted": 0,
+            "lines_reclassified": 0,
+            "boundary_trace_emitted": 0,
+            "boundary_trace_deduped": 0
+        }
+    },
+    "summary": {
+        "eave": 13,
+        "hip": 0,
+        "mean_confidence": 0.492,
+        "rake": 2,
+        "ridge": 3,
+        "target_supported_count": 21,
+        "total": 24,
+        "uncertain": 5,
+        "valley": 1
+    }
+}
